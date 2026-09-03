@@ -32,14 +32,20 @@ wuzu/1.0.1/package.py
 
 - `ChatRoom`
 - `conemu`
+- `l_agent_chat`
+- `l_agent_tool`
 - `l_everything`
 - `l_fastapi_guard`
 - `l_folder_favorites`
 - `l_frp`
+- `l_homepage`
 - `l_log`
 - `l_media_converter`
 - `l_muse_backup_viewer`
+- `l_nginx`
 - `l_notepad`
+- `l_notepad_client`
+- `l_notepad_server`
 - `l_qt_wgt_lib`
 - `l_repo_sync_gui`
 - `l_scheduler`
@@ -51,6 +57,7 @@ wuzu/1.0.1/package.py
 - `l_WChat`
 - `lperforce`
 - `lugwit_auth`
+- `lugwit_baidu_netdisk`
 - `Lugwit_Module`
 - `Lugwit_PackageRegistry`
 - `postgresql`
@@ -159,6 +166,30 @@ requires = [
 - Rez 包依赖写包名，不写本地路径。
 - Python 版本建议明确范围。
 - 依赖其他内部包时，直接写对应 Rez 包名。
+- **依赖（尤其是第三方 pip 库）只需在 `requires` 里声明包名即可，无需手动安装**——
+  wuwo 加载包时会自动解析并补齐缺失的依赖（见下节「自动下载依赖」）。
+
+### 自动下载依赖（不用手动装）
+
+`wuwor <包> -- ...` 启动时，wuwo 会先检查该包 `requires` 闭包里的依赖，
+**缺什么自动补什么**，无需手动 clone / pip 安装：
+
+- **GitHub 包**：注册表里登记的内部包缺失时，自动 `git clone` 到 `rez-package-source`
+- **pip 库**（fastapi / watchfiles / pyside6 等）：自动用 pip 装进
+  `rez-package-3rd/<包名>/<版本>/` 并生成 rez 包装（package.py），
+  之后 `requires` 里直接写包名即可解析
+- **nuget 包**：同理自动安装到 `rez-package-3rd`
+
+实现：`wuwo/py_modules/auto_fetch_packages.py`（`--for-rez-env` 在每次
+`wuwor ... rez env ...` 前解析 requires 闭包，按需补齐）。
+
+> 实操要点：
+> - 因此**不要在 package.py 里写 `env.PYTHONPATH.append(r"E:\...")` 这类
+>   硬编码外部路径 hack** 去"补依赖"——正确做法是把它写进 `requires`，
+>   由 wuwo 自动下载并纳入环境。
+> - 首次启动某包时若需联网下载依赖会稍慢；下载后即缓存，后续秒起。
+> - 自动下载依赖失败（如网络不通）时，`wuwor` 会报错提示，可按报错手动
+>   补装或重试（如 `wuwor <包> .update` 强制刷新 GitHub 包）。
 
 ### `build_command`
 
@@ -355,7 +386,7 @@ def commands():
 
 ## 9. 创建 Web 服务型包示例
 
-适用于 FastAPI / uvicorn 服务（参考 `lugwit_auth`、`l_notepad`、`ChatRoom` 后端）。
+适用于 FastAPI / uvicorn 服务（参考 `lugwit_auth`、`l_notepad_server`、`ChatRoom` 后端）。
 
 目录结构：
 
@@ -481,7 +512,7 @@ wuwor postgresql -- postgres_stop
 | 修饰符 | 作用 | 识别方 / 行为 |
 |--------|------|--------------|
 | `.script_server` | 设 `L_SCRIPT_SERVER=1` | 标题栏（`L_FramelessMainWindow`）优先识别，**总是启动脚本编辑器 HTTP 远程执行服务**（l_script_editor，默认 8764，被占用时自动向上找可用端口） |
-| `.dev_mod` | 设 `L_DEV_MOD=1` | 各后端服务（auth/netdisk/chat/note）识别后**启用 uvicorn 热更新**（reload，勿手动重启，见 9.1） |
+| `.dev_mod` | 设 `L_DEV_MOD=1` | 各后端服务（auth/netdisk/chat/note/agent 等）识别后**启用 uvicorn 热更新**（reload，勿手动重启，见 9.1）；主页卡片可配专用热更新别名（`reload_args`，如 l_notepad_server 的 `l_notepad_api_reload`） |
 | `.comfyui_lite` | 设 `COMFY_LITE=1` | 轻量 ComfyUI 模式 |
 | `.solo` | 动作 | 单实例守卫：已有实例运行时直接退出 |
 | `.update` | 动作 | 强制更新 GitHub 包（fetch + reset --hard） |
@@ -490,14 +521,14 @@ wuwor postgresql -- postgres_stop
 示例：
 
 ```bat
-:: 启动 l_notepad 并让标题栏总是启动脚本服务
-wuwor l_notepad .script_server -- l_notepad
+:: 启动 l_notepad_server 并让标题栏总是启动脚本服务
+wuwor l_notepad_server .script_server -- l_notepad_server
 
 :: 开发模式启动后端服务（uvicorn 热更新）
 wuwor lugwit_auth .dev_mod -- auth_server
 
 :: 修饰符可任意位置、可叠加
-wuwor l_notepad .solo .script_server -- l_notepad
+wuwor l_notepad_server .solo .script_server -- l_notepad_server
 ```
 
 实现位置：环境变量类修饰符在 `wuwo/py_modules/wuwo_rez.py` 的 `ENV_MODIFIERS`
@@ -828,7 +859,7 @@ def commands():
 核心服务（如 `lugwit_auth` Auth Service）只被自己的进程 import；**客户端用 HTTP 调用，不把服务包写进 requires**：
 
 ```python
-# 客户端（如 l_notepad）纯标准库 urllib 封装，避免拉入服务端重依赖
+# 客户端（如 l_notepad_client）纯标准库 urllib 封装，避免拉入服务端重依赖
 import json
 import urllib.request
 

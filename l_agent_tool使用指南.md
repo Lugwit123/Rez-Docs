@@ -34,7 +34,7 @@
 | 工具名 | 功能 | 参数 |
 |--------|------|------|
 | `run_command` | 在 PowerShell 中执行命令（危险命令自动阻断） | `command`（必填）, `timeout`（可选，默认 60） |
-| `kill_port` | 结束占用指定端口的进程 | `port`（必填） |
+| `kill_port` | 结束占用指定端口的进程树（taskkill /T + 僵尸 socket 后代清理 + 独占绑定验证，返回含 `port_free`） | `port`（必填） |
 
 #### HTTP 请求
 

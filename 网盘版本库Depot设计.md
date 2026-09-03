@@ -155,7 +155,7 @@ lock  unlock  locks  sync_plan  download
 - `/api/depot/download` 解析 blob 的 `fs_id` → `dlink` → `StreamingResponse`，
   带 `X-Depot-Rev` 响应头
 
-页面 `web_depot.html` 标题栏抄 `l_notepad/templates/web_edit.html` 的
+页面 `web_depot.html` 标题栏抄 `l_notepad_server/templates/web_edit.html` 的
 `.topbar` / `.topbar-meta` 样式；两栏布局 `minmax(0,1fr) 400px`，左侧文件表 + CL 视图，
 右侧版本历史面板。
 

@@ -50,6 +50,8 @@
 | 1026 | ChatRoom 聊天 | 127.0.0.1 | ❌ | `/chat/` |
 | 8765 | lugwit_note 笔记 | 127.0.0.1 | ❌ | `/note/` |
 | 8090 | l_homepage 聚合门户主页 | 127.0.0.1 | ❌ | `/homepage`、`/api/v1/services` |
+| 1250 | l_agent_chat 对话服务 | 127.0.0.1 | ❌ | `/agent_chat/` |
+| 1234 | l_WChat 推送服务 | 0.0.0.0（alias 直连） | 未走 nginx | —（不经反代，卡片直连 `http://localhost:1234/`） |
 
 `/docs/` 挂在 8080 上，**不是代理**：`location /docs/ { root html; autoindex on; }`
 （`<prefix>/html/docs`，即包内 `runtime/html/docs`），与上面的 upstream 端口无关。
@@ -134,6 +136,18 @@ location /note/ { proxy_pass http://lugwit_note_backend/; }  # 有 URI：剥掉 
 | 自带路径前缀（认证 `/api/v1/*`） | `/api/v1/login` | `proxy_pass http://host;`（不带 URI） |
 | 根路径路由（笔记 `/api/notes`） | `/note/api/notes` | `proxy_pass http://host/;`（带 URI 剥 `/note`） |
 
+#### 4.1.1 网盘（1028）的前缀适配：middleware 自剥，勿用 uvicorn root_path
+
+网盘页面 `__API_BASE__="/baidu"`（取 `LUGWIT_NETDISK_PREFIX` env），前端 fetch `/baidu/api/*`。
+上游适配靠网盘自身 `_strip_proxy_prefix` middleware（web_server.py）剥 `/baidu` 前缀，因此：
+
+- **经 nginx**：`location /baidu/` 带 URI 剥前缀转发（收 `/api/*`），middleware 无操作 → 正常
+- **浏览器直连** `http://host:1028/baidu/...`：middleware 剥前缀 → 正常（两种访问方式等价）
+
+> ⚠️ **不要**把前缀传给 uvicorn `root_path`：uvicorn ≥0.38 会把 root_path prepend 进
+> scope.path（starlette 再剥一次）。经 nginx 恰好抵消，但直连时页面拼出的 `/baidu/api/*`
+> 会被再 prepend 成 `/baidu/baidu/*` → 全部 404（2026-09 已踩坑并改掉）。
+
 ### 4.2 核心机制：location 匹配优先级（`/api/v1/` 必须先于 `/api/`）
 
 nginx 对 location 的匹配：**带 `^~` / 精确 `=` 优先，普通前缀按最长匹配**（不是配置文件里先到先得，但 `proxy_pass` 的转发目标互斥时，**顺序写错同样出错**）。
@@ -158,7 +172,7 @@ location /api/    { proxy_pass http://lugwit_baidu_backend; }   # 否则 /api/v1
 
 ## 5. 客户端如何接入
 
-以 l_notepad（使用 l_qframelesswindow 标题栏的服务器设置）为例：
+以 l_notepad_client（使用 l_qframelesswindow 标题栏的服务器设置）为例：
 
 | 配置键 | 填写值 | 实际请求 | nginx 处理 |
 |--------|--------|----------|-----------|
