@@ -426,7 +426,7 @@ window.addEventListener("depot-api", function (ev) {
 | `video` | mp4/mov/m4v/webm/mkv/avi/ts/flv | `<video>`（Range 拖进度条）+ 缩略图 |
 | `audio` | mp3/flac/m4a/aac/ogg/opus/wav/wma/ape/mka/mid… | 播放器面板 |
 | `pdf` | pdf | `<iframe>` 内嵌浏览器 PDF 阅读器 |
-| `text` | txt/md/json/yaml/xml/py/js/ts/c/cpp/go/sh/sql/csv/log/srt… 及 LICENSE/README/Makefile 等无扩展名文件 | 拉取**前 2MB** 渲染 `<pre>`；编码自动检测（BOM→UTF-8 严格校验→回退 GBK/GB18030），预览面板顶部可手动切换编码（UTF-8/GBK/Big5/Shift_JIS/EUC-KR/UTF-16 等） |
+| `text` | txt/md/json/yaml/xml/py/js/ts/c/cpp/go/sh/sql/csv/log/srt… 及 LICENSE/README/Makefile 等无扩展名文件 | 阅读器面板：行号列 + 行悬停高亮，长行折行不错位；编码自动检测（BOM→UTF-8 严格校验→回退 GBK/GB18030），顶部工具栏可手动切换编码（UTF-8/GBK/Big5/Shift_JIS/EUC-KR/UTF-16 等）并显示行数/截断信息；超 2 万行截断 |
 | `office` | doc/docx/xls/xlsx/ppt/pptx/wps/et/dps | 无法在线渲染 → 提示 + 下载按钮 |
 | `file` | 其余（zip/exe/rmvb…） | 同上，提示 + 下载按钮 |
 
