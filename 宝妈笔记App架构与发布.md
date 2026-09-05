@@ -95,7 +95,7 @@ cycle_start_date 为空 → idx = 0
 - 编辑回填：`editAlarm()` 从 `a.cycle_start_date` 恢复表单（若为空 → 云端代码/页面是旧的）
 
 ### 全屏响铃
-- `AlarmAlertActivity`：全屏详情 + 关闭页；`singleInstance` + `taskAffinity=""` + `excludeFromRecents`；API 27+ 用 `setShowWhenLocked/setTurnScreenOn`，低版本退回窗口 flag
+- `AlarmAlertActivity`：全屏详情2 + 关闭页；`singleInstance` + `taskAffinity=""` + `excludeFromRecents`；API 27+ 用 `setShowWhenLocked/setTurnScreenOn`，低版本退回窗口 flag
 - `AlarmReceiver`：通知渠道 `setBypassDnd(true)`；`setFullScreenIntent(alertPi, true)`；`notifId = abs(label.hashCode()) % 100000`；「⏹ 关闭闹钟」广播同时停铃声 + 取消通知
 - 权限：`AndroidManifest.xml` 加 `USE_FULL_SCREEN_INTENT`；厂商 ROM（小米/华为等）若被降级为横幅，需在系统设置里允许「全屏通知/锁屏显示」
 

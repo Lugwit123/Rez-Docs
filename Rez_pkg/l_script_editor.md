@@ -609,3 +609,18 @@ curl.exe http://127.0.0.1:8764/tools
 | `PythonHighlighter` / `SyntaxHighlightColors` | 语法高亮 |
 | `SessionManager` | 会话管理 |
 | `reload_mod()` | 深度重载整个库（含子模块），返回重载后的 `ScriptEditorTab` 类 |
+
+---
+
+## 8. 变更记录
+
+### 2026-09-03
+
+- **知识库工作区页面的「编辑」用的是笔记服务内置的 `<textarea>` 编辑器**（`l_notepad_server` 的
+  `templates/web_kb.html`），**不是本组件库**——`.md` 笔记的在线编辑/保存走
+  `PUT /api/kb/{kb}/workspace/file`，与本组件的脚本编辑/`/execute` 无耦合。
+  本组件（l_script_editor / 8764）仍专用于 Python 脚本的编辑与远程执行。
+- 依赖层面：本包 `requires` 未变（python-3.12 / pyside6 / Lugwit_Module / l_qt_wgt_lib / l_agent_tool），
+  本次不涉及 py_flow hack 或 watchfiles 变更。
+
+

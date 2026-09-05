@@ -143,8 +143,9 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 ### 4.2 网盘上的实际布局
 
 ```
-/apps/Lugwit/.depot/blob/<md5前2位>/<md5>          内容，全司去重
-/apps/Lugwit/.depot/manifest/<cl÷1000>/<cl>.json   每次提交的清单
+/apps/Lugwit/version_depot/blob/<md5前2位>/<md5>              内容，全司去重
+/apps/Lugwit/version_depot/dir_mirror/<根>/<逻辑路径>/...      dir 模式：活文件 + .versions/vNNN 快照
+/apps/Lugwit/.depot/manifest/<cl÷1000>/<cl>.json              每次提交的清单（兜底）
 ```
 
 **逻辑路径 → blob 的映射只存在数据库里**。所以：
@@ -406,13 +407,68 @@ window.addEventListener("depot-api", function (ev) {
 | `POST /api/files/delete` | `{paths:[...]}` |
 | `POST /api/files/rename` | `{path, new_name}` |
 | `GET /api/files/download` | 服务端代理 dlink 下载 |
-| `GET /api/files/stream` | 在线播放，支持 Range |
+| `GET /api/files/stream` | 在线预览（视频/音频/图片/PDF/文本等），inline + Range |
 | `GET /api/files/thumb` | 缩略图代理 |
 | `POST /api/files/upload` | `{local_path, remote_dir, remote_name, auto_mkdir, overwrite}` 传**服务端本地**文件 |
 | `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传 |
 | `POST /api/files/download_local` | 下载到服务端本地目录 |
 
 `overwrite=true` → `rtype=3` 同名覆盖；`false` → `rtype=1` 同名重命名。
+
+### 7.1 全类型文件预览
+
+`/files` 页所有文件都有「预览」按钮（原「播放」只支持图片/视频）。分类由
+`web_server.py::_media_kind()` 按扩展名判定，列表/相册接口每项带 `media` 字段：
+
+| media | 扩展名 | 预览方式 |
+|-------|--------|---------|
+| `image` | jpg/png/gif/webp/bmp/avif/svg | `<img>` + 缩略图 |
+| `video` | mp4/mov/m4v/webm/mkv/avi/ts/flv | `<video>`（Range 拖进度条）+ 缩略图 |
+| `audio` | mp3/flac/m4a/aac/ogg/opus/wav/wma/ape/mka/mid… | 播放器面板 |
+| `pdf` | pdf | `<iframe>` 内嵌浏览器 PDF 阅读器 |
+| `text` | txt/md/json/yaml/xml/py/js/ts/c/cpp/go/sh/sql/csv/log/srt… 及 LICENSE/README/Makefile 等无扩展名文件 | 拉取**前 2MB** 渲染 `<pre>`；编码自动检测（BOM→UTF-8 严格校验→回退 GBK/GB18030），预览面板顶部可手动切换编码（UTF-8/GBK/Big5/Shift_JIS/EUC-KR/UTF-16 等） |
+| `office` | doc/docx/xls/xlsx/ppt/pptx/wps/et/dps | 无法在线渲染 → 提示 + 下载按钮 |
+| `file` | 其余（zip/exe/rmvb…） | 同上，提示 + 下载按钮 |
+
+实现要点：
+
+- **后端不挑类型**：`/api/files/stream` 本来就对任意文件 inline 代理 dlink
+  （带 `User-Agent: pan.baidu.com`）+ Range 透传，本次只加了 MIME 兜底表
+  `_STREAM_MIME`——Windows 下 `mimetypes` 读注册表常缺 pdf/audio 条目，
+  缺了浏览器会把 pdf/mp3 当二进制触发下载而不是预览。
+- **前端 viewer 按分类渲染**：`web_files.html` 的 `openViewer()` 分支
+  video/image/audio/pdf/text/other；文本用 `fetch` + `TextDecoder(stream)`
+  流式读 2MB 后 cancel，不整文件进内存。相册视图非图/视频文件显示分类图标块。
+- **深链打开预览**：`/files?dir=<目录>&open=<完整路径>` —— 列目录加载完成后
+  自动弹出该文件的预览（按文件名在当前目录匹配）。宝妈笔记文章转存成功后，
+  页面底部的链接即指向此深链（`/api/article/save-to-baidu` 返回
+  `preview_query` 字段），点开直接是那篇 md 的阅读视图。
+- 修改了 `web_files.html`（模块级缓存进 `_FILES_HTML`），**需重启服务**才生效。
+
+### 7.2 预览功能验证记录（2026-09-05）
+
+访问入口（两种部署方式，见 2.2）：
+
+```
+挂载 lugwit_auth：http://127.0.0.1:1027/baidu/files     （__API_BASE__ = /baidu）
+单独起服务：      http://127.0.0.1:1028/files           （独立 uvicorn，端口 1028）
+```
+
+本次验证用的是单独跑法：`wuwor lugwit_baidu_netdisk -- baidu_netdisk_web`，端口 1028。
+
+服务重启后实测（`/media`、`/apps` 三层扫描 + stream 接口探针）：
+
+| media | 文件数 | stream 实测 Content-Type |
+|-------|-------:|--------------------------|
+| video | 195 | `video/x-matroska`（mkv） |
+| file | 89 | `application/zip` |
+| image | 78 | — |
+| text | 33 | `text/plain; charset=utf-8` |
+| audio | 24 | `audio/mpeg` |
+| office | 7 | — |
+| pdf | 1 | `application/pdf` |
+
+列表分类、页面 200、本机自动授权均正常；大写扩展名（`.RMVB`）正确归入 `file`。
 
 ---
 
@@ -605,7 +661,7 @@ Depot 支持**按逻辑根**（如 `/rez_pkg`）切换物理存储模式，各�
 
 | 模式 | 物理存储 | 适用 |
 |------|---------|------|
-| `blob`（默认） | 内容寻址 blob（`.depot/blob/<md5>`），去重 | 大文件 / 多版本 / 二进制 |
+| `blob`（默认） | 内容寻址 blob（`version_depot/blob/<md5>`），去重 | 大文件 / 多版本 / 二进制 |
 | `dir` | 按目录结构镜像 + `.versions/vNNN` 版本夹，**人可在百度云客户端浏览** | 小文本笔记 / 文档 |
 
 ### 13.1 登记模式
@@ -624,8 +680,8 @@ Content-Type: application/json
 逻辑路径 `/rez_pkg/Rez_pkg/l_script_editor.md` 对应：
 
 ```
-/apps/Lugwit/rez_pkg/Rez_pkg/l_script_editor.md                 ← 最新版（活文件，可直接下载）
-/apps/Lugwit/rez_pkg/Rez_pkg/.versions/l_script_editor.md/
+/apps/Lugwit/version_depot/dir_mirror/rez_pkg/Rez_pkg/l_script_editor.md                 ← 最新版（活文件，可直接下载）
+/apps/Lugwit/version_depot/dir_mirror/rez_pkg/Rez_pkg/.versions/l_script_editor.md/
   v001/l_script_editor.md                                        ← 历史快照
   v002/l_script_editor.md
 ```
@@ -641,10 +697,44 @@ Content-Type: application/json
 - `dir` 模式：优先取 `vNNN` 快照，缺失（如早期 blob 迁移数据）退回活文件
 - `blob` 模式：按原逻辑走内容寻址 blob
 
-### 13.4 注意事项
+### 13.4 列表附带物理路径
+
+`GET /api/depot/list` 对每个文件项附加：
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | 该文件所在根的存储模式（`blob` / `dir`） |
+| `remote_path` | `dir` 模式下活文件的真实物理路径（`/apps/<应用>/version_depot/dir_mirror/<逻辑路径>`），`blob` 模式为空串 |
+
+前端右键菜单据此在 `dir` 模式下显示/复制「百度云物理路径」（人可定位），`blob` 模式仍显示逻辑路径。
+
+### 13.5 迁移（blob → dir）
+
+根切到 `dir` 模式后，**早期用 blob 提交的文件**仍存在 `version_depot/blob/<md5>` 里、`dir` 模式下载会 404。
+用迁移接口把每个存活文件的最新内容从 blob 取回，按 `dir` 模式重新提交（写活文件 + vNNN 快照）：
+
+```http
+POST /api/depot/migrate
+Content-Type: application/json
+{"root": "/rez_pkg", "dry_run": true}    # dry_run 只预览不执行
+```
+
+实现：`depot_service.materialize_dir_root()`（遍历 `store.sub_paths` → `_download_blob_to_tmp` 下载 blob → `submit_files` 走 dir 分支重写活文件 + vNNN 快照并落库）。
+
+返回：
+
+```json
+{"migrated": ["/rez_pkg/xxx.md"], "failed": [{"path": "...", "error": "..."}],
+ "migrated_count": 1, "failed_count": 0}
+```
+
+- 迁移后 rev 会 +1（新提交），历史 rev 仍由 DB 保留
+- 已在 `dir` 模式直传的文件没有 blob，迁移时计入 `failed`（`blob 文件不存在`）属正常，可忽略
+
+### 13.6 注意事项
 
 - `dir` 模式的删除/移动只改 DB 元数据，**不会物理删/移百度云文件**（活文件与历史快照保留，仅不再出现在列表）
 - 切换模式不影响已提交的历史（rev 元数据在 DB 里），但新旧提交的物理存放位置不同
-- 切换前请确认该根下的提交均可用（`blob`→`dir` 后，旧 blob 内容下载仍走回退逻辑）
+- 切换前请确认该根下的提交均可用（`blob`→`dir` 后，旧 blob 内容下载仍走回退逻辑，或用 13.5 迁移）
 
 
