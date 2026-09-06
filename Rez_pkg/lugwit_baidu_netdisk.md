@@ -432,6 +432,11 @@ window.addEventListener("depot-api", function (ev) {
 
 实现要点：
 
+- **独立预览路由**：`/files/view?fs_id=..&name=..&dir=..`（挂载模式
+  `http://127.0.0.1:1027/baidu/files/view?...`）直开单个文件预览，可收藏/分享。
+  页面内打开预览/左右切换时 `history.pushState` 到该路由，Esc/关闭/浏览器后退
+  都能回到列表（`popstate` 双向同步）；直开路由后关闭则 `replaceState` 回
+  `/files?dir=..`。旧深链 `?dir=..&open=/path/file` 仍可用。
 - **后端不挑类型**：`/api/files/stream` 本来就对任意文件 inline 代理 dlink
   （带 `User-Agent: pan.baidu.com`）+ Range 透传，本次只加了 MIME 兜底表
   `_STREAM_MIME`——Windows 下 `mimetypes` 读注册表常缺 pdf/audio 条目，
