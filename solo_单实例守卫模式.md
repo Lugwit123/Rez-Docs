@@ -15,7 +15,7 @@
   1. `app_name = command_args[0]`（即 rez 别名，如 `l_mindmap_mmd_server`）；
   2. **与 auto_fetch 并行**异步起守卫子进程 `_sg_guard_async`（L530-548）：在 rez env 里跑 `l_app_ready.find_running(app_name)`——打印 JSON（运行中进程信息）并以退出码 1 表示"已在运行"，退出码 0 表示"未运行"；
   3. auto_fetch 完成后 `guard_proc.wait()` 收结果（L815-819）；
-  4. 已在运行 → 打印旧实例 pid/cmdline，进入**交互循环**（L842-858）：`_ask_kill_old`（L551-585，msvcrt 单键读取，5 秒无输入默认 Y）确认后 `_kill_pid_tree`（L588-594，**taskkill /F /T 杀整棵进程树**）→ 重新探测 → 旧实例已清则继续启动，仍检测到则再次询问；回答 n 则保留旧实例、本次启动退出。
+  4. 已在运行 → 打印旧实例 pid/cmdline，进入**交互循环**（L852-879）：`_ask_solo_action`（L556-602，msvcrt 单键读取，5 秒无输入默认重启）。若服务包已通过 `l_app_ready.register_url` 登记访问 URL（web 服务），提供 **[R]重启 / [O]打开已运行网址 / [n]保留旧实例退出** 三选；未登记则维持原 [Y/n]。选 R → `_kill_pid_tree`（**taskkill /F /T 杀整棵进程树**）→ 重新探测 → 旧实例已清则继续启动，仍检测到则再次询问；选 O → `webbrowser.open(url)` 打开旧实例网址后本次启动退出；选 n → 保留旧实例、本次启动退出。
 
 ## 2. l_app_ready 的进程匹配机制
 
@@ -76,6 +76,7 @@ start_orphan_watch()               # worker 孤儿自毁看门狗（仅 Windows�
 
 - `port_in_use(port, host="127.0.0.1")`：connect 探测端口占用（Windows 双绑检测不到 bind 报错）。
 - `start_orphan_watch(interval=3.0)`：worker 孤儿自毁看门狗（每 interval 秒 `OpenProcess` 查父进程，父死 `os._exit(0)` 释放端口；仅 Windows）。
+- `register_url(app_name, url)` / `solo_open_url(app_name)`：登记/读取服务访问 URL，供 `.solo` 守卫在旧实例运行时提供"打开已运行网址"选项。
 
 ### 5.2 l_mindmap_mmd 的响应实现
 
@@ -88,7 +89,8 @@ start_orphan_watch()               # worker 孤儿自毁看门狗（仅 Windows�
 | 文件 | 作用 |
 | --- | --- |
 | `wuwo/wuwor.bat` | 入口，转发 `wuwo.bat rez env ...` |
-| `wuwo/py_modules/wuwo_rez.py` | `.solo` 剥离、**注入 `L_SOLO=1`**、守卫异步启动、交互循环、`_kill_pid_tree` |
-| `wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/__init__.py` | psutil 进程命令行匹配（find_running）；**共享防护工具 `port_in_use` / `start_orphan_watch`** |
+| `wuwo/py_modules/wuwo_rez.py` | `.solo` 剥离、**注入 `L_SOLO=1`**、守卫异步启动、交互循环（重启/打开网址/保留）、`_kill_pid_tree` |
+| `wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/__init__.py` | psutil 进程命令行匹配（find_running）；**共享防护工具 `port_in_use` / `start_orphan_watch` / `register_url` / `solo_open_url`** |
 | `l_mindmap_mmd/999.0/src/l_mindmap_mmd/server.py` | 响应 `L_SOLO` 启用孤儿看门狗；启动前端口自检；reload 默认关 |
 | `l_mindmap_mmd/999.0/dev_restart.bat` | 一键重启（杀树 + wuwor 链拉起） |
+| `l_WChat/999.0/src/l_WChat/app.py` | 响应 `.solo`：注册 `l_wchat_backend` 的匹配模式与访问 URL，使守卫能发现运行实例并支持"打开已运行网址" |
