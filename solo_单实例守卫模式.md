@@ -84,8 +84,12 @@ start_orphan_watch()               # worker 孤儿自毁看门狗（仅 Windows�
 
 当前 `l_mindmap_mmd` 默认单进程运行（reload 关），看门狗仅在手动 `--reload` 调试的 worker 中激活——正是它需要生效的位置。
 
-## 6. 相关文件
+> **2026-09 更新**：主页（l_homepage）已**弃用 uvicorn `--reload`**，改用 `l_app_ready` 的
+> `src_hot_reload`（模板 `auto_reload` + 源码监听自重启），主页单实例运行，从而彻底避开
+> "reload 孤儿 worker 让 `.solo` 守卫失明 → 双实例抢端口"这一坑；主页常驻由外部 `guard` 进程负责。
+> 详见《src_hot_reload 源码热重载与主页常驻》。
 
+## 6. 相关文件
 | 文件 | 作用 |
 | --- | --- |
 | `wuwo/wuwor.bat` | 入口，转发 `wuwo.bat rez env ...` |

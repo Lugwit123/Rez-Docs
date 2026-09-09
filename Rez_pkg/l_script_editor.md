@@ -1,6 +1,13 @@
 # l_script_editor 使用文档
 
-> 独立可复用的 Python 脚本编辑器组件库：提供代码编辑、自动补全、语法高亮、会话管理，以及**HTTP 远程接口**（远程执行代码、上传/下载文件、暴露 agent 工具，全部走脚本编辑器所在进程的 Bottle 后台线程）。
+> 独立可复用的 Python 脚本编辑器组件库：提供代码编辑、自动补全、语法高亮、会话管理，以及**HTTP 远程接口**（远程执行代码、上传/下载文件、暴露 agent 工具、**UI 自动化**——Qt 版 Playwright，全部走脚本编辑器所在进程的 Bottle 后台线程）。
+
+| 项 | 值 |
+|----|----|
+| 包路径 | `rez-package-source/l_script_editor/999.0` |
+| 依赖 | `python-3.12` / `pyside6` / `Lugwit_Module` / `l_qt_wgt_lib` / `l_agent_tool` |
+| 启动 | `wuwor l_script_editor -- l_script_editor_demo`（组件演示）<br>`wuwor l_script_editor -- l_script_editor_server`（无 UI 常驻服务）<br>`wuwor l_script_editor -- l_script_editor_test`（运行测试） |
+| 测试 | `python src\run_lse_tests.py`（63 用例，offscreen 无头） |
 
 ---
 
@@ -25,7 +32,7 @@ editor_tab.start_http_server(host="127.0.0.1", port=8764)  # 后台守护线程�
 
 ```bash
 curl.exe http://127.0.0.1:8764/status
-# {"status": "running", "server_id": "a1b2c3d4", "editor_available": true}
+# {"status": "running", "server_id": "a1b2c3d4", "editor_available": true, "protocol_version": "1.1", ...}
 ```
 
 ---
@@ -53,10 +60,15 @@ curl.exe http://127.0.0.1:8764/status
 | `/upload` | POST | 把单个文件内容写入远程路径（文本或二进制） |
 | `/upload_folder` | POST | 递归上传本地文件夹到远程目录（文件树，跨机器） |
 | `/download` | POST | 从远程路径读取文件内容（文本或二进制） |
-| `/status` | GET | 健康检查 |
+| `/status` | GET | 健康检查（含执行观测：executing / inflight / async_tasks） |
 | `/tools` | GET | 发现 agent 工具清单 |
 | `/docs` | GET | 交互式 API 文档页（HTML） |
 | `/chat` | GET / POST | 代理 `l_agent_chat` 聊天网页与同源 API |
+| `/ui/tree` | GET | **UI 自动化**：导出控件树 |
+| `/ui/locate` | POST | **UI 自动化**：解析定位器，返回控件信息 |
+| `/ui/action` | POST | **UI 自动化**：click / set_text / press_key / select 等动作 |
+| `/ui/wait` | POST | **UI 自动化**：auto-wait 等待控件状态 |
+| `/ui/screenshot` | GET | **UI 自动化**：控件截图（PNG，JSON base64 或 raw） |
 
 | 方式 | 传参 | 适用场景 |
 |------|------|------|
@@ -74,8 +86,22 @@ curl.exe http://127.0.0.1:8764/status
 响应：
 
 ```json
-{"status": "running", "server_id": "a1b2c3d4", "editor_available": true}
+{
+  "status": "running",
+  "server_id": "a1b2c3d4",
+  "editor_available": true,
+  "protocol_version": "1.1",
+  "auth_required": false,
+  "file_jail": false,
+  "ui_automation": true,
+  "executing": false,
+  "exec_elapsed_s": null,
+  "inflight_available": 8,
+  "async_tasks": 0
+}
 ```
+
+`executing` / `exec_elapsed_s` 用于观测「Qt 主线程当前是否被远程代码占用、已占用多久」。
 
 ### 3.2 `GET /execute` — URL 参数最简调用（推荐）
 
@@ -219,7 +245,8 @@ curl.exe http://127.0.0.1:8764/execute_async/result/a7f72c78-05e
   }
   ```
 
-> 未知 `request_id` 返回 404；任务过多（默认上限 256）返回 503。配合 l_agent_tool 的
+> 未知 `request_id` 返回 404；任务过多（默认上限 256）返回 503；已完成任务保留
+> `SCRIPT_EDITOR_ASYNC_TTL`（默认 86400s）后自动清理。配合 l_agent_tool 的
 > `execute_sync` 工具使用（见 5.1.2），或直接 `http_get` 轮询。
 
 ### 3.5 编码与文件读取
@@ -366,6 +393,160 @@ curl.exe -X POST http://192.168.1.100:8764/upload_folder ^
 > l_agent_tool 提供配套客户端函数 `upload_folder_to_server(base_url, local_dir, remote_dir, ...)`，
 > 自动遍历本地文件夹并按此协议提交。
 
+### 3.9 `/ui/*` — UI 自动化端点（Qt 版 Playwright）
+
+允许外部客户端像 Playwright 驱动网页一样驱动脚本编辑器所在的整个 Qt 窗口：
+定位控件、执行动作、等待状态、截图。所有操作在 Qt 主线程执行（复用执行桥接），
+天然线程安全；模态对话框嵌套事件循环期间也能响应（queued 信号照常投递）。
+
+#### 3.9.1 定位器（Locator）
+
+所有 `/ui/*` 端点用同一个 locator JSON 描述目标控件：
+
+| `by` | 匹配规则 | 示例 |
+|------|----------|------|
+| `objectName` | `setObjectName` 设置的名字 | `{"by":"objectName","value":"http_server_btn"}` |
+| `text` | 按钮/标签/分组框的可见文字 | `{"by":"text","value":"执行"}` |
+| `placeholder` | QLineEdit 占位符 | `{"by":"placeholder","value":"搜索..."}` |
+| `accessibleName` | 无障碍名称 | `{"by":"accessibleName","value":"关闭"}` |
+| `class` | 元对象类名（精确匹配） | `{"by":"class","value":"QPushButton"}` |
+| `type` | Qt 类型（isinstance，支持子类） | `{"by":"type","value":"QComboBox"}` |
+| `indexPath` | 自 root 的子控件索引路径 | `{"by":"indexPath","value":"0/2/1"}` |
+
+- 可选 `nth`（默认 0）：多个匹配时取第 N 个，负数从后往前
+- 可选 `root`（默认 `"window"`）：`"window"` = 编辑器所在顶层窗口；`"self"` = 编辑器自身；或传入另一个 locator dict 作为搜索范围
+
+#### 3.9.2 `GET /ui/tree` — 控件树
+
+```bash
+curl.exe "http://127.0.0.1:8764/ui/tree?root=window&max_depth=12"
+```
+
+返回递归控件树（class / object_name / text / value / placeholder / visible /
+enabled / checked / rect / children），每层默认截断 200 个子控件。
+
+#### 3.9.3 `POST /ui/locate` — 解析定位器
+
+```bash
+curl.exe -X POST http://127.0.0.1:8764/ui/locate ^
+  -H "Content-Type: application/json" ^
+  -d "{\"by\":\"text\",\"value\":\"HTTP\",\"timeout\":5}"
+```
+
+定位超时返回 `{"success": false, "error": "定位超时 ..."}`（HTTP 200）；locator 参数非法返回 400。
+
+#### 3.9.4 `POST /ui/action` — 执行动作
+
+```bash
+curl.exe -X POST http://127.0.0.1:8764/ui/action ^
+  -H "Content-Type: application/json" ^
+  -d "{\"by\":\"objectName\",\"value\":\"name_edit\",\"action\":\"set_text\",\"params\":{\"text\":\"hello\"}}"
+```
+
+| action | params | 说明 |
+|--------|--------|------|
+| `click` / `double_click` / `right_click` | — | 合成鼠标事件（按钮类走 `click()` 保证 toggle） |
+| `hover` / `focus` | — | 移入 / 聚焦 |
+| `check` / `uncheck` | — | 勾选框状态设置 |
+| `set_text` | `{"text": "..."}` | 直接设值（QLineEdit / 文本框 / 下拉框 / 标签） |
+| `type_text` | `{"text": "abc"}` | 真实键盘事件逐字输入 |
+| `press_key` | `{"key": "Return"}` | 按键，支持 `ctrl+s` / `alt+F4` 组合 |
+| `select` | `{"value": "B"}` 或 `{"index": 1}` | 下拉框 / 列表 / Tab 选择 |
+| `clear` | — | 清空输入框 |
+| `scroll` | `{"dx": 0, "dy": -3}` | 滚轮 |
+
+动作要求控件可见且可用，否则 `success=false`。
+
+#### 3.9.5 `POST /ui/wait` — auto-wait
+
+```bash
+curl.exe -X POST http://127.0.0.1:8764/ui/wait ^
+  -H "Content-Type: application/json" ^
+  -d "{\"by\":\"objectName\",\"value\":\"status_label\",\"state\":\"text\",\"expected\":\"done\",\"timeout\":10}"
+```
+
+| state | 说明 |
+|-------|------|
+| `exists` / `gone` | 出现 / 消失（隐藏或销毁均算 gone） |
+| `visible` / `hidden` | 可见性 |
+| `enabled` / `disabled` | 可用性 |
+| `checked` / `unchecked` | 勾选状态 |
+| `text` / `text_contains` | 文本等于 / 包含（需 `expected`） |
+
+轮询期间驱动 Qt 事件循环，异步 UI 变化（QTimer / 信号触发）也能等到。
+
+#### 3.9.6 `GET /ui/screenshot` — 截图
+
+```bash
+# JSON base64（默认）
+curl.exe "http://127.0.0.1:8764/ui/screenshot?by=objectName&value=http_server_btn"
+
+# 浏览器直接看图
+curl.exe -o btn.png "http://127.0.0.1:8764/ui/screenshot?by=objectName&value=http_server_btn&raw=1"
+
+# 整窗截图（不带 locator）
+curl.exe -o win.png "http://127.0.0.1:8764/ui/screenshot?raw=1"
+```
+
+#### 3.9.7 Playwright 式工作流示例
+
+```python
+import requests
+
+base = "http://127.0.0.1:8764"
+
+# 1) 找到执行按钮并点击
+requests.post(f"{base}/ui/action", json={
+    "by": "objectName", "value": "run_btn", "action": "click"})
+
+# 2) 等输出标签出现"完成"（auto-wait，无需手写 sleep）
+requests.post(f"{base}/ui/wait", json={
+    "by": "objectName", "value": "status_label",
+    "state": "text", "expected": "完成", "timeout": 30})
+
+# 3) 截图存档
+img = requests.get(f"{base}/ui/screenshot?by=objectName&value=status_label").json()["image"]
+```
+
+---
+
+## 3A. 安全
+
+本服务具备**任意代码执行**能力，安全模型分三层：
+
+### 3A.1 监听地址（默认仅本机）
+
+```python
+editor_tab.start_http_server()                        # 127.0.0.1（默认，推荐）
+editor_tab.start_http_server(host="127.0.0.1")        # 显式本机
+```
+
+### 3A.2 非回环监听守卫
+
+监听局域网（`host="0.0.0.0"` 等）且未配置令牌时，**服务拒绝启动**并打印原因。
+跨机器使用必须配置令牌（见下），或显式自担风险：
+
+| 环境变量 | 说明 |
+|----------|------|
+| `SCRIPT_EDITOR_TOKEN` | 访问令牌。设置后除 `/status` `/docs` 外所有端点要求携带：`X-Editor-Token: <token>` 或 `Authorization: Bearer <token>` 或 `?token=<token>` |
+| `SCRIPT_EDITOR_ALLOW_INSECURE` | 设为 `1` 显式跳过非回环守卫（自担风险） |
+| `SCRIPT_EDITOR_FILE_ROOTS` | 文件白名单目录（os.pathsep 分隔，Windows 用 `;`）。设置后 `/upload` `/download` `/upload_folder` `/execute` 的文件路径必须落在其中，越界返回 403；未设置则不限制 |
+
+```powershell
+# 跨机器安全用法（示例）
+set SCRIPT_EDITOR_TOKEN=一串随机长令牌
+set SCRIPT_EDITOR_FILE_ROOTS=D:\remote_app;D:\downloads
+wuwor l_script_editor -- l_script_editor_server
+# 另一台机器：
+curl.exe -X POST http://192.168.1.100:8764/execute -H "X-Editor-Token: 一串随机长令牌" ...
+```
+
+### 3A.3 其他安全事实
+
+- `/status` 与 `/docs` 免鉴权（仅暴露健康状态与文档，无敏感信息）
+- 令牌校验用 `hmac.compare_digest`，防时序攻击
+- `/upload_folder` 的 `rel_path` 始终有路径穿越防护（拒绝 `..` / 绝对路径 / 盘符）
+
 ---
 
 ## 4. 远程调试工作流
@@ -455,7 +636,7 @@ curl.exe -X POST http://192.168.1.100:8764/download ^
 | `get_editor_state` / `get_current_code` / `get_all_codes` / `set_code` | 编辑器控制 |
 | `run_code` / `inject_vars` / `get_http_port` | 代码执行 / 变量注入 / 端口查询 |
 
-> 完整 schema 描述以 `/tools` 端点实时返回为准；详见 `Doc/l_agent_tool使用指南.md`。
+> 完整 schema 描述以 `/tools` 端点实时返回为准；详见 `Rez-Docs/l_agent_tool使用指南.md`。
 
 ### 5.1.1 跨机器文件传输（`upload_file` / `download_file`）
 
@@ -593,10 +774,35 @@ curl.exe http://127.0.0.1:8764/tools
 - `upload_file` / `download_file` 底层是同机 HTTP 请求，跨机器时只要远端 HTTP 服务可访问（防火墙放行端口）即可使用。
 - `/execute` 为**同步阻塞**（等执行完才返回）；需要"不阻塞、提交后继续做别的"时用 `/execute_async` + 轮询 `/execute_async/result/<id>`。
 - `/upload_folder` 的 `rel_path` 有**路径穿越防护**，目标必须落在 `remote_dir` 内；已存在文件在 `overwrite=false` 时默认跳过。
+- **执行超时只是放弃等待**：Qt 主线程上的代码仍在运行，后续请求会排队；`/status` 的 `executing` / `exec_elapsed_s` 可观测。
+- **不要在远程代码里同步回调 `/execute`**（同线程自等待会死锁）——桥接会拒绝来自 Qt 主线程的直接提交；请改用后台线程 + 轮询，或 `/execute_async`。
+- 异步任务结果保留 `SCRIPT_EDITOR_ASYNC_TTL`（默认 86400s）后自动清理。
 
 ---
 
-## 7. 组件 API 速览
+## 7. 测试
+
+测试为包内 unittest（HTTP 层 + UI 自动化 + 安全，offscreen 无头运行，不弹窗）：
+
+```powershell
+# wuwor 环境（依赖齐全）
+wuwor l_script_editor -- l_script_editor_test
+
+# 任意装有 PySide6 的 Python 3.12（自动挂载兄弟包源码 / 自动 stub 兜底）
+python src\run_lse_tests.py
+
+# 端到端冒烟（真实 ScriptEditorTab + HTTP 服务 + /ui/* 全链路）
+python src\smoke_e2e.py
+```
+
+覆盖范围（63 用例）：`/execute`（POST/GET/自动上传/异常）、`/execute_async`
+（提交/轮询/TTL 清扫）、桥接重入保护、`/ui/*`（tree/locate 7 种 by/action
+12 种动作/wait 10 种 state/screenshot）、令牌鉴权（header/Bearer/query）、
+文件白名单 jail、非回环绑定守卫。
+
+---
+
+## 8. 组件 API 速览
 
 | 类 / 函数 | 说明 |
 |-----------|------|
@@ -604,23 +810,10 @@ curl.exe http://127.0.0.1:8764/tools
 | `EditorAgent` | agent 工具调用器（注入执行环境为 `agent` / `tools`）；`list_tools()` / `call(name, ...)` / `register_tool(...)` |
 | `ToolRegistry` / `AgentTool` | 工具注册表 / 工具定义 |
 | `register_default_tool` / `DEFAULT_TOOLS` | 模块级默认工具注册 |
-| `ScriptEditorHttpServer` | HTTP 服务管理器（后台线程） |
+| `ScriptEditorHttpServer` | HTTP 服务管理器（后台线程；默认 `127.0.0.1`，非回环需令牌） |
+| `check_bind_guard` / `_read_token` / `_read_file_roots` | 安全守卫与环境变量解析（`http_server`） |
+| `ui_automation` | UI 自动化引擎：`parse_locator` / `resolve_widget` / `dump_widget_tree` / `perform_action` / `wait_for` / `grab_png_b64` |
 | `CodeEditorWithCompletion` / `CodeCompleter` | 编辑器 + 自动补全 |
 | `PythonHighlighter` / `SyntaxHighlightColors` | 语法高亮 |
 | `SessionManager` | 会话管理 |
 | `reload_mod()` | 深度重载整个库（含子模块），返回重载后的 `ScriptEditorTab` 类 |
-
----
-
-## 8. 变更记录
-
-### 2026-09-03
-
-- **知识库工作区页面的「编辑」用的是笔记服务内置的 `<textarea>` 编辑器**（`l_notepad_server` 的
-  `templates/web_kb.html`），**不是本组件库**——`.md` 笔记的在线编辑/保存走
-  `PUT /api/kb/{kb}/workspace/file`，与本组件的脚本编辑/`/execute` 无耦合。
-  本组件（l_script_editor / 8764）仍专用于 Python 脚本的编辑与远程执行。
-- 依赖层面：本包 `requires` 未变（python-3.12 / pyside6 / Lugwit_Module / l_qt_wgt_lib / l_agent_tool），
-  本次不涉及 py_flow hack 或 watchfiles 变更。
-
-

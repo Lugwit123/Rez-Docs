@@ -131,3 +131,4 @@
 3. **kill-first 扩展到 start**：`_svc_manage` 的 start/restart/reload 三操作统一先清端口监听者（`l_agent_tool.kill_port` 优先，回退 GBK 解码 netstat + `taskkill /F /T`——中文 Windows netstat 输出是 GBK，按 UTF-8 解码会崩）。
 4. **netdisk 启动自清障**：见 §2.2。
 5. **netdisk 反代前缀 middleware 自剥**（弃用 uvicorn root_path）：见 §2.2；详见《Nginx反向代理机制》§4.1.1。
+6. **主页弃用 uvicorn --reload，改用 `src_hot_reload`**（2026-09）：主页 `--reload` 会生成 `.solo` 守卫看不见的孤儿 worker → 双实例抢端口；且无 watchfiles 时没监听模板。改为模板 `auto_reload` + 源码监听自重启（`l_app_ready/src_hot_reload`，统一 `L_SRC_WATCH`），主页单实例运行；主页常驻由外部 `guard` 进程负责（进程内 watchdog 无法自拉）。详见《src_hot_reload 源码热重载与主页常驻》。
