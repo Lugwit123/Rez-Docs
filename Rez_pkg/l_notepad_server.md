@@ -228,6 +228,31 @@ for _p in _migrated:
 Depot 支持多存储模式（blob / 目录镜像），按逻辑根登记，详见
 《Rez_pkg/lugwit_baidu_netdisk.md》第 13 节。222
 
+### 7.4 笔记云镜像（已改为走 depot 库）
+
+笔记的「云同步」不再往裸目录 `<apps>/notes` 写文件，而是把**笔记做成一个 depot 库**
+（`/notes`，dir 模式），物理落在 `<apps>/version_depot/dir_mirror/notes/`：
+
+| 行为 | 实现 |
+|---|---|
+| 镜像位置 | `cloud_sync._remote_base()` → `{apps}/version_depot/dir_mirror{depot_library}` |
+| 推送一版 | `_push_upsert()` → `POST /api/depot/submit_stream?path=/notes/<rel>&ws=<ws>`（原始字节）。一次保存 = 一个版本，可在 depot 页面看历史/差异 |
+| 删除 | `_push_delete()` → `POST /api/depot/delete`（写删除版；netdisk 侧同时删掉 dir 镜像里的活文件，`.versions` 快照保留） |
+| 工作区 | 首次自动建 `notes-sync` 工作区并缓存 id（depot 接口都要带 ws） |
+| 拉取 | 仍按文件列目录，但**跳过 `.versions/` 快照**（那是版本历史，不是笔记） |
+| 「百度云地址」 | `note_browser_link()` → `{files_base}/depot?path=/notes/<rel>`，depot 页面支持 `?path=` 深链（自动定位并落到「📄 预览」标签） |
+
+配置（`~/.Lugwit/l_notepad_server/cloud_sync.yaml` 或环境变量）：
+
+| 键 | 环境变量 | 默认 | 说明 |
+|---|---|---|---|
+| `use_depot` | `L_CLOUD_SYNC_USE_DEPOT` | `true` | 关掉则退回旧的裸目录 `<apps>/notes` 行为 |
+| `depot_library` | `L_CLOUD_SYNC_DEPOT_LIB` | `/notes` | 笔记库 root（dir 模式） |
+| `depot_workspace` | `L_CLOUD_SYNC_DEPOT_WS` | `notes-sync` | 提交用的工作区名（不存在会自动建） |
+
+存量笔记（老 `<apps>/notes` 里的文件）用「全部同步到百度云」重推一遍即可进入库；
+旧的裸目录确认无误后可删除。
+
 ## 8. 排查速查
 
 | 现象 | 排查 |

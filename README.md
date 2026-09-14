@@ -41,6 +41,7 @@
 | 文档 | 一句话摘要 |
 |------|-----------|
 | [Nginx反向代理机制.md](Nginx反向代理机制.md) | nginx 8080 统一入口:路由规则表、WebSocket/大文件上传支持、各后端端口只监听本机 |
+| [Rez_pkg/HTTPS证书与域名申请总结.md](Rez_pkg/HTTPS证书与域名申请总结.md) | 实际怎么做的 HTTPS:DuckDNS 免费域名 + Let's Encrypt(DNS-01,绕开被 IIS 占用的 80) + IP 自签,nginx 443 双块、自动续期、证书缺失自愈与排错 |
 | [登录统一走Nginx代理.md](登录统一走Nginx代理.md) | 客户端登录/认证/账号/收藏 API 全部收敛到 8080 前缀路由,不直连后端端口 |
 | [网盘版本库Depot设计.md](网盘版本库Depot设计.md) | 内容寻址 blob 仓 + Postgres 元数据唯一权威:md5 秒传、CL 版本链、零流量改名回滚 |
 | [标题栏提供的服务.md](标题栏提供的服务.md) | 无边框标题栏(`L_FramelessMainWindow`)下沉通用服务:登录、服务器配置、脚本编辑器、帮助文档 |

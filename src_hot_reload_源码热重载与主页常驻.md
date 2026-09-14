@@ -92,6 +92,233 @@ _src_watch = src_hot_reload(
 
 ---
 
+## 共享封装：`l_app_ready.hotreload_service.SrcWatchService`
+
+前 4 个服务（l_homepage / lugwit_auth / lugwit_baidu_netdisk / l_WChat）各自抄了一整套
+Windows 动作（门控 / 状态文件 / 按端口停旧 / 清 `.solo` 残留 / wuwor 原样拉起 / 开关接口）。
+接入第 5~10 个服务前先把它收成一处：**`wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/hotreload_service.py`**。
+
+服务侧从此只要 ~15 行：
+
+```python
+from l_app_ready.hotreload_service import PORT_ENV, SrcWatchService
+
+_PORT = int(os.environ.get(PORT_ENV) or 8462)          # 重启执行进程靠它知道停哪个端口
+
+_sw = SrcWatchService(
+    module="l_model_hub.server",  # 重启执行入口：python -m <module> restart_self_cli
+    pkg="l_model_hub",            # rez 包名（wuwor 第一个参数）
+    alias="l_model_hub_server",   # 启动别名（也是 .solo 判重的别名）
+    port=_PORT,
+    watch_root=Path(__file__).resolve().parent,
+    runtime_dir=_runtime_dir(),   # 开关状态；**不要写进 rez 包目录**
+    jinja_env=templates.env,      # 有 Jinja 模板就传 → auto_reload 跟随开关
+    label="l_model_hub",          # 日志前缀
+)
+_sw.mount(app)                    # 挂 GET/POST /__dev__/src_watch（app 建好后调）
+_sw.start()                       # 起监视线程（模块级调一次）
+
+def main():
+    if _sw.handle_restart_argv(sys.argv[1:]):   # python -m xxx restart_self_cli
+        return 0
+    ...
+    _sw.port = args.port          # 端口以实际启动参数为准
+```
+
+`SrcWatchService` 负责：`L_SRC_WATCH` 硬门控（非 `.dev_mod` 一律关，页面上也打不开）、
+状态文件 `runtime_dir/src_watch.json`、`/__dev__/src_watch` 的 GET/POST、独立进程自重启
+（`/F` 单杀 → 等端口释放 → 清 `.solo` 残留 → `wuwor <pkg> [.dev_mod] .solo -- <alias>`）、
+可选 `owns_port` 判定（占端口者是无关进程就拒绝误杀）、`jinja_env` 跟随开关切 auto_reload。
+
+**两个必须记住的坑（都踩过）**
+1. **顺序**：`SrcHotReload.__init__` 就按 `L_SRC_WATCH` 决定初始开关，所以门控必须**先**解析并写进 env、
+   **再**构造监视器。写成"先构造、`start()` 里再解析"→ 非 dev 启动也会起监视线程，硬门控失效。
+2. **`mount()` 的注册方式**：FastAPI 与 FastHTML 都用 `app.get(path)(fn)` / `app.post(path)(fn)`，
+   但 **FastHTML 的 `add_route(route)` 只收一个参数**（签名与 Starlette 不同），别照 Starlette 写。
+
+**收编记录（2026-09）**：新接入的 6 个服务全部走 helper；随后 `lugwit_auth`、`lugwit_baidu_netdisk`、
+`l_WChat` 也从各自的私有实现**收编到 helper**——各删掉约 200 行重复代码（门控/状态/自重启/清 `.solo`/
+开关接口），只保留差异参数：auth 的 `endpoint="/api/v1/auth/src_watch"`、
+网盘的 `restart_exts=(".py",".html")` + `owns_port=service_cli._is_ours` + `runtime_dir=state_dir()`、
+l_WChat 的 `exclude_dirs=DEFAULT_EXCLUDE_DIRS+("wchat-android",)`。
+收编后逐服务回归验证：门控、端点路径、`restart_exts`、`owns_port`、重启命令（含 `.dev_mod` 保留）与收编前**完全一致**。
+只剩 `l_homepage` 保持独立实现（SSE 块刷新 + 重启历史 + 自卡分流，超出 helper 通用范围）。
+
+---
+
+## 接入服务清单（2026-09 全量迁移）
+
+| 服务 | 卡/别名 | 端口 | 入口模块（重启执行进程） | 备注 |
+|---|---|---|---|---|
+| l_homepage | homepage_start | 8090 | l_homepage.homepage_cli | 独立实现（SSE 块刷新 + 重启历史 + 自卡分流），未用 helper |
+| lugwit_auth | lugwit_auth_server | 1027 | lugwit_auth.auth_server | helper（已收编）；**endpoint `/api/v1/auth/src_watch`**（nginx 前缀归属） |
+| lugwit_baidu_netdisk | baidu_netdisk_web | 1028 | lugwit_baidu_netdisk.web_server | helper（已收编）；`restart_exts` 含 `.html`（页面是 import 期烘死常量）；`owns_port=service_cli._is_ours`；endpoint `/api/src_watch` |
+| l_WChat | l_wchat_backend | 1234 | l_WChat.app（别名改 `python -m l_WChat.app`） | helper（已收编）；`exclude_dirs` 加 `wchat-android` |
+| l_model_hub | l_model_hub_server | 8462 | l_model_hub.server | helper；`keys.py` 写包内 `config.json`，**别进 restart_exts** |
+| l_mindmap（目录 `l_mindmap_fasthtml`） | l_mindmap_server | 8100 | l_mindmap.server | helper；app 是 **FastHTML**；页面头部是 Python 常量 → 只监视 .py |
+| l_mindmap_mmd | l_mindmap_mmd_server | 8110 | l_mindmap_mmd.server | helper；Jinja 模板（auto_reload） |
+| l_notepad_server | l_notepad_api | 8765 | l_notepad_server.backend_server | helper；app 在 `create_app()` 里建 → 在那里 `mount`；数据在用户目录 |
+| l_agent_chat | l_agent_chat | 1250 | l_agent_chat.app | helper；launcher 原来**硬编码 `reload=True`**，已改单进程 |
+| ChatRoom 后端 | chatroom_backend | 1026 | app.main（cwd=backend，与 .bat 一致） | helper；app 在 `__main__` 里建 → 在那里 `mount`；`exclude_dirs` 加 `logs/Log/static/data/temp/test`（运行期往包内写日志与缓存） |
+
+- **ChatRoom 前端（chatroom_frontend, 1025）不在此列**：它是 Vite dev server（Node），热更新靠 Vite HMR，
+  与 Python 进程内热重载无关。
+- 各服务开关接口路径按 nginx 归属选：`/__dev__/src_watch`（l_WChat 经 `/l_wchat/` 剥前缀）、
+  `/api/src_watch`（网盘）、`/api/v1/auth/src_watch`（auth）、`/__dev__/src_watch`（其余直连即可）。
+- **`L_SRC_WATCH_PORT` env**：helper 用它把"该停哪个端口"传给重启执行进程（执行进程没走 `--port` 解析）。
+- **别再留 `--reload` 别名/参数**：本轮把 `l_notepad_api_reload`、`l_mindmap_dev` 里失效的
+  `--reload/--reload-dir` 都改成了普通启动（保留别名只为兼容主页卡片的「♻ 热更新」按钮）。
+
+---
+
+## 接入服务的启动门控：**必须带 `.dev_mod` 才有热重载**（auth / netdisk / l_WChat / 其余全部）
+
+主页的规则是"`L_SRC_WATCH` 默认 1"（不带 `.dev_mod` 也热重载）。**auth 与 netdisk 反过来做了硬门控**，
+理由：热重载是开发态能力，生产/日常启动不该带一台监视线程；且它让主页卡片的
+「🔥 热启动」与 `hot` 图标（读进程 `L_DEV_MOD`，`homepage_cli.py:612`）重新自洽。
+
+```python
+def _dev_mode() -> bool:                     # 是否带 .dev_mod 启动
+    return os.environ.get("L_DEV_MOD") == "1"
+
+def _resolve_src_watch(use_env: bool) -> str:
+    if not _dev_mode():
+        return "0"                           # 硬门控：非 dev 一律关，显式 env 也不放行
+    if use_env:
+        cur = os.environ.get("L_SRC_WATCH")   # dev 模式内：显式 env > 存档 > 默认开
+        if cur in ("0", "1"):
+            return cur
+    saved = _load_saved_src_watch()
+    return "1" if (saved is None or saved) else "0"
+```
+
+- `use_env=False` 供**重启执行进程**用：它自己的 env 里是 `L_SRC_WATCH=0`（故意，免得过渡期再触发一次），
+  不能拿它当用户意图。
+- `POST /…/src_watch` 在非 dev 模式**拒绝打开**（`want=True` 被压回 `False`），
+  响应额外带 `dev_mod` 与 `note` 说明原因。
+- 自重启**保留启动模式**：dev 起的，新实例命令仍带 `.dev_mod`（`pkgs = [pkg] + (['.dev_mod'] if _dev_mode() else []) + ['.solo']`），
+  否则自重启一次就把热重载门控关死了。
+- 手动验证：`wuwor lugwit_auth .solo -- lugwit_auth_server` → 静态；加 `.dev_mod` → 热重载默认开。
+
+---
+
+## 第二个接入服务：lugwit_auth（落地于 auth_server.py）
+
+改动文件：`lugwit_auth/999.0/src/lugwit_auth/auth_server.py`
+
+- **去掉 uvicorn `--reload`**：删掉 `--reload/--no-reload` 参数、`reload_dirs`、
+  `reload_includes`、`LUGWIT_AUTH_RELOAD` / `LUGWIT_AUTH_RELOAD_DIR` 判断
+  （`.dev_mod` / `L_DEV_MOD` **保留**，升级为热重载硬门控，见上节）；
+  `uvicorn.run(app, ...)` 单实例普通进程。
+- **接入 `src_hot_reload`**（模块级）：
+  - `watch_root = Path(__file__).resolve().parent`
+  - `restart_cb = _spawn_self_restart("src-watch")`，`on_toggle = _on_src_watch_toggle`
+  - `extra_restart_names=(".env",)`（启动期配置，改了要重启才生效）
+  - `templates.env.auto_reload = _src_watch.is_enabled()`（A 类模板改动）
+- **开关接口 `/api/v1/auth/src_watch`（GET/POST）**：**不是**主页的 `/__dev__/src_watch`
+  —— nginx `location /` 归主页(8090)，非 `/api/` 路径到不了 auth；只有
+  `location /api/v1/auth` 才转 auth(1027)。新服务接入时按 nginx 的归属前缀选路径。
+- **自重启链路**：`_spawn_self_restart()` 拉起独立 `python -m lugwit_auth.auth_server
+  restart_self_cli`（新建进程组 + `L_SRC_WATCH=0`）→ `_restart_self()`：sleep 1s →
+  按 PID **单杀**（`/F`，不带 `/T`，否则会连带杀掉承载拉起的执行进程自己）→
+  等端口释放（≤5s）→ `_kill_stale_solo_wrappers()`（清 `.solo` 残留包装进程，
+  否则新实例被判"已有实例"静默退出）→ `wuwor lugwit_auth .solo -- lugwit_auth_server`。
+- **运行期状态**：`~/.lugwit/lugwit_auth/runtime/src_watch.json`（可用
+  `LUGWIT_AUTH_RUNTIME` 覆盖）；存档只在 `.dev_mod` 启动时生效（见上节门控）。
+- **auth 侧"热更新其他服务"接口**（`POST /api/v1/services/{name}/reload`）不再追加
+  `.dev_mod`，改为原样停旧起新（热重载归各服务进程自己管）。
+- **主页卡片**：`l_homepage/config/services_builtin.json` 里两张 auth 卡的
+  `.dev_mod` **保留**（它就是热重载开关），用户 runtime 里的同名覆盖若被改成不带
+  `.dev_mod`，点「覆盖为系统设置」即可恢复。
+- **共享工具修的一处坑**：`hotreload._keep()` 只按 `Path.suffix` 比对，点文件
+  （`.env`）的 suffix 是空串 → `DEFAULT_WATCH_EXTS` 里的 `.env` 是**死配置**。
+  现改为"扩展名或完整文件名"双向匹配，`_is_restart()` 同样支持按名匹配。
+
+尚未做（auth 侧）：外部 `guard` 常驻守护（服务崩了没人拉）、`on_frontend_change`
+→ SSE（无块哈希局部刷新机制，模板改动靠 `auto_reload` + 手动刷新）。
+
+---
+
+## 第三个接入服务：lugwit_baidu_netdisk（落地于 web_server.py）
+
+改动文件：`lugwit_baidu_netdisk/999.0/src/lugwit_baidu_netdisk/web_server.py`
+
+- **去掉 uvicorn `--reload`**：删 `--reload/--no-reload`、`reload_dirs`、`reload_excludes`、
+  `LUGWIT_NETDISK_RELOAD` 判断（`.dev_mod` / `L_DEV_MOD` 保留为硬门控）；
+  `uvicorn.run(app, ...)` 单实例普通进程（启动前的 `ensure_port_free` 自清障保留）。
+- **`restart_exts=(".py", ".html")`**：本服务的页面不是 Jinja 模板，而是 import 期
+  `_HTML = read_text()` 烘进来的常量 → **改 `.html` 也必须重启**（与主页/lugwit_auth
+  的 auto_reload 语义不同，别照抄）。
+- **开关接口 `/api/src_watch`（GET/POST）**：按 nginx 归属选前缀 —— `location /api/`
+  归网盘(1028)，`/api/v1/` 归 auth，`/` 归主页。
+- **自重启链**：同 lugwit_auth（独立进程 `restart_self_cli` + `/F` 单杀不带 `/T` +
+  等端口释放 + 清 `.solo` 残留包装 + `wuwor lugwit_baidu_netdisk .solo -- baidu_netdisk_web`），
+  但**复用 `service_cli._is_ours()`** 复用其"占端口者是否为本服务旧实例"判定：
+  无关进程占用 → 拒绝误杀并放弃本次重启（不冒双实例风险）。
+  注意 `service_cli._kill_tree()`/`ensure_port_free()` 用的是 `/T`，**不能在重启执行进程里用**
+  （执行进程本身是旧实例的子进程，会被一起清掉）。
+- **状态文件**：复用 `state_dir()` → `~/.lugwit/baidu_netdisk/src_watch.json`。
+- **端口 env**：新增 `LUGWIT_NETDISK_PORT`（默认 1028），供重启执行进程知道该停哪个端口；
+  `--port` 缺省值也读它。
+- **主页卡片**：`l_homepage/config/services_builtin.json` 的网盘卡 `.dev_mod` **保留**（热重载门控）。
+- **已知交互**：`lugwit_auth` 的"进程内挂载网盘"路径（`_mount_baidu_netdisk()`）会
+  `import lugwit_baidu_netdisk.web_server` —— 一旦真挂上，auth 进程里也会起一份本监视线程。
+  现状：auth 已不 requires netdisk，挂载通常失败（仅告警），故不构成实际问题。
+
+尚未做（netdisk 侧）：外部 `guard` 常驻守护、SSE（页面无块哈希局部刷新机制）。
+
+---
+
+## 第四个接入服务：l_WChat（落地于 app.py）
+
+改动文件：`l_WChat/999.0/src/l_WChat/app.py` + `package.py`
+
+- **原本就没开 uvicorn `--reload`**（`package.py` 注释里写着"reload 首次重载后停摆 + 孤儿 worker
+  占端口"），改 `.py` 靠手工跑 `999.0/dev_restart.bat`。现在这套手工动作由进程内 `SrcHotReload` 自动完成。
+- **入口收敛**：别名 `l_wchat_backend` 从 `python -m uvicorn l_WChat.app:app --host 0.0.0.0 --port 1234`
+  改成 **`python -m l_WChat.app`** —— 单进程 `uvicorn.run(app, port=_PORT)`，且 `.solo` 注册
+  （`match_pattern="l_WChat.app"`）、端口自检、热重载、自重启入口全在模块里，只有一处。
+- **硬门控同 auth/netdisk**：必须带 `.dev_mod`；自重启保留启动模式（带 `.dev_mod` 起的仍带）。
+- **端口**：新增 `L_WCHAT_PORT`（默认 1234），模块级端口自检也从写死 1234 改成读 `_PORT`。
+- **开关接口 `/__dev__/src_watch`**：nginx 里 `location /l_wchat/` → 1234 且**剥掉前缀**，
+  所以对外是 `/l_wchat/__dev__/src_watch`，直连 1234 就是 `/__dev__/src_watch`。
+  （**不能像网盘那样用 `/api/`**：nginx 的 `location /api/` 归百度网盘 1028。）
+- **监视范围**：`watch_root = src/l_WChat`，但 `exclude_dirs=DEFAULT_EXCLUDE_DIRS + ("wchat-android",)`
+  —— `wchat-android/` 是安卓壳工程（`.html/.json/.js` 一大堆），不排除会让 Gradle/前端改动触发无关重启。
+- **踩点提醒**：`config.json` 就在 `watch_root` 里、且**是服务自己运行时写的**（`paths.USER_CONFIG_PATH`），
+  所以它只能"被监视"，**绝不能进 `restart_exts`/`extra_restart_names`**，否则写配置 → 重启 → 再写 = 死循环。
+  （实测它落在"非重启类改动"里；当前没传 `on_frontend_change`，等价于忽略。）
+- **托盘路径未带 `.dev_mod`**：`l_tray/Tray.py` 用 `["l_WChat", ".solo", ".ps"]` 启动 → 静态运行；
+  要热重载走主页卡片（卡片 `run_cmd` 带 `.dev_mod`）或 `999.0/dev_restart.bat`（也是 `.dev_mod .solo`）。
+
+尚未做（l_WChat 侧）：外部 `guard` 常驻守护（主页 watchdog + 卡片 `auto_start` 即可，无需自己的 guard）。
+
+---
+
+## 重启的并发防护与熔断（防"无限重启 + 日志刷爆"）
+
+热重载的重启是「独立执行进程 → 停旧 → 拉起新实例」，**每次都是新进程**，所以进程内标志完全不够用。
+没有防护时有三路可以同时动手：热重载监视线程、主页 watchdog（`auto_start` 掉线自拉）、用户点「重启/热更新」。
+两路同时"停旧 + 起新"会各起一个实例（`.solo` 判重有竞态窗口）→ 双实例 / 反复重启；
+若根因是"改坏的代码起不来"，就变成无限重启，把服务日志刷爆（前端日志窗口随之卡死）。
+
+`SrcWatchService` 里的两道闸（均在 `l_app_ready/hotreload_service.py`）：
+
+| 机制 | 位置 | 行为 |
+|---|---|---|
+| **并发锁** | `%TEMP%/lugwit_hotreload/<alias>.lock`（JSON：pid/at/trigger/pkg） | `spawn_self_restart()` 先查锁，被**别的 pid** 持有时直接跳过；执行进程 `restart_self()` 也让位。TTL 30s（进程崩了也不会卡住后续重启） |
+| **熔断** | `<runtime>/restart_guard.json`（events / blocked_until / backoff） | 180s 窗口内重启 ≥4 次 → 封 60s，之后按次**翻倍**（上限 15min）。熔断期间 `spawn_self_restart` 返回 False 且**限频**打日志（30s 一条，不再用日志刷爆日志） |
+
+对外：`restart_in_progress(alias, ttl)` 供外部动作避让；`state()` 带 `breaker`（recent/blocked_until/remaining）
+与 `restart_lock`，前端可提示"已熔断 / 正在重启"。
+
+**主页侧的配合**（`l_homepage/homepage_cli.py`）：
+- `_watchdog_tick()`：`_restart_in_progress(svc)` 为真时**跳过**（原来会在热重载过渡期把服务再拉一个起来）；
+- `_svc_manage_impl()`：`start` 撞上锁直接返回 `skipped: restart-in-progress`；`restart/reload/hotstart`
+  先 `_wait_restart_lock_free()`（≤8s）再动手。
+
+---
+
 ## 主页常驻守护：必须用外部 guard 进程
 
 **通用规律：服务无法自守护自己。** 主页的 watchdog（常驻守护）线程跑在主页进程内，

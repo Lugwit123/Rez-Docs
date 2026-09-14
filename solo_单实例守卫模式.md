@@ -89,12 +89,47 @@ start_orphan_watch()               # worker 孤儿自毁看门狗（仅 Windows�
 > "reload 孤儿 worker 让 `.solo` 守卫失明 → 双实例抢端口"这一坑；主页常驻由外部 `guard` 进程负责。
 > 详见《src_hot_reload 源码热重载与主页常驻》。
 
-## 6. 相关文件
+## 6. `.soloignore`：不杀旧，裁决权交给包
+
+`.solo` 的默认动作是「问一句，5 秒无输入就杀旧起新」——对无 stdin 的隐藏窗口（托盘 / 热重载拉起）等于**必然杀旧**，且它按命令行匹配，看不见 reload 孤儿 worker（§3）。`.soloignore` 把裁决权交还包内。
+
+### 6.1 wuwo 侧（wuwo_rez.py）
+
+- 修饰符集合 `SOLO_IGNORE_MODIFIERS`（`.soloignore`），`_parse_terminal_virtuals` 里剥离并**恒设 `L_SOLO_IGNORE=1`**。
+- 守卫照跑（与 auto_fetch 并行，同一套 `l_app_ready.find_running`），但**跳过交互与 `_kill_pid_tree`**，只把观测结果注入环境变量后继续启动：
+
+  | 变量 | 含义 |
+  | --- | --- |
+  | `L_SOLO_IGNORE` | 恒 `"1"`：wuwo 检测了但不裁决 |
+  | `L_SOLO_PEER_PID` | 旧实例 PID（匹配到的最大 PID，通常即服务本体） |
+  | `L_SOLO_PEER_PIDS` | 全部匹配 PID（含 cmd/wuwor/rez 包装链，清残留时有用） |
+  | `L_SOLO_PEER_CMDLINE` | 旧实例命令行 |
+
+  无旧实例时只留 `L_SOLO_IGNORE`，包可据此区分「检测过且没有」与「没跑检测」。`.solo` 与 `.soloignore` 同现时前者被忽略（不杀旧）。
+
+### 6.2 匹配模式推导（别名 ≠ 命令行）
+
+别名与真实进程命令行不一致时（`l_wchat_backend` vs `python -m l_WChat.app`），守卫按裸别名匹配**永远落空**。wuwo 改为：用 rez 解析结果（`_show_package_info` 返回的 resolved infos）定位到确切版本的 `package.py`，**AST 抽出 `alias()` 命令**，抠出 `-m <模块>` 或 `*.py` 作为匹配模式——与托盘 `rez_launcher.py` 的提取方式一致。
+
+匹配模式经**环境变量**（`L_WUWO_SOLO_APP` / `L_WUWO_SOLO_PATTERN`）传给守卫脚本，**不走 argv**：argv 会出现在守卫自己的命令行里，而 `find_running` 只排除自身祖先链（`_get_ancestor_pids`）、排除不掉并发或残留的守卫进程 → 守卫被自己匹配成"旧实例"，表现为反复杀进程空转。
+
+### 6.3 包侧参考实现（l_WChat/999.0/src/l_WChat/app.py）
+
+`_solo_ignore_takeover()`：按**端口监听者 + peer PID** 清树（`taskkill /F /T`）→ 等端口真正释放（≤5s）→ 本次启动继续；清不掉则保留旧实例并 `exit(1)`，绝不双服务抢端口。选择"接管"而非"让位"的理由：命令行匹配看不见 reload 孤儿子进程（§3），而包内能按端口补上这一刀。
+
+两个必须遵守的细节：
+
+1. **候选 PID 要校验身份**（命令行含 `l_WChat`，或来自 wuwo 已按 `l_WChat.app` 匹配过的 peer 列表），否则会误杀同端口的无关进程。
+2. **`L_SOLO_*` 读完立刻从 `os.environ` 摘掉**：自重启执行进程（`python -m l_WChat.app restart_self_cli`）继承 `os.environ`，留着会让子进程再跑一次接管、把刚起好的实例当旧实例杀掉。
+
+按端口查监听者用 `l_app_ready.port_listener_pids(port)`（netstat 实现，与服务侧自重启共用）。
+
+## 7. 相关文件
 | 文件 | 作用 |
 | --- | --- |
 | `wuwo/wuwor.bat` | 入口，转发 `wuwo.bat rez env ...` |
-| `wuwo/py_modules/wuwo_rez.py` | `.solo` 剥离、**注入 `L_SOLO=1`**、守卫异步启动、交互循环（重启/打开网址/保留）、`_kill_pid_tree` |
-| `wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/__init__.py` | psutil 进程命令行匹配（find_running）；**共享防护工具 `port_in_use` / `start_orphan_watch` / `register_url` / `solo_open_url`** |
+| `wuwo/py_modules/wuwo_rez.py` | `.solo` 剥离、**注入 `L_SOLO=1`**、守卫异步启动、交互循环（重启/打开网址/保留）、`_kill_pid_tree`；**`.soloignore` 只观测不裁决 + 注入 `L_SOLO_PEER_*`**；**alias→匹配模式推导 `_alias_match_pattern`** |
+| `wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/__init__.py` | psutil 进程命令行匹配（find_running）；**共享防护工具 `port_in_use` / `port_listener_pids` / `start_orphan_watch` / `register_url` / `solo_open_url`**；`find_running/is_ready` 支持显式 `pattern` 覆盖 |
 | `l_mindmap_mmd/999.0/src/l_mindmap_mmd/server.py` | 响应 `L_SOLO` 启用孤儿看门狗；启动前端口自检；reload 默认关 |
 | `l_mindmap_mmd/999.0/dev_restart.bat` | 一键重启（杀树 + wuwor 链拉起） |
-| `l_WChat/999.0/src/l_WChat/app.py` | 响应 `.solo`：注册 `l_wchat_backend` 的匹配模式与访问 URL，使守卫能发现运行实例并支持"打开已运行网址" |
+| `l_WChat/999.0/src/l_WChat/app.py` | 响应 `.solo`：注册 `l_wchat_backend` 的匹配模式与访问 URL；**响应 `.soloignore`：`_solo_ignore_takeover()` 清旧后接管** |

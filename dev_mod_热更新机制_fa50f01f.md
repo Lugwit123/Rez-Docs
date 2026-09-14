@@ -132,3 +132,22 @@
 4. **netdisk 启动自清障**：见 §2.2。
 5. **netdisk 反代前缀 middleware 自剥**（弃用 uvicorn root_path）：见 §2.2；详见《Nginx反向代理机制》§4.1.1。
 6. **主页弃用 uvicorn --reload，改用 `src_hot_reload`**（2026-09）：主页 `--reload` 会生成 `.solo` 守卫看不见的孤儿 worker → 双实例抢端口；且无 watchfiles 时没监听模板。改为模板 `auto_reload` + 源码监听自重启（`l_app_ready/src_hot_reload`，统一 `L_SRC_WATCH`），主页单实例运行；主页常驻由外部 `guard` 进程负责（进程内 watchdog 无法自拉）。详见《src_hot_reload 源码热重载与主页常驻》。
+7. **`lugwit_auth` 接入 `src_hot_reload`**（2026-09）：删 `--reload/--no-reload`、`LUGWIT_AUTH_RELOAD(_DIR)`；**`.dev_mod`（`L_DEV_MOD`）升级为热重载硬门控**——不带 `.dev_mod` 一律静态运行、开关也打不开；自重启链 + 开关 `/api/v1/auth/src_watch`；卡片 `.dev_mod` 保留。详见《src_hot_reload…》。
+8. **`lugwit_baidu_netdisk` 接入 `src_hot_reload`**（2026-09）：删 `--reload/--no-reload`、`LUGWIT_NETDISK_RELOAD`；同样硬门控；因页面是 import 期 `read_text()` 常量，`restart_exts=(".py", ".html")`（改 .html 也重启）；开关 `/api/src_watch`（nginx 里 `/api/` 归网盘）；卡片 `.dev_mod` 保留。详见《src_hot_reload…》。
+9. **`l_WChat` 接入 `src_hot_reload`**（2026-09）：它原本就没开 `--reload`（改 .py 靠手工 `dev_restart.bat`），现在改 `.py` 自动重启；别名 `l_wchat_backend` 从 `python -m uvicorn …:app --port 1234` 收敛为 `python -m l_WChat.app`（.solo 注册/端口自检/热重载同一入口）；同样硬门控；开关 `/__dev__/src_watch`（nginx `location /l_wchat/` 剥前缀转发）；`exclude_dirs` 追加 `wchat-android`。详见《src_hot_reload…》。
+10. **其余 6 个服务全量迁移**（2026-09）：`l_model_hub`(8462)、`l_mindmap`(8100)、`l_mindmap_mmd`(8110)、
+    `l_notepad_server`(8765)、`l_agent_chat`(1250)、`ChatRoom 后端`(1026) 统一接入新架构。
+    为免 10 份重复代码，先把整套 Windows 动作收进共享封装
+    **`l_app_ready.hotreload_service.SrcWatchService`**（门控 / 状态 / 自重启 / 开关接口），
+    服务侧只剩 ~15 行接入 + `handle_restart_argv` 分派。
+    删掉的旧开关：`--reload/--no-reload`（l_notepad_server、l_mindmap、l_mindmap_mmd）、
+    `CHATROOM_RELOAD`（ChatRoom）、`l_agent_chat.launcher` 里**硬编码的 `reload=True`**；
+    失效的 `--reload` 别名（`l_notepad_api_reload`、`l_mindmap_dev`）改为普通启动。
+    另修正内置卡片 `L Notepad 笔记/管理` 的包名（`l_notepad` → `l_notepad_server`，前者磁盘上并不存在）。
+    **ChatRoom 前端（Vite, 1025）不在此列**：它的热更新是 Vite HMR。详见《src_hot_reload…》。
+11. **`lugwit_auth` / `lugwit_baidu_netdisk` / `l_WChat` 收编到共享封装**（2026-09）：三者原先各有一份 ~200 行
+    私有热重载实现（门控 / 状态文件 / 自重启 / 清 `.solo` / 开关接口），全部删除，改用
+    `l_app_ready.hotreload_service.SrcWatchService`，只保留差异参数（auth 的 `endpoint`、网盘的
+    `restart_exts`/`owns_port`/`state_dir()`、l_WChat 的 `exclude_dirs`）。行为不变（已逐服务回归验证：
+    门控 / 端点路径 / restart_exts / owns_port / 重启命令一致）。只剩 `l_homepage` 独立实现
+    （SSE 块刷新 + 重启历史 + 自卡分流）。详见《src_hot_reload…》。

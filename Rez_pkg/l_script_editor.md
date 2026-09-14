@@ -7,7 +7,7 @@
 | 包路径 | `rez-package-source/l_script_editor/999.0` |
 | 依赖 | `python-3.12` / `pyside6` / `Lugwit_Module` / `l_qt_wgt_lib` / `l_agent_tool` |
 | 启动 | `wuwor l_script_editor -- l_script_editor_demo`（组件演示）<br>`wuwor l_script_editor -- l_script_editor_server`（无 UI 常驻服务）<br>`wuwor l_script_editor -- l_script_editor_test`（运行测试） |
-| 测试 | `python src\run_lse_tests.py`（63 用例，offscreen 无头） |
+| 测试 | `python src\run_lse_tests.py`（71 用例，offscreen 无头） |
 
 ---
 
@@ -92,6 +92,8 @@ curl.exe http://127.0.0.1:8764/status
   "editor_available": true,
   "protocol_version": "1.1",
   "auth_required": false,
+  "auth_scope": "off",
+  "auth_loopback_exempt": true,
   "file_jail": false,
   "ui_automation": true,
   "executing": false,
@@ -102,6 +104,14 @@ curl.exe http://127.0.0.1:8764/status
 ```
 
 `executing` / `exec_elapsed_s` 用于观测「Qt 主线程当前是否被远程代码占用、已占用多久」。
+
+三个鉴权字段配合看（都是**每个请求实时**按环境变量算出来的，运维改完令牌立即生效，不必重启）：
+
+| 字段 | 含义 |
+|------|------|
+| `auth_required` | 当前是否要求令牌（`SCRIPT_EDITOR_TOKEN` 有值即 `true`） |
+| `auth_scope` | 令牌生效范围：`non_loopback`（**只卡跨机**；本机回环免令牌，默认）或 `off`（没令牌 = 不鉴权） |
+| `auth_loopback_exempt` | 回环免令牌开关；`SCRIPT_EDITOR_AUTH_LOOPBACK_EXEMPT=0` 可关掉（详见 §3A.2） |
 
 ### 3.2 `GET /execute` — URL 参数最简调用（推荐）
 
@@ -531,6 +541,21 @@ editor_tab.start_http_server(host="127.0.0.1")        # 显式本机
 | `SCRIPT_EDITOR_TOKEN` | 访问令牌。设置后除 `/status` `/docs` 外所有端点要求携带：`X-Editor-Token: <token>` 或 `Authorization: Bearer <token>` 或 `?token=<token>` |
 | `SCRIPT_EDITOR_ALLOW_INSECURE` | 设为 `1` 显式跳过非回环守卫（自担风险） |
 | `SCRIPT_EDITOR_FILE_ROOTS` | 文件白名单目录（os.pathsep 分隔，Windows 用 `;`）。设置后 `/upload` `/download` `/upload_folder` `/execute` 的文件路径必须落在其中，越界返回 403；未设置则不限制 |
+| `SCRIPT_EDITOR_HTTP_HOST` | 监听地址，默认 `127.0.0.1`（仅本机）。显式设 `0.0.0.0` 才监听局域网/公网 —— 那等于把"任意代码执行"端口放出去，务必同时配令牌 + 防火墙源限制 |
+| `SCRIPT_EDITOR_AUTH_LOOPBACK_EXEMPT` | 回环免令牌开关，**默认开**（见下）。设 `0`/`false`/`no`/`off` 关闭 |
+| `SCRIPT_EDITOR_ENV_NO_REGISTRY` | 设 `1` 时**不做注册表回退**，只认进程环境变量（测试 / 多实例隔离用） |
+
+**回环免令牌（默认开）**：本机调本机不该被门禁挡住，判定规则是
+
+- 对端是回环（`127.0.0.1` / `::1`）**且**请求上没有 `X-Forwarded-For` / `X-Real-IP` → **免令牌**；
+- 其余（跨机直连、经反代转发）→ **必须带令牌**。
+
+⚠️ **反代场景的硬约束**：经 nginx 转发进来的请求会带 `X-Forwarded-For`，所以仍要求令牌 —— 这正是保护点。
+反代配置里那行 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` **不能删**：删掉后转发请求会被当成"本机直连"，回环豁免生效 → 公网任何人无需令牌即可执行任意代码。
+
+**环境变量是每个请求实时读的**：`SCRIPT_EDITOR_TOKEN` / `SCRIPT_EDITOR_FILE_ROOTS` 改完立即生效，不用重启服务。
+Windows 上 `setx` 只写注册表、已运行进程的 `os.environ` 看不到，所以读取顺序是
+**进程环境 → `HKCU\Environment` → `HKLM\...\Session Manager\Environment`**（可用 `SCRIPT_EDITOR_ENV_NO_REGISTRY=1` 关掉回退）。
 
 ```powershell
 # 跨机器安全用法（示例）
@@ -546,6 +571,8 @@ curl.exe -X POST http://192.168.1.100:8764/execute -H "X-Editor-Token: 一串随
 - `/status` 与 `/docs` 免鉴权（仅暴露健康状态与文档，无敏感信息）
 - 令牌校验用 `hmac.compare_digest`，防时序攻击
 - `/upload_folder` 的 `rel_path` 始终有路径穿越防护（拒绝 `..` / 绝对路径 / 盘符）
+- 单请求体积上限约 **117KB**（超出 413）：大文件用 `POST /execute` 分片追加写盘，或直接用 `l_nginx` 包的 `tools/remote_sync.py`（自动分批 + 分片 + 重试；见 §4.1）
+- 运维建议：8764 优先**只绑回环**（本机自用）；确需跨机时配令牌 + 防火墙只放行来源 IP，别长期对全网开放
 
 ---
 
@@ -611,6 +638,27 @@ curl.exe -X POST http://192.168.1.100:8764/download ^
   -H "Content-Type: application/json" ^
   -d "{\"remote_path\":\"D:/remote_app/logs/run.log\"}"
 ```
+
+### 4.2 批量同步整个文件夹（命令行推荐）
+
+文件一多、或想把一批改动"整体推上去"时，别一个个调 `/upload` —— 连续多次 POST 容易被中间设备 RST（`WinError 10054`）。
+`l_nginx` 包里的 `tools/remote_sync.py` 走 `/upload_folder` 批量推，并自动**分批**（单请求 ≤ 60KB）、
+**分片**（单个大文件改走 `/execute` 追加写盘）、**失败重试**：
+
+```powershell
+# 把包目录同步到服务器同名路径（示例：只推 conf 与源码）
+wuwor l_nginx -- python <l_nginx包>\999.0\tools\remote_sync.py ^
+  --local-dir  D:/TD_Depot/.../l_nginx/999.0 ^
+  --remote-dir D:/td_depot/.../l_nginx/999.0 ^
+  --include "conf/*.conf" --include "src/**/*.py" --include "tools/*.py" ^
+  --host http://121.196.144.88:8764 --token <SCRIPT_EDITOR_TOKEN>
+
+# 先看会推哪些文件（不发请求）
+... --dry
+```
+
+> 两个必须注意：① `--remote-dir` 要落在远端 `SCRIPT_EDITOR_FILE_ROOTS` 白名单内，否则 403；
+> ② 跨机走 nginx 时把 `--host` 换成 `https://lugwit.duckdns.org/script_editor`（见 `Rez-Docs/Rez_pkg/HTTPS证书与域名申请总结.md`）。
 
 ---
 
@@ -795,7 +843,7 @@ python src\run_lse_tests.py
 python src\smoke_e2e.py
 ```
 
-覆盖范围（63 用例）：`/execute`（POST/GET/自动上传/异常）、`/execute_async`
+覆盖范围（71 用例）：`/execute`（POST/GET/自动上传/异常）、`/execute_async`
 （提交/轮询/TTL 清扫）、桥接重入保护、`/ui/*`（tree/locate 7 种 by/action
 12 种动作/wait 10 种 state/screenshot）、令牌鉴权（header/Bearer/query）、
 文件白名单 jail、非回环绑定守卫。
