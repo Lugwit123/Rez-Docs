@@ -7,7 +7,8 @@
 | 包路径 | `rez-package-source/l_script_editor/999.0` |
 | 依赖 | `python-3.12` / `pyside6` / `Lugwit_Module` / `l_qt_wgt_lib` / `l_agent_tool` |
 | 启动 | `wuwor l_script_editor -- l_script_editor_demo`（组件演示）<br>`wuwor l_script_editor -- l_script_editor_server`（无 UI 常驻服务）<br>`wuwor l_script_editor -- l_script_editor_test`（运行测试） |
-| 测试 | `python src\run_lse_tests.py`（71 用例，offscreen 无头） |
+| 测试 | `python src\run_lse_tests.py`（83 用例，offscreen 无头） |
+| 部署 | `python tools\deploy_remote.py`（把本包 `src` 同步到远端 + 重启远端 8764 服务，见 §4.3） |
 
 ---
 
@@ -94,6 +95,7 @@ curl.exe http://127.0.0.1:8764/status
   "auth_required": false,
   "auth_scope": "off",
   "auth_loopback_exempt": true,
+  "auth_ip_whitelist": 0,
   "file_jail": false,
   "ui_automation": true,
   "executing": false,
@@ -105,13 +107,16 @@ curl.exe http://127.0.0.1:8764/status
 
 `executing` / `exec_elapsed_s` 用于观测「Qt 主线程当前是否被远程代码占用、已占用多久」。
 
-三个鉴权字段配合看（都是**每个请求实时**按环境变量算出来的，运维改完令牌立即生效，不必重启）：
+鉴权是**四个字段配合看**（都是**每个请求实时**按环境变量算出来的，运维改完令牌立即生效，不必重启）；后两个是容量/治理观测字段：
 
 | 字段 | 含义 |
 |------|------|
 | `auth_required` | 当前是否要求令牌（`SCRIPT_EDITOR_TOKEN` 有值即 `true`） |
 | `auth_scope` | 令牌生效范围：`non_loopback`（**只卡跨机**；本机回环免令牌，默认）或 `off`（没令牌 = 不鉴权） |
 | `auth_loopback_exempt` | 回环免令牌开关；`SCRIPT_EDITOR_AUTH_LOOPBACK_EXEMPT=0` 可关掉（详见 §3A.2） |
+| `auth_ip_whitelist` | IP 白名单条目数（`0` = 未启用）。命中白名单的对端 IP 免令牌（详见 §3A.2） |
+| `file_jail` | 是否启用文件路径白名单（`SCRIPT_EDITOR_FILE_ROOTS` 有值即 `true`；详见 §3A.2） |
+| `inflight_available` | 并发剩余槽位（受 `SCRIPT_EDITOR_MAX_INFLIGHT` 控制，默认 8）；槽位满时 `/execute` 会在 1 秒后返回 503 |
 
 ### 3.2 `GET /execute` — URL 参数最简调用（推荐）
 
@@ -543,7 +548,13 @@ editor_tab.start_http_server(host="127.0.0.1")        # 显式本机
 | `SCRIPT_EDITOR_FILE_ROOTS` | 文件白名单目录（os.pathsep 分隔，Windows 用 `;`）。设置后 `/upload` `/download` `/upload_folder` `/execute` 的文件路径必须落在其中，越界返回 403；未设置则不限制 |
 | `SCRIPT_EDITOR_HTTP_HOST` | 监听地址，默认 `127.0.0.1`（仅本机）。显式设 `0.0.0.0` 才监听局域网/公网 —— 那等于把"任意代码执行"端口放出去，务必同时配令牌 + 防火墙源限制 |
 | `SCRIPT_EDITOR_AUTH_LOOPBACK_EXEMPT` | 回环免令牌开关，**默认开**（见下）。设 `0`/`false`/`no`/`off` 关闭 |
+| `SCRIPT_EDITOR_IP_WHITELIST` | IP 白名单（逗号 / 分号 / 空白分隔），命中的对端 IP **免令牌**。支持单个 IP 与 CIDR 网段，如 `192.168.1.9,183.136.182.0/24,::1`；未设置 = 不启用 |
 | `SCRIPT_EDITOR_ENV_NO_REGISTRY` | 设 `1` 时**不做注册表回退**，只认进程环境变量（测试 / 多实例隔离用） |
+| `SCRIPT_EDITOR_MAX_INFLIGHT` | 同时执行的 `/execute` 请求上限，默认 `8`。等空位超过 1 秒仍满员则返回 **503「服务繁忙」**；`/status` 的 `inflight_available` 是剩余槽位 |
+| `SCRIPT_EDITOR_MAX_ASYNC_TASKS` | 异步任务表上限，默认 `256`。达到上限后 `/execute_async` 直接返回 **503「异步任务过多」**，防任务无限堆积 |
+| `SCRIPT_EDITOR_ASYNC_TTL` | 异步任务结果保留秒数，默认 `86400`，过期后由**惰性清扫**回收（提交/查询时触发，见 §6） |
+
+> 上面 3 个容量/生命周期变量是**进程启动时读取一次**（与令牌/白名单的"每请求实时读"不同），改完需重启服务。
 
 **回环免令牌（默认开）**：本机调本机不该被门禁挡住，判定规则是
 
@@ -553,7 +564,36 @@ editor_tab.start_http_server(host="127.0.0.1")        # 显式本机
 ⚠️ **反代场景的硬约束**：经 nginx 转发进来的请求会带 `X-Forwarded-For`，所以仍要求令牌 —— 这正是保护点。
 反代配置里那行 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` **不能删**：删掉后转发请求会被当成"本机直连"，回环豁免生效 → 公网任何人无需令牌即可执行任意代码。
 
-**环境变量是每个请求实时读的**：`SCRIPT_EDITOR_TOKEN` / `SCRIPT_EDITOR_FILE_ROOTS` 改完立即生效，不用重启服务。
+#### IP 白名单免令牌（`SCRIPT_EDITOR_IP_WHITELIST`）
+
+给固定的几台客户端机器开"免令牌"通道，免去共享令牌的分发与轮换。判定规则：
+
+- 条目支持**单个 IP**（`192.168.1.9`）与 **CIDR 网段**（`10.0.0.0/8`、`183.136.182.0/24`、`::1`）；
+- 解析不了的条目**直接忽略** —— 宁可仍要求令牌，也不误放行；
+- 只看 TCP 对端 `REMOTE_ADDR`，**不看 `X-Forwarded-For` / `X-Real-IP`**（这些头调用方可伪造）。服务挂在反代后面时，把**反代机器自身**的 IP 加进白名单；
+- 与令牌一样**每个请求实时读取**（含注册表回退），`setx` 后无需重启，`/status` 的 `auth_ip_whitelist` 立刻反映条目数。
+
+⚠️ **语义边界**：白名单只是"免令牌"，**不是**"只允许这些 IP 访问"。未命中的来源仍按原规则处理（配了令牌就要令牌；没配令牌则本来就能进）。
+**IP 白名单比令牌弱**：令牌是"知道秘密才行"，IP 是"从这条网线上来就行"——共享出口（公司 NAT）下白名单等于对该出口的所有机器放开。生产环境建议令牌与白名单并存，别只靠 IP。
+
+> **本机现场配置（截至 2026-09-15）**：开发机出口 IP 所在网段 `183.136.182.0/24` 已加入远端脚本编辑器
+> `121.196.144.88:8764` 的白名单 —— **本机访问远端免 token**（远端 `setx SCRIPT_EDITOR_IP_WHITELIST 183.136.182.0/24`，
+> `/status` 显示 `auth_ip_whitelist: 1`）。因此下面这些调用都不带 `X-Editor-Token`：
+>
+> ```powershell
+> curl.exe http://121.196.144.88:8764/status
+> curl.exe -X POST http://121.196.144.88:8764/execute --data-binary "@code.json"
+> ```
+>
+> 注意：出口 IP 是 NAT 池、**会漂移**（实测同一时段本机出口出现过 `183.136.182.135`、`183.136.182.144`，
+> 某探测站还给出 `103.126.92.188`），故白名单按 `/24` 兜；远端若看到的源 IP 落到别的网段，免 token 会失效
+> （回到"必须带 `SCRIPT_EDITOR_TOKEN`"），届时按远端实际看到的源 IP 调整——在远端执行
+> `netstat -ano | findstr 8764` 看 `ESTABLISHED` 行的对端地址即可。
+> 撤销：远端 `setx SCRIPT_EDITOR_IP_WHITELIST ""`（清空）或 `reg delete HKCU\Environment /v SCRIPT_EDITOR_IP_WHITELIST /f`。
+>
+> 这套白名单也支撑了「本机一键部署本包源码到远端」的免 token 上传（见 §4.3）。
+
+**环境变量是每个请求实时读的**：`SCRIPT_EDITOR_TOKEN` / `SCRIPT_EDITOR_FILE_ROOTS` / `SCRIPT_EDITOR_IP_WHITELIST` 改完立即生效，不用重启服务。
 Windows 上 `setx` 只写注册表、已运行进程的 `os.environ` 看不到，所以读取顺序是
 **进程环境 → `HKCU\Environment` → `HKLM\...\Session Manager\Environment`**（可用 `SCRIPT_EDITOR_ENV_NO_REGISTRY=1` 关掉回退）。
 
@@ -659,6 +699,49 @@ wuwor l_nginx -- python <l_nginx包>\999.0\tools\remote_sync.py ^
 
 > 两个必须注意：① `--remote-dir` 要落在远端 `SCRIPT_EDITOR_FILE_ROOTS` 白名单内，否则 403；
 > ② 跨机走 nginx 时把 `--host` 换成 `https://lugwit.duckdns.org/script_editor`（见 `Rez-Docs/Rez_pkg/HTTPS证书与域名申请总结.md`）。
+
+### 4.3 一键部署本包源码到远端并重启远端服务
+
+改了 `l_script_editor` 源码后，让**远端**那台机器用上新代码，需要"推源码 + 重启它的 8764 服务"两件事一起做。
+入口是本包自带的 `tools/deploy_remote.py`（本机跑）：
+
+```powershell
+cd <l_script_editor包>\999.0
+
+python tools\deploy_remote.py                 # 同步 src + 重启远端服务（默认目标 121.196.144.88:8764）
+python tools\deploy_remote.py --dry           # 只列出会推哪些文件（不发请求、不重启）
+python tools\deploy_remote.py --no-restart    # 只同步不重启（远端起不来时更稳，见下）
+python tools\deploy_remote.py --host http://127.0.0.1:8764
+```
+
+也可以在脚本编辑器里当**预设命令**用（脚本编辑器的「收藏」目录就是 `~/.Lugwit/config/.favorites/*.py`，
+显示名 = 文件名去掉末尾 `_<时间戳>`；本机已放好一条 `部署l_script_editor到服务器并重启_20260915_235900.py`）：
+打开收藏 → 选中 →「加载收藏到新Tab」→ 运行。改预设里的 `EXTRA = []` 可切换
+`["--dry"]` / `["--no-restart"]`。
+
+四步链路（`deploy_remote.py` 内部）：
+
+| 步 | 做什么 | 实现 |
+|:--:|------|------|
+| 1 | 同步源码 | 调 `l_nginx/999.0/tools/remote_sync.py` 把 `<本包>/src` → 远端同路径（分批 + 大文件分片，见 §4.2） |
+| 2 | 落 helper | `POST /execute` 写 `D:/TD_Depot/Temp/lse_restart_helper.py`，并以**分离进程**启动它（`DETACHED_PROCESS`） |
+| 3 | 重启 | helper 先 `sleep 3s`（让本次 HTTP 响应返回）→ `taskkill` 掉监听 8764 的 pid → 等端口释放 → `wuwo\wuwor.bat l_script_editor -- l_script_editor_server` 拉起（`SCRIPT_EDITOR_HTTP_HOST=0.0.0.0`）；**端口没回来就重试 3 次**，过程写 `D:/TD_Depot/Temp/lse_restart_helper.log` |
+| 4 | 判定成功 | 本机轮询 `/status`，`server_id` 变化即视为重启完成（超时 `--timeout`，默认 120s） |
+
+> **为什么重启要绕这么一圈**：不能在 8764 的请求里杀掉提供服务的那条进程（自杀就没人拉起来了），
+> 所以必须由远端的分离进程来做 kill + restart。
+
+**实测（截至 2026-09-15，远端 121.196.144.88）**：同步 28 个文件 `written=28 errors=0`；
+helper 日志 `23:57:22 before listeners=['7628']` → `23:57:23 taskkill 7628 rc=0` →
+`23:57:23 port free: True` → `23:57:33 attempt 1: port 8764 back up`；
+`/status` 的 `server_id` 由 `01733b57` 变为 `5a79eee3`（**中断约 10 秒**）。
+
+⚠️ **风险与前提**：
+- 重启期间 8764 有十几秒不可用；正在执行的远程任务会被中断。
+- helper 3 次都拉不起来 = 8764 彻底没了，而操作远端恰恰只能靠 8764 —— 这时候只能上那台机器用托盘
+  「脚本编辑远程服务」菜单或命令行恢复。所以**不确定远端 `wuwo\wuwor.bat` 与包路径可用时，先用 `--no-restart`** 只同步。
+- 本机能免 token 直连，靠的是远端 `SCRIPT_EDITOR_IP_WHITELIST` 含本机出口网段（见 §3A.2）；
+  `/upload_folder` 同样吃这条豁免（白名单命中即放行，不校验令牌）。换机器或换出口网段后需重新加白名单，或改用 `--token`。
 
 ---
 
@@ -843,10 +926,11 @@ python src\run_lse_tests.py
 python src\smoke_e2e.py
 ```
 
-覆盖范围（71 用例）：`/execute`（POST/GET/自动上传/异常）、`/execute_async`
+覆盖范围（83 用例）：`/execute`（POST/GET/自动上传/异常）、`/execute_async`
 （提交/轮询/TTL 清扫）、桥接重入保护、`/ui/*`（tree/locate 7 种 by/action
 12 种动作/wait 10 种 state/screenshot）、令牌鉴权（header/Bearer/query）、
-文件白名单 jail、非回环绑定守卫。
+**IP 白名单**（单 IP / CIDR 命中、非命中仍 401、非法条目被忽略、
+`X-Forwarded-For` 伪造不生效、`/status` 条目数）、文件白名单 jail、非回环绑定守卫。
 
 ---
 
@@ -860,8 +944,10 @@ python src\smoke_e2e.py
 | `register_default_tool` / `DEFAULT_TOOLS` | 模块级默认工具注册 |
 | `ScriptEditorHttpServer` | HTTP 服务管理器（后台线程；默认 `127.0.0.1`，非回环需令牌） |
 | `check_bind_guard` / `_read_token` / `_read_file_roots` | 安全守卫与环境变量解析（`http_server`） |
+| `_parse_ip_whitelist` / `_ip_whitelisted` / `_read_ip_whitelist_raw` | IP 白名单解析（单 IP + CIDR，非法条目忽略）与对端 IP 匹配（仅用 `REMOTE_ADDR`）（`http_server`） |
 | `ui_automation` | UI 自动化引擎：`parse_locator` / `resolve_widget` / `dump_widget_tree` / `perform_action` / `wait_for` / `grab_png_b64` |
 | `CodeEditorWithCompletion` / `CodeCompleter` | 编辑器 + 自动补全 |
 | `PythonHighlighter` / `SyntaxHighlightColors` | 语法高亮 |
 | `SessionManager` | 会话管理 |
 | `reload_mod()` | 深度重载整个库（含子模块），返回重载后的 `ScriptEditorTab` 类 |
+| `tools/deploy_remote.py`（脚本，非 API） | 一键部署：调 `remote_sync` 同步本包 `src` → `POST /execute` 落分离 helper → 杀 8764 进程并重新拉起 `l_script_editor_server` → 轮询 `/status` 判定（见 §4.3） |
