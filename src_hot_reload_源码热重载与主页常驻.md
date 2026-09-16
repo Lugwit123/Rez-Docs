@@ -51,7 +51,7 @@ _src_watch = src_hot_reload(
 - `is_enabled()` / `set_enabled(on)` —— 开关（运行时切换，即时生效，无需重启）
 - `state()` —— 返回 `{enabled, env_var, watch_root, watch_exts, restart_exts}`
 - `restart_exts`（默认 `.py`）+ `extra_restart_names`（额外视为"要重启"的具体文件名，如 `services.json`）
-- 可调参数：`watch_exts` / `exclude_dirs` / `exclude_suffixes` / `interval`(1s) / `debounce`(2s) / `cooldown`(10s)
+- 可调参数：`watch_exts` / `exclude_dirs` / `exclude_suffixes` / `interval`(1s) / `debounce`(2s) / `cooldown`(10s) / `debounce_max`(60s)
 
 > FastAPI 开关接口：**不要在工具内部用函数内局部定义的 `pydantic.BaseModel` 挂路由**
 > （会被 FastAPI 当成 query 参数，报 `loc:["query","body"]`）——请在服务里用**模块级路由**
@@ -66,6 +66,17 @@ _src_watch = src_hot_reload(
   - 检测到 `.py` 变化 → 等 `debounce` 秒确认稳定（无新变化）→ 才触发重启；
   - 触发后 `cooldown` 秒内不再次触发（罩住重启过渡期/新进程重建）；
   - `exclude_dirs` 必含 `__pycache__`（否则重启自产 `.pyc` 触发重启死循环）。
+- ⚠ **"防抖窗口内第二次写入会吞掉改动"的坑（2026-09-16 修复）**：
+  旧实现（`wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/hotreload.py::_tick`）在
+  "rescan 发现还在变"时就把快照更新成**已变状态**，于是本轮改动永久丢失 ——
+  之后不再有文件事件、下一轮 diff 又是空的 → **永远不重启**（而且没有任何日志，
+  表现就是"改了 .py 但服务没动静"）。
+  触发条件很常见：debounce(2s) 窗口内发生第二次写入 —— 分块写文件（我们自己的
+  8764 `/upload_folder` 上传器就是分块写）、落盘后改 mtime、编辑器多段保存，都会踩到。
+  现在改成：**循环等到"连续 debounce 秒无新变化"再触发，期间不更新快照**，
+  并用 `debounce_max`(60s) 兜底（防止文件一直在写导致永不重启）。
+  回归测试：`wuwo/packages/l_app_ready/1.0.0/tests/test_hotreload_debounce.py`（7 个用例，
+  含"防抖窗口内两次写入必须仍然重启"这条回归点）。
 - **重启回调由服务决定**：`restart_cb` 是服务自定的自重启方式（主页用"独立进程杀旧+起新"）。
 
 ---

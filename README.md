@@ -18,7 +18,7 @@
 | [Rez_pkg/变体哈希与wuwo的处理方法.md](Rez_pkg/变体哈希与wuwo的处理方法.md) | rez-pip 变体目录名含 Windows 非法字符导致"空壳包"的问题,以 reflex 为完整案例 + 排查手册 |
 | [solo_单实例守卫模式.md](solo_单实例守卫模式.md) | `.solo` 单实例守卫实现链路、双实例抢端口事故复盘、server 侧端口自检加固 |
 | [dev_mod_热更新机制_fa50f01f.md](dev_mod_热更新机制_fa50f01f.md) | `.dev_mod` → `L_DEV_MOD=1` 按需启用 uvicorn 热更新,四个后端服务(auth/netdisk/chat/note)接入方式 |
-| [src_hot_reload_源码热重载与主页常驻.md](src_hot_reload_源码热重载与主页常驻.md) | `SrcHotReload` 替代 uvicorn `--reload`:模板即时生效 + 代码变更自重启,根治 reload 孤儿 worker 盲区 |
+| [src_hot_reload_源码热重载与主页常驻.md](src_hot_reload_源码热重载与主页常驻.md) | `SrcHotReload` 替代 uvicorn `--reload`:模板即时生效 + 代码变更自重启,根治 reload 孤儿 worker 盲区 ⚠️ 本机实测：`l_notepad_server` 改 `.py` 时**只记重启、进程不换**，2026-09-16 17:10 一次甚至把 8765 停掉没拉起来（nginx 全 502）——改了 Python 请手动重启，勿依赖它 |
 
 ## 二、包使用文档(Rez_pkg/)
 
@@ -26,6 +26,7 @@
 |------|-----------|
 | [l_script_editor.md](Rez_pkg/l_script_editor.md) | 脚本编辑器组件库:代码编辑/补全/会话管理 + 8764 HTTP 远程执行服务 + `/ui/*` Qt UI 自动化端点 |
 | [l_notepad_server.md](Rez_pkg/l_notepad_server.md) | L Notepad 服务端(8765):Web UI、REST API、多知识库(`/web/kb/{name}`),认证经 lugwit_auth |
+| [l_notepad_搜索接口使用文档.md](Rez_pkg/l_notepad_搜索接口使用文档.md) | **搜索接口怎么用**:`/api/search` 与 `/api/kb/{kb}/search` 参数/返回字段/打分公式、查询语法(引号短语/多字 OR 召回)、`lex/hybrid/sem` 三模式、向量语义(模型切换/阈值/重嵌)、索引维护与权限模型、已知坑 |
 | [l_homepage.md](Rez_pkg/l_homepage.md) | 主页 `/homepage/deps` 依赖拓扑页开发笔记:连线特效、拖拽建边、右键启停、卡片编辑 |
 | [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | 百度网盘当内容寻址 blob 仓 + 简版 Perforce:提交/版本/回滚/签出,改名移动零流量 |
 

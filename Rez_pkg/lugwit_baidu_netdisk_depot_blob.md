@@ -119,6 +119,7 @@ N 份物理文件，互不牵连。
 ### 3.4 迁移与回滚
 
 - **不需要搬数据**：改造时库里 7 行（`/l_wchat` 4、`/rez_pkg` 3）已经在各自库文件夹里，只改键。
+  （注：2026-09-16 起知识库不再各自成库，`/rez_pkg` 的内容已 move 到 `/notes/rez_pkg/`；本句记录的是当时状态。）
 - 键变更由 `connect()` 自动完成（幂等），无需单独脚本。
 - 回滚：`ALTER TABLE depot_blob DROP CONSTRAINT depot_blob_pkey; ADD PRIMARY KEY (md5);`
   然后恢复旧 `blob_put` 的 ON CONFLICT（会退回"先到先得"语义）。

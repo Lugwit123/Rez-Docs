@@ -331,3 +331,153 @@ WebView(拦截层)                WChat(1234)                 1028              
 4. `uploadid` 的有效期与并发限制（多分片并发几路合适）
 5. `precreate` 的 `block_list` 上限与顺序要求（超长文件分片数）
 6. HTTPS 证书方案（自签 vs 正式）与 WebView `cleartext` 关闭后是否影响其他资源
+
+---
+
+## 13. M2 实施记录（2026-09-16）
+
+### 13.1 先纠正两处旧结论
+
+| 旧说法 | 实测 | 依据 |
+|---|---|---|
+| "M1 秒传探测待做" | **已由 1028 内部实现**：`upload_file` / `upload_file_stream` 都是先 `precreate`，`return_type=2` 直接返回，**不发分片、零上行** | `baidu_netdisk_api.py:637`、`:728`；`depot_service.py` 的 `rapid` 计数 |
+| "秒传能命中（重复内容零上行）" | **本应用当前命中不了**：三次实测 precreate 都是 `return_type=1`，`rapidupload` 被 31023 拒 → 代码路径在，能力不在（详见 §13.8） | §13.8 实测表 |
+| §1.2 "整文件一次上传、无分片、无续传" | **已过期**：4MB 分片 + `block_list` 续传（`parts`）早就在用 | `baidu_netdisk_api.py:600-764` |
+
+另：M1 原文"客户端不上传 + 前端零改"自相矛盾 —— 手机不传字节的前提是**手机先报 hash**，
+那就必须有客户端改动；且 WChat(1234) 与 1028 同机，WChat→1028 那一跳是回环，不耗公网。
+**结论：省公网入向只能靠 M2/M3。**
+
+### 13.2 本次落地（M2 小文件直连，手机字节不经服务器）
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 1028 零件 | `lugwit_baidu_netdisk/.../baidu_netdisk_api.py` | 新增 `prepare_upload()`（precreate 探测：命中即返回，未命中给 uploadid/upload_host/parts/block_size）、`finish_upload()`（create + 还原 md5 复核） |
+| 1028 端点 | `.../web_server.py` | 新增 `POST /api/upload/prepare`、`POST /api/upload/finish`；路径白名单 `LUGWIT_UPLOAD_ROOTS`（默认 `/apps/Lugwit/l_wchat`）；票据开关 `LUGWIT_UPLOAD_TICKET_TOKEN`（**默认关**，关时不下发 `access_token` → 客户端自动回退）；`upload_stream` 响应补 `rapid` / `md5_real` |
+| WChat 客户端 | `l_WChat/.../services/baidu_netdisk.py` | 新增 `prepare_upload()` / `finish_upload()`（失败返回 `None` 表示回退） |
+| WChat 端点 | `l_WChat/.../api/routes.py` | 新增 `POST /api/upload/album/prepare`、`POST /api/upload/album/finish`；秒传命中直接在 WChat 侧登记相册记录；md5 不一致返回 502 逼前端回退重传；远端目录/文件名双重校验 |
+| WChat 展示 | `.../api/routes.py` | `_album_ensure_local()`：本地无副本（直传上云）时**懒回源**一次并缓存，`/album/file/{name}` 与马赛克保存都走它（= §6 方案 A） |
+| 前端拦截层 | `l_WChat/.../static/upload_direct.js`（新） | 增量 MD5（4MB 分片）、prepare → 原生直传分片 → finish；失败/无票据一律回退原 `fetch`；`CapacitorHttp` 不可用直接放弃 |
+| 前端挂载 | `l_WChat/.../templates/base.html` | fetch 包装里加拦截入口（`window.__origFetch` 供拦截层内部调 API，避免递归） |
+| 安卓壳 | `capacitor.config.json` ×2、`ServerSwitchPlugin`、`MainActivity`、`AlarmSoundService`、`FloatingBabyOverlay`、`FloatingBabyPlugin`、`www/index.html`、`www/error.html` | `server.url` 由已弃用的 `https://lugwit.duckdns.org` 改为 **`https://121.196.144.88`**（自签 IP 证书，App 已内置同指纹 CA：`res/raw/lugwit_ca.pem` sha256 `1d2e7cd6…`，与线上 443 证书一致）；新增 `ServerSwitchPlugin.apiBase()` —— 无端口的 nginx 入口自动补 `/l_wchat` 前缀，老式 `http://host:1234` 原样；`cleartext` 只对 http 放行 |
+
+### 13.3 已做的验证（离线，不发网络）
+
+| 验证 | 方式 | 结果 |
+|---|---|---|
+| 前端 MD5 正确性 | node 内跑 `static/upload_direct.js` 的 `_md5`，与 `crypto.createHash('md5')` 对比 0B/3B/43B/1KB/4MB/4MB+12345B | 6/6 一致 |
+| WChat 两端点 | `wuwor l_WChat -- python …/lse_wchat_direct_test.py`（打桩 1028，不写相册索引） | 13/13 PASS（503 回退、秒传命中、票据透传、后缀/大小/空 block_list 400、md5 不一致 502、目录越界/`..`/文件名带路径 400） |
+| 1028 两函数 | `wuwor lugwit_baidu_netdisk -- python …/lse_1028_direct_test.py`（打桩百度） | 11/11 PASS（秒传命中、票据齐全、`parts` 续传、precreate 报错、无 uploadid、空 block_list、md5 大小写不敏感、md5 缺失不误判） |
+
+新增集成脚本：`lugwit_baidu_netdisk/999.0/tests/test_upload_direct.py`
+（打真实服务：白名单拒 403 → 首次 prepare → 分片直传 → finish 复核 → **同内容再 prepare 必须 `rapid=true`** → 删文件）。
+
+### 13.4 远端部署记录（2026-09-16）
+
+| 步骤 | 结果 |
+|---|---|
+| 同步 | `remote_sync.py --host http://121.196.144.88:8764`：l_WChat 4 个文件（`api/routes.py`、`services/baidu_netdisk.py`、`static/upload_direct.js`、`templates/base.html`）+ lugwit_baidu_netdisk 2 个文件（`baidu_netdisk_api.py`、`web_server.py`）→ written=6 errors=0 |
+| 重启 | 8764 `/execute` 写助手 → DETACHED 启动：taskkill 1028(pid 13368)/1234(pid 13792) → `wuwor lugwit_baidu_netdisk -- baidu_netdisk_web` → `wuwor l_WChat -- l_wchat_backend`；两端口均起 |
+| 端点自检（远端本机） | 1028 `/api/upload/prepare` → 400「block_list 不能为空」；1234 `/api/upload/album/prepare` → 400；`/finish` 无 uploadid → 503「请回退服务端上传」（**回退语义正确**） |
+| 端点自检（公网 nginx HTTPS） | `https://121.196.144.88/l_wchat/api/upload/album/prepare` → 400（**证明壳里 `apiBase()` 补的 `/l_wchat` 前缀是对的**）；`/baidu/api/upload/prepare` → 401 未登录 lugwit_auth（1028 需 cookie，WChat 侧带 cookie/本机自动令牌） |
+| WChat 实际指向 | `config.json` 的 `baidu_sync_url = http://127.0.0.1:1028/baidu` → 打的是**独立 1028 进程**（新代码，已验 400）；注意 1027 的进程内 `/baidu` 挂载仍是旧模块（404），别把它配回来 |
+
+### 13.5 直传端点的调用方鉴权（已实现，2026-09-16）
+
+**为什么必须有**：`prepare` 会把**账号级、长期有效**的百度 `access_token` 交给调用方，而 WChat 公网可达
+且默认不鉴权（`routes.conf:157-166` 只做反代）。HTTPS 只保护链路，**挡不住"谁在调"**。
+计划 §7 的"M0 HTTPS 硬前置"不足以覆盖这一点。
+
+**做法（用 lugwit_auth 的登录服务）**：
+
+| 项 | 实现 |
+|---|---|
+| 闸门 | `api/auth.py::verify_with_auth` 把请求里的 `lugwit_token`（cookie）或 `Authorization: Bearer` 交给 lugwit_auth 的 `GET /api/v1/auth/me` 校验；200 = 放行 |
+| 为什么走网络校验 | WChat 不必引入 `lugwit_auth` 包依赖，也不复制一份签名密钥（`verify_token` 那套留在 1028 用） |
+| 挂载点 | `_require_login` 依赖同时挂在 `/api/upload/album/prepare` 与 `/finish` 上（未登录 401） |
+| 登录入口 | `POST /api/lugwit/login`（代理到 lugwit_auth 登录，成功后把 token 写进**本域** cookie，HttpOnly，30 天）+ `POST /api/lugwit/logout` + `GET /api/lugwit/me` |
+| 登录页 | `/login`（`templates/login.html`）：填账号密码登录，支持 `?next=` 回跳（只接受本站相对路径） |
+| 发现入口 | 设置页「☁️ 百度云 / Lugwit 网盘」新增「相册照片直传」一行，显示登录状态 + 登录按钮 |
+| 未登录时 | 前端拦截层拿不到 200 → **自动回退**服务端中转（用户无感，只是不省流量） |
+
+**线上验证（2026-09-16，重启 WChat 后）**：
+
+| 检查 | 结果 |
+|---|---|
+| 无 cookie 调 `/api/upload/album/prepare` | 401「未登录 lugwit_auth：直传需先登录」 |
+| 用配置里的账号登录 `/api/lugwit/login` | 200 + `Set-Cookie: lugwit_token=…; HttpOnly; Max-Age=2592000` |
+| 带 cookie 再调 prepare | **200**，返回真实 `uploadid` / `upload_host`（链路 WChat→1028→百度 precreate 打通） |
+| `/api/lugwit/me` | 200，`admin01 / 系统管理员 / role=admin` |
+| `/login` 页面 | 200 |
+
+**开启 `LUGWIT_UPLOAD_TICKET_TOKEN=1` 之前还剩一件**：改掉默认弱口令。
+当前 WChat 配置里是 `admin01 / 666`（登录闸门的安全强度 = 这个口令的强度），
+改密码后需同步更新：WChat `config.json` 的 `lugwit_password`、App 内登录一次。
+不改就是"任何人都能先登录再拿 token"，等于白做闸门。
+
+
+### 13.6 还没做的（按顺序）
+
+1. **重打 APK**（`npx cap sync android` → assembleRelease）：壳的 https+IP 与 CA 信任只在重打包后生效
+2. **真机探针**：验 `CapacitorHttp` 能否发 multipart 二进制到 `d.pcs.baidu.com`（§12-1）。不通过就写 `DirectUploadPlugin`（Kotlin + OkHttp，JS 侧已留好 `window.LwDirectUpload.uploadPart` 接口）
+3. 改掉默认弱口令（见 13.5 末尾）→ 远端 `set LUGWIT_UPLOAD_TICKET_TOKEN=1` 并重启 1028 → 直传真正生效
+4. 验收：手机上传 1 张图，抓包看请求落到 `d.pcs.baidu.com`，服务器网卡计数只涨 KB 级；断开百度域名解析上传，应自动回退且成功
+5. 端到端跑 `lugwit_baidu_netdisk/999.0/tests/test_upload_direct.py`（它需要服务端已开票据开关才能验分片直传段）
+
+### 13.7 风险/回滚
+- **回滚**：远端删掉 `LUGWIT_UPLOAD_TICKET_TOKEN`（或置 0）→ 前端拿不到票据 → 全部走服务端代传，等于回到现状；再不行把 `upload_direct.js` 的 `<script>` 去掉即可。
+- 懒回源把"上传即落本地副本"改成"看过才落"：首次查看某张照片会有一次回源延迟（之后有缓存）。
+- `_album_add_cloud_entry` 登记的记录带 `cloud: true`（无本地文件），删除照片时本地文件可能不存在 —— 删除逻辑已用 `if path.is_file()` 容错。
+
+### 13.8 服务端直传自证（2026-09-16，真打百度）与规则修订
+
+新增 `lugwit_baidu_netdisk/999.0/tests/test_upload_direct_server_side.py`：用**服务端自己的凭据**跑
+precreate → superfile2 → create 全链路，**不需要开票据开关**、不经过 HTTP，用来证明"手机直传"依赖的
+服务端假设。远端实测三例：`--size 1000000`（单片，PASS 4/4）、`4194304`（单片整 4MB，PASS 4/4）、
+默认 `5255225`（两片，PASS 4/4）。
+
+| 结论 | 实测细节 | 对实现的影响 |
+|---|---|---|
+| 分片上传本身 OK | `superfile2` 两次分片都接受了 multipart body（UA `pan.baidu.com`），并回 `{"md5":…,"request_id":…}`；回的分片 md5 与我们本地算的**完全一致** | 手机直传的分片写法与 SDK 一致，可用 |
+| ⚠ 成功响应**可能不带 `errno`** | 成功体只有 `md5` + `request_id` | 判失败只能用 `errno != 0`（生产代码 `upload_file` 的默认值本来就是 0 ✓；**我最初的测试脚本默认写成 -999，误报过一次 FAIL**） |
+| 单片（≤4MB）md5 可复核 | 百度回的是**加密 md5**（如 `b3eac964fid510ec22c7e9bbc7260e91`，第 9 位是 `g`..`v`），`decrypt_baidu_md5` 解回来**正好等于**整文件 md5；`create` 与 `file_metas` 报的是同一个值 | 单片保留 `md5_match` 硬校验 |
+| ⚠ **多分片**（>4MB）的百度 md5 ≠ 整文件 md5 | 5MB+ 文件：本地 `513641b7…`，百度（`create` 与 `file_metas` 一致）解出 `d310b6f4…`；不是 slice-md5、也不是块 md5 的任何拼接（逐项试过） | 复核规则改为：**单片比 md5；多片只比 size**（各分片 md5 由前端逐个核对）。已改 `finish_upload`：新增 `size_match` / `md5_comparable`，多片时 `md5_match=None`；WChat 端点只在 `md5_match is False` 或 `size_match is False` 时 502 回退 |
+| ⚠ **秒传（return_type=2）当前命中不了** | ① 同路径上传成功后 1s / 10s 再 `precreate` → 都是 `return_type=1`（还给了新 uploadid）；② 同内容、**不同路径**再 `precreate` → 也是 1；③ 百度专用 `method=rapidupload`（`content-md5`+`slice-md5`、加 `rtype`、用 `block_list`）**三种写法全被 31023 param error 拒** | 本应用**没有秒传能力**。⇒ **M1 的"重复内容零字节"收益拿不到**（`depot_service` 里 rapid 计数长期为 0 属正常）；M2 的收益来自"手机直连百度"，**不依赖秒传**。等百度侧开通（应用权限/白名单）后，可用 `--expect-rapid` 重跑本测试确认 |
+
+对应代码改动（已同步/重启 1028，WChat 由热重载生效）：
+`baidu_netdisk_api.finish_upload` 改用 `create` 响应的 md5（解不开才回退按路径查元信息），
+并返回 `size_match` / `md5_comparable`；`l_WChat/api/routes.py` 的 finish 端口按新规则判定。
+
+### 13.9 客户端直传的两种本机验证（不需要手机）
+
+手机里最后一步是"谁来发这个到百度的 HTTP"（浏览器 fetch 会被 CORS 拦，且 `User-Agent`
+在浏览器里是**禁止头**，JS 根本设不了 → 必须原生）。为把除"WebView 原生传输"以外的环节全部验掉，
+本机可以用两种方式顶替这一档：
+
+| 方式 | 脚本 | 顶替的那一档 | 验到的东西 |
+|---|---|---|---|
+| Node 直跑 JS | `l_WChat/999.0/tests/test_direct_upload_local.mjs` | `window.LwDirectUpload.uploadPart` 用 Node fetch 真发百度 | 真实 `upload_direct.js`：增量 MD5 → prepare → 分片 → finish → 清理（1MB 单分片 3.6s、5MB 两分片 4.8s，均 `item.cloud=true`） |
+| 浏览器页面（Playwright） | 文档下方片段（用 playwright MCP 的 `browser_run_code_unsafe` 跑） | `uploadPart` 用 `page.route('**/*superfile2*')` + `route.fetch()` 由 Node 侧转发百度 | **真实页面**：`base.html` 的 fetch 包装 → 拦截层 → 直传 → 懒回源，且**页面里** `user-agent` 被证明设不了 |
+
+Playwright 方式的关键结果（2026-09-16 本机，1MB）：
+
+```
+loginUser=system01   interceptorLoaded=true   meStatus=200      ← 免密会话 + 闸门放行
+apiCalls=["/api/upload/album/prepare","/api/upload/album/finish"] ← 只有这两个后端调用
+parts=[{host:"bjdd-ct11.pcs.baidu.com", bytes:1048757}]           ← 分片直发百度（未走 /api/album/upload 中转）
+forwards=1 bytes=1048757   ticketOff=false   uploadMs=4375
+album.hit={cloud:true, remote_dir:"l_wchat/album/宝宝 1 个月", ...} ← 服务端登记为"仅云端"
+lazyFetch={status:200, bytes:1048576}                             ← 懒回源成功（本地无副本→按需拉回）
+cleanupAlbum=200   cleanupCloud=200                               ← 自动清理干净
+```
+
+Playwright 片段（要点）：Node 侧用 `ctx.request` 取免密 token（`/api/v1/auth/auto`，绕开 CORS）
+写进 cookie；`page.route('**/*superfile2*')` 里 `route.fetch({headers:{...,'user-agent':'pan.baidu.com'}})`
+转发并 `fulfill` 时补 `access-control-allow-origin: *`；页面里注入
+`window.LwDirectUpload = {uploadPart: (url, headers, base64) => ...}`（= 将来 Kotlin 插件那一档）。
+
+> 坑：`album.html` 的 `albumPhotos` 是 `let`（不挂 `window`），校验相册要看
+> `GET /api/album/photos` 的返回，别读 `window.albumPhotos`。
+
+
+

@@ -73,10 +73,11 @@ root_of_path(dpath)       = "/" + dpath 首段                           # "库"
 - **写入**：`ensure_dir_version()` 只走 `live_remote` / `version_remote`（新布局）
 - **读取**：`_dir_mode_fs_id()` 按 `version_remote → live_remote → legacy_version_remote → legacy_live_remote` 四候选回退；`_blob_fs_id()` 按 `blob_path → legacy_blob_path` 回退
 
-> 实测现状：`/apps/Lugwit/version_depot/` 下只有 `blob/`，**没有 `dir_mirror/`**；
-> `/rez_pkg` 是唯一登记 `dir` 的根，其活文件在 `/apps/Lugwit/rez_pkg/*.md`（旧布局）、
-> 历史在 `/apps/Lugwit/rez_pkg/.versions/<名>/`。即：**dir 模式的实际数据是旧布局写的，
-> 新代码再提交会写到 `dir_mirror`，两者并存**。
+> 实测现状（2026-09-16 更新）：笔记/知识库统一在库 **`/notes`**（`mode=dir`），
+> 活文件在 `/apps/Lugwit/version_depot/dir_mirror/notes/**`，历史在各自的 `.versions/<名>/`。
+> 早期登记为 `dir` 的根 `/rez_pkg`（知识库名直接当库用）已废弃：其文件已 move 到
+> `/notes/rez_pkg/`，旧库只剩空目录。即：现在**只有 `/notes` 一个 dir 根**，
+> 知识库是它下面的**子路径**（见《lugwit_baidu_netdisk》§12 Depot 逻辑路径约定）。
 
 ### 2.3 接口：24 个端点，只有 1 个能表达"本地绝对路径"
 

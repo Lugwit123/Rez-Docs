@@ -15,7 +15,7 @@
 | T3 l_wchat 纳管 | **工具已实现并验证** | `tools/depot_import_tree.py`；实测源 686 文件/66.8MB；已导入 motherhood 9 个（CL #241/#242） |
 | T4 manifest 优化 | **工具已实现并验证** | `tools/depot_manifest_gc.py`（保留策略 + `--verify` 抽样校验，实测 `CL #242: manifest=4 DB=4 缺=0 多=0 OK`） |
 | T5 blob GC | **工具已实现并验证** | `tools/depot_blob_gc.py`（dry-run 实测：登记行 16 / 无引用 0 / 盘面孤儿 0） |
-| T6 dir 快照保留 | **工具已实现** | `tools/depot_dir_snapshot_gc.py`（含"blob 兜底缺失则跳过"强校验；`/rez_pkg` 当前无快照） |
+| T6 dir 快照保留 | **工具已实现** | `tools/depot_dir_snapshot_gc.py`（含"blob 兜底缺失则跳过"强校验；dir 根 `/notes` 的 `.versions` 已有快照） |
 
 顺带修复：`copy_remote` 的正确参数形态（8 种试出来的）、`depot_blob` 按 `(lib_root, md5)` 隔离、
 `purge_test_libs` 按 (库, md5) 成对删行、`--clean-orphans` 清旧布局残留 63 个文件。
@@ -36,7 +36,7 @@
 3. 存量把 `/apps/Lugwit/l_wchat`（裸目录，6 个业务子目录）**纳管进 depot 库 `/l_wchat`（blob 模式）**。
 4. `manifest` 增长可控、可校验、可回放。
 5. blob 实体做**引用计数 GC**。
-6. dir 模式（`/rez_pkg`）的 `.versions/vNNN` 快照做保留策略。
+6. dir 模式（库 `/notes`）的 `.versions/vNNN` 快照做保留策略。
 
 **非目标**
 - 不改 P4 语义（工作区/have/pending/锁不变）。
@@ -236,7 +236,7 @@
 
 ### T6 dir 模式快照保留
 
-**现状**：dir 模式（`/rez_pkg`）每次提交既写活文件又留一份
+**现状**：dir 模式（库 `/notes`）每次提交既写活文件又留一份
 `dir_mirror/<父目录>/.versions/<名>/vNNN/<名>`（`depot_service.py:78-92`），
 **每版本一份**，是膨胀最快的部分；没有保留策略。
 

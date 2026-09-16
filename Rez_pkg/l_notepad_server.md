@@ -22,24 +22,27 @@
 
 | 包 | 角色 | 入口 alias | 说明 |
 |----|------|-----------|------|
-| `l_notepad_server` | 服务端（FastAPI/uvicorn，8765） | `l_notepad_api` | 笔记业务 API + Web 页面；`l_notepad_api_reload` 带 `--reload` |
-| `l_notepad_client` | 客户端（Qt 桌面） | `l_notepad` / `l_notepad_ori` / `l_notepad_with_api` | 标题栏、登录、脚本编辑器等 |
+| `l_notepad_server` | 服务端（FastAPI/uvicorn，8765） | `l_notepad_api` / `l_notepad_api_reload` | 笔记业务 API + Web 页面；两个别名命令相同（热重载改由进程内 `L_SRC_WATCH` 负责，`--reload` 已弃用） |
+| `l_notepad_client` | 客户端（Qt 桌面） | `l_notepad_client` / `l_notepad_ori` | 标题栏、登录、脚本编辑器等；**纯 PC 模式，不再拉起本地后端** |
 | `l_notepad` | 旧单体包 | — | 拆包前的代码，保留供对照/迁移 |
 
 服务端入口（`l_notepad_server/999.0/package.py`）：
 
 ```python
 alias("l_notepad_api",        "python -m l_notepad_server.backend_server")
-alias("l_notepad_api_reload", "python -m l_notepad_server.backend_server --reload")
+alias("l_notepad_api_reload", "python -m l_notepad_server.backend_server")   # 命令同左；热重载走进程内 L_SRC_WATCH
 ```
 
 客户端启动（`l_notepad_client/999.0/package.py`）：
 
 ```python
-alias("l_notepad",           "python -m l_notepad_client.local_main")        # 自定义无边框标题栏
-alias("l_notepad_ori",       "python -m l_notepad_client.local_main_ori")    # 系统原生标题栏
-alias("l_notepad_with_api",  "python -m l_notepad_client.main")              # 拉起内嵌后端
+alias("l_notepad_client", "python -m l_notepad_client.local_main")       # 纯 PC 模式：本地文件笔记，不起后端
+alias("l_notepad_ori",    "python -m l_notepad_client.local_main_ori")   # 系统原生标题栏
 ```
+
+> **2026-09 变更**：客户端不再有"内嵌后端"模式 —— 原来的 `l_notepad_with_api`（`python -m l_notepad_client.main`，
+> 会 `subprocess` 拉起 `l_notepad_server.backend_server` 到 127.0.0.1:8765）连同 `web_ui.py` 已删除；
+> 需要后端时单独启动 `l_notepad_api`（部署机上由服务侧/守护进程负责）。
 
 ### 1.1 requires
 

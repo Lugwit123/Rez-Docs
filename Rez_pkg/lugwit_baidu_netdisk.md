@@ -12,7 +12,8 @@
 
 - **内容**放百度网盘，走网盘自己的 CDN，异地同事直接拉，不吃自建带宽
 - **元数据**（谁在哪个版本、哪个 CL、谁签出了）放 Postgres（`chatroom` 库）
-- 相同内容全司只存一份（md5 寻址），秒传命中零上行
+- 相同内容全司只存一份（md5 寻址）——注意：**秒传（`return_type=2`）本账号/应用当前命中不了**，
+  去重仍靠 depot 的 md5 索引，但"零上行"暂不成立，实测见 §14.4
 
 三块功能，互相独立：
 
@@ -410,7 +411,9 @@ window.addEventListener("depot-api", function (ev) {
 | `GET /api/files/stream` | 在线预览（视频/音频/图片/PDF/文本等），inline + Range |
 | `GET /api/files/thumb` | 缩略图代理 |
 | `POST /api/files/upload` | `{local_path, remote_dir, remote_name, auto_mkdir, overwrite}` 传**服务端本地**文件 |
-| `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传 |
+| `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传；响应含 `rapid`（秒传命中＝零上行）与 `md5_real` |
+| `POST /api/upload/prepare` | **客户端直连百度的第一步**：`{dir, name, size, block_list}` → 秒传探测 / 直传票据（见 §14） |
+| `POST /api/upload/finish` | **客户端直连百度的最后一步**：`{dir, name, size, uploadid, block_list, md5}` → create + 复核（见 §14） |
 | `POST /api/files/download_local` | 下载到服务端本地目录 |
 
 `overwrite=true` → `rtype=3` 同名覆盖；`false` → `rtype=1` 同名重命名。
@@ -529,6 +532,8 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_push_sync run --config 路径/settin
 ```
 tests/test_depot_api.py       12 段，跑 depot 全部 HTTP 接口
 tests/test_depot_pending.py   10 段，跑两步工作流（57 断言）
+tests/test_upload_direct_server_side.py  服务端自证直传链路（真百度：precreate→分片→create→复核）
+tests/test_upload_direct_client.py       外部客户端全链路（登录→prepare→分片直传→finish）
 tests/purge_autotest.py       清理测试数据（直连数据库）
 ```
 
@@ -597,6 +602,23 @@ copy /b auth_server.py+,, auth_server.py
 **上传很慢 / 明明是重复文件还在传**
 看返回的 `stats`。如果 `uploaded` 不为 0 而你确信内容重复，
 检查 md5 是否真的一致（改过一个字节就是新 blob）。
+另：**秒传当前命中不了**（见 §14.4 实测），所以"重复内容零上行"这条现在不成立。
+
+**客户端直传：`ticket_enabled=false` / 拿不到 `access_token`**
+服务端没开 `LUGWIT_UPLOAD_TICKET_TOKEN`（默认关）。要直传就设成 `1` 并**重启 1028**
+（该变量是启动时读的）。没开时前端会自动回退服务端代传，功能不受影响。
+
+**客户端直传：403「直传票据只通过 HTTPS 下发」**
+请求是明文入口（如 `http://<ip>:1234`）。票据＝账号级百度凭据，明文过公网等于交出网盘。
+走 HTTPS 入口（`https://<ip>/l_wchat/…`）；本机回环直连（无 `X-Forwarded-For`）不拦。
+
+**客户端直传：`md5_match=false` 被拒（502）**
+只可能出现在**单分片**（≤4MB）文件上。多分片时百度报的 md5 与整文件 md5 不是一回事，
+`md5_match` 返回 `null`（不可比），服务端只比 `size`（见 §14.3）。
+
+**客户端直传：分片上传返回 `errno=-999` / 分片 md5 对不上**
+先看响应体——**成功时可能没有 `errno` 字段**（只有 `md5`+`request_id`），
+把"缺 errno"当成失败是误判；判失败请用 `errno != 0`，并核对回的分片 md5。
 
 **数据库丢了**
 按 CL 号顺序回放 `/apps/Lugwit/.depot/manifest/` 下的 json 即可重建
@@ -647,22 +669,36 @@ PUT /note/api/kb/{kb_name}/workspace
 知识库「工作区」页面对每个文档提供「⬆ 提交到百度云」，即调用本包的一步直提接口：
 
 ```
-POST /baidu/api/depot/submit_stream?path=/<kb_name>/<相对路径>&description=提交 <相对路径>
+POST /baidu/api/depot/submit_stream?path=/notes/<kb_name>/<相对路径>&description=提交 <相对路径>
 Content-Type: application/octet-stream
 Body: 文件原始字节
 ```
 
-**Depot 逻辑路径约定**：`/<kb_name>/<工作区内相对路径>`（如 `/rez_pkg/Rez_pkg/l_script_editor.md`），
-多知识库之间天然隔离。提交即产生版本（rev），可走 Depot 的查询/回滚/签出等全套 P4 语义。
+**Depot 逻辑路径约定（2026-09 修正）**：`{library}/{subpath}/{工作区内相对路径}` ——
+**库 = 逻辑路径首段**，知识库只是库下的**子路径**。笔记/知识库统一落在库 `/notes`：
 
-浏览器经 nginx `/note` 页面加载文档、经 `/baidu` 提交，两者同源（8080），
-复用 lugwit_auth 登录态即可。
+```
+/notes/rez_pkg/Rez_pkg/l_script_editor.md      # 知识库 rez_pkg → 子路径 rez_pkg
+/notes/xxx.md                                   # 个人笔记同步（cloud_sync，depot_library=/notes）
+```
+
+映射关系由 `l_notepad_server/depot_map.py` 维护：`knowledge_bases.depot_library`（默认 `/notes`）、
+`depot_subpath`（默认 = 知识库名）、`depot_ws`（默认 `kb-<知识库名>`）；每个知识库对应一个 depot
+工作区，并登记 `maps=[{depot_path: "/notes/<kb>", local_path: ""}]`，使本地 `xxx.md`
+↔ `/notes/<kb>/xxx.md` 一一对应。多知识库之间靠子路径隔离。
+
+> 历史：早期实现把**知识库名当成库**（`/rez_pkg/xxx.md`），与笔记同步用的库 `/notes` 不一致；
+> 2026-09-16 已改为上述"库 + 子路径"模型，旧库 `/rez_pkg` 下的文件已 move 到 `/notes/rez_pkg/`。
+
+提交即产生版本（rev），可走 Depot 的查询/回滚/签出等全套 P4 语义。
+
+浏览器经 nginx `/note` 页面加载文档、经 l_notepad 后端 `/api/kb/{kb}/depot/*` 提交，复用 lugwit_auth 登录态即可。
 
 ---
 
 ## 13. 存储多模式（blob / 目录镜像）
 
-Depot 支持**按逻辑根**（如 `/rez_pkg`）切换物理存储模式，各知识库可各取所需：
+Depot 支持**按逻辑根**（如 `/notes`）切换物理存储模式，各库可各取所需：
 
 | 模式 | 物理存储 | 适用 |
 |------|---------|------|
@@ -675,18 +711,18 @@ Depot 支持**按逻辑根**（如 `/rez_pkg`）切换物理存储模式，各�
 GET  /baidu/api/depot/modes            # 列出所有根的当前模式
 PUT  /baidu/api/depot/mode             # 登记某根的模式
 Content-Type: application/json
-{"root": "/rez_pkg", "mode": "dir"}
+{"root": "/notes", "mode": "dir"}
 ```
 
 模式存于 `depot_mode` 表（root, mode），未登记默认 `blob`。
 
 ### 13.2 `dir` 模式物理布局
 
-逻辑路径 `/rez_pkg/Rez_pkg/l_script_editor.md` 对应：
+逻辑路径 `/notes/rez_pkg/Rez_pkg/l_script_editor.md` 对应：
 
 ```
-/apps/Lugwit/version_depot/dir_mirror/rez_pkg/Rez_pkg/l_script_editor.md                 ← 最新版（活文件，可直接下载）
-/apps/Lugwit/version_depot/dir_mirror/rez_pkg/Rez_pkg/.versions/l_script_editor.md/
+/apps/Lugwit/version_depot/dir_mirror/notes/rez_pkg/Rez_pkg/l_script_editor.md                 ← 最新版（活文件，可直接下载）
+/apps/Lugwit/version_depot/dir_mirror/notes/rez_pkg/Rez_pkg/.versions/l_script_editor.md/
   v001/l_script_editor.md                                        ← 历史快照
   v002/l_script_editor.md
 ```
@@ -721,7 +757,7 @@ Content-Type: application/json
 ```http
 POST /api/depot/migrate
 Content-Type: application/json
-{"root": "/rez_pkg", "dry_run": true}    # dry_run 只预览不执行
+{"root": "/notes", "dry_run": true}    # dry_run 只预览不执行（库 = 逻辑路径首段）
 ```
 
 实现：`depot_service.materialize_dir_root()`（遍历 `store.sub_paths` → `_download_blob_to_tmp` 下载 blob → `submit_files` 走 dir 分支重写活文件 + vNNN 快照并落库）。
@@ -729,7 +765,7 @@ Content-Type: application/json
 返回：
 
 ```json
-{"migrated": ["/rez_pkg/xxx.md"], "failed": [{"path": "...", "error": "..."}],
+{"migrated": ["/notes/rez_pkg/xxx.md"], "failed": [{"path": "...", "error": "..."}],
  "migrated_count": 1, "failed_count": 0}
 ```
 
@@ -741,5 +777,94 @@ Content-Type: application/json
 - `dir` 模式的删除/移动只改 DB 元数据，**不会物理删/移百度云文件**（活文件与历史快照保留，仅不再出现在列表）
 - 切换模式不影响已提交的历史（rev 元数据在 DB 里），但新旧提交的物理存放位置不同
 - 切换前请确认该根下的提交均可用（`blob`→`dir` 后，旧 blob 内容下载仍走回退逻辑，或用 13.5 迁移）
+
+---
+
+## 14. 客户端直传百度（prepare / finish）
+
+**用途**：让**客户端（手机 App / 外部脚本）把文件字节直接送到百度**，服务器只参与几 KB 的
+元数据协商（不再当"上传中转站"）—— 目的是省服务器公网流量。
+
+```
+客户端 ──① POST /api/upload/prepare──► 1028 ──► 百度 precreate（只报 size+分片 md5）
+        ◄── uploadid / upload_host / parts（可选带 access_token）──┘
+客户端 ──② POST 分片到 upload_host/rest/2.0/pcs/superfile2?…──► 百度   ★ 字节走这里，不经服务器
+客户端 ──③ POST /api/upload/finish───► 1028 ──► 百度 create + 复核 → fs_id / size / md5
+```
+
+### 14.1 两个端点
+
+| 端点 | 入参 | 出参 |
+|------|------|------|
+| `POST /api/upload/prepare` | `{dir, name, size, block_list[], overwrite=true}` | 命中秒传：`{rapid:true, fs_id, path, size, md5_real}`；未命中：`{rapid:false, uploadid, upload_host, parts[], block_size, ticket_enabled[, access_token]}` |
+| `POST /api/upload/finish` | `{dir, name, size, uploadid, block_list[], md5="", overwrite=true}` | `{ok:true, fs_id, path, size, size_match, md5_real, md5_match, md5_comparable}` |
+
+- `block_list` = 按 4MB 分片、顺序即 `partseq` 的分片 **md5**（客户端自己算）
+- `upload_host` 由 `locateupload` 实时给出，**不要缓存**
+- 两条都要求登录（cookie `lugwit_token`），路径必须落在白名单内
+
+### 14.2 环境变量
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `LUGWIT_UPLOAD_TICKET_TOKEN` | **空＝关** | 关时 `prepare` **不下发** `access_token` → 客户端拿不到百度凭据、只能回退"服务器代传"（现状）。开启才会下发（必须已是 HTTPS 入口） |
+| `LUGWIT_UPLOAD_ROOTS` | `/apps/Lugwit/l_wchat` | 直传可写根白名单（`os.pathsep` 分隔）。不限定范围等于开放"往网盘任意路径写" |
+
+### 14.3 内容复核规则（实测结论，别想当然）
+
+| 情况 | 实测 | 处理 |
+|------|------|------|
+| 单片（≤4MB） | 百度回的是**加密 md5**，`decrypt_baidu_md5()` 解回来**正好等于**整文件 md5（`create` 与 `file_metas` 一致） | `md5_match` 单片为 True/False，可硬校验 |
+| **多分片（>4MB）** | 百度报的 md5 **不等于**整文件 md5（5MB+ 例：本地 `513641b7…`，百度解出 `d310b6f4…`；不是 slice-md5、也不是块 md5 拼接） | `md5_match=null`、`md5_comparable=false`；**只比 `size`**（各分片 md5 由调用方在直传时逐个核对） |
+| 分片上传响应 | 成功体可能**不带 `errno`**（只有 `md5` + `request_id`） | 判失败只能用 `errno != 0`；并额外核对回的分片 md5 与本地一致 |
+
+### 14.4 秒传（`return_type=2`）现状：本应用命中不了
+
+2026-09-16 三次实测：① 同路径上传成功后 1s / 10s 再 `precreate` → 都是 `return_type=1`；
+② 同内容**不同路径**再 `precreate` → 也是 1；③ 百度专用 `method=rapidupload`（`content-md5`
++`slice-md5`、加 `rtype`、用 `block_list` 三种写法）**全被 `31023 param error` 拒**。
+⇒ 本账号/应用当前没有秒传能力：`prepare` 的 `rapid=true` 属于"代码路径在、能力不在"，
+`depot_service` 里 `rapid` 计数长期为 0 也属正常。等百度侧开通后用
+`tests/test_upload_direct_server_side.py --expect-rapid` 复查。
+
+### 14.5 安全边界（必须知道）
+
+- 下发的 `access_token` 是**账号级**的（约 30 天有效、**无法单独撤销**，只能撤销整个应用授权）。
+  所以 `prepare` 的闸门 = **登录 + HTTPS**：明文入口请求一律 403
+  （`l_WChat` 侧实现；本机回环直连且无 `X-Forwarded-For` 时视为安全，方便本机测试）。
+- 回滚：删掉/置 0 `LUGWIT_UPLOAD_TICKET_TOKEN` → 客户端拿不到凭据 → 全部走服务器代传。
+- 想要"客户端不持有账号级凭据"，只能：① 客户端用自己的百度账号走 OAuth 授权；或
+  ② 专用小号 + 独立应用授权。百度**没有** STS/一次性上传凭据（`superfile2` 必须带 `access_token`）。
+
+### 14.6 自动化测试
+
+```bat
+:: 服务端自证（真百度、不需开票据开关）：precreate → superfile2 → create → 复核
+wuwor lugwit_baidu_netdisk -- python tests\test_upload_direct_server_side.py --apps /apps/Lugwit
+
+:: 外部客户端全链路（登录 → prepare → 本机出口直传百度 → finish → 删）：需服务端已开票据开关
+python tests\test_upload_direct_client.py --host https://121.196.144.88
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--size` | 文件大小，默认 1MB（`test_upload_direct_server_side.py` 默认 5MB+12345，跨 2 片） |
+| `--dir` | 测试目录（默认 `l_wchat/_probe_direct`，不进相册索引） |
+| `--keep` | 保留测试文件（默认删） |
+| `--expect-rapid` | 要求二次 prepare 命中秒传（当前不满足，只有百度开通后才该加） |
+| `--user/--password` | 客户端测试用；不给时读 WChat 的 `config.json` |
+
+前端 JS（`l_WChat/999.0/src/l_WChat/static/upload_direct.js`）的本机验证：
+`l_WChat/999.0/tests/test_direct_upload_local.mjs`（Node 跑真实 JS + 真发百度），
+或用 Playwright 打开本机相册页（细节见 `l_WChat_上传直连百度改造计划.md` §13.9）。
+
+### 14.7 已知限制
+
+- 生产可用的前提是客户端有**原生 HTTP 通道**：浏览器 `fetch` 打 `*.pcs.baidu.com` 会被 CORS 拦，
+  且 `User-Agent` 在浏览器里是禁止头（JS 设不了，百度又要求 `pan.baidu.com`）。
+  JS 侧已固化优先级：`window.LwDirectUpload.uploadPart(url, headers, base64) → {status, text}`
+  → `CapacitorHttp` → 回退服务器代传。
+- `prepare` 只覆盖 `LUGWIT_UPLOAD_ROOTS` 白名单内的路径。
+
 
 
