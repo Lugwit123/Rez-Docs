@@ -1,5 +1,7 @@
 # l_script_editor 使用文档
 
+> 更新：2026-09-17 —— 新增「端口固定（严格模式）/ 服务发现 / IPC 命名管道」；脚本编辑器端口合法区间扩到 `[8000, 8999]`（见 §2、§3B）。
+
 > 独立可复用的 Python 脚本编辑器组件库：提供代码编辑、自动补全、语法高亮、会话管理，以及**HTTP 远程接口**（远程执行代码、上传/下载文件、暴露 agent 工具、**UI 自动化**——Qt 版 Playwright，全部走脚本编辑器所在进程的 Bottle 后台线程）。
 
 | 项 | 值 |
@@ -43,11 +45,17 @@ curl.exe http://127.0.0.1:8764/status
 | 项 | 值 |
 |----|----|
 | 默认端口 | `8764` |
-| 环境变量 | `SCRIPT_EDITOR_HTTP_PORT`（如 `set SCRIPT_EDITOR_HTTP_PORT=8764`） |
-| 合法区间 | `[8700, 8764]`；缺省 / 非法 / 越界时回退默认端口 |
-| 用途 | 并行多实例时各配一个端口，避免绑定冲突 |
+| 环境变量 | `SCRIPT_EDITOR_HTTP_PORT`（如 `set SCRIPT_EDITOR_HTTP_PORT=8768`） |
+| 合法区间 | `[8000, 8999]`；缺省 / 非法 / 越界时回退默认端口 |
+| 默认行为 | 首选端口被占用时**向上递增找空闲端口（最多试 20 个）**，不杀占用进程 |
+| 固定端口（严格模式） | `SCRIPT_EDITOR_HTTP_PORT_STRICT=1`：被占时**不再漂移**，先列出占用进程（PID / 进程名 / 命令行，psutil 可用时）并询问 `[1] 结束占用进程并继续启动 / [2] 放弃启动（默认）` |
+| 询问超时 | `SCRIPT_EDITOR_HTTP_PORT_PROMPT_TIMEOUT`（默认 `5` 秒）：**5 秒无输入 → 放弃启动并打印占用进程详情**；选 `2` 或按 Esc 同样放弃 |
+| 无交互终端 | GUI（点 `</>`）/ 计划任务 / 重定向启动 → 跳过询问、直接按"放弃"处理并打印详情，同时给出 `taskkill /PID <占用PID> /F`（避免卡死界面线程） |
+| 用途 | 常驻应用固定端口；并行多实例各配一个端口 + 服务名，避免绑定冲突 |
 
 > 端口被占用时服务会自动重试，绑定成功后把实际端口同步回 UI（`resolve_http_port` / `http_port_env_override` 负责解析）。
+> **严格模式实测**（2026-09-17）：真实占用端口场景下非交互启动 → 打印占用详情、返回失败、**不误杀**占用进程。
+> 端口固定只解决"要么是它、要么明确报错"；调用方寻址请优先读**服务发现文件**（§3B），别写死端口。
 
 ---
 
@@ -616,6 +624,90 @@ curl.exe -X POST http://192.168.1.100:8764/execute -H "X-Editor-Token: 一串随
 
 ---
 
+## 3B. 服务发现与 IPC（本机脚本免端口寻址）
+
+端口固定、服务发现、IPC 三者是一套：**固定端口**保证"要么是它、要么明确报错"；**发现文件**保证"调用方永远知道它在哪"；**IPC** 让本机脚本**完全不需要端口**。
+
+### 3B.1 服务发现文件
+
+服务**启动成功后**发布发现文件 **`~/.Lugwit/run/<service>.json`**（目录可用 `LUGWIT_RUN_DIR` 覆盖）；**停止时删除**该文件。调用方**先读它**，再回退环境变量 / 固定端口——端口漂移对调用方彻底透明。
+
+```json
+{
+  "service": "netdisk_client",
+  "url": "http://127.0.0.1:8769",
+  "scheme": "http",
+  "host": "127.0.0.1",
+  "port": 8769,
+  "listen": "0.0.0.0",
+  "pid": 12345,
+  "started_at": "2026-09-17T10:00:00",
+  "has_token": false,
+  "ipc": "\\\\.\\pipe\\lugwit-netdisk_client-8769-<user>"
+}
+```
+
+- 服务名取自 `SCRIPT_EDITOR_SERVICE_NAME`（默认 `script_editor`）。
+- ⚠️ **监听通配地址**（`0.0.0.0` / `::`）时，发现文件里的 `url` / `host` **归一为 `127.0.0.1`**（可连地址），真实监听面另存 `listen` 字段 —— 因为把 `0.0.0.0` 当"目标地址"去连在 Windows 上会直接失败。
+- 读取时**按 pid 检查僵尸条目并自动清理**（进程已退出 → 删除文件）；注意 pid 复用误判，靠 **pid + 文件时间** 共同判断。
+
+```bat
+python -m l_script_editor.service_registry                    :: 列出全部服务（并清理僵尸条目）
+python -m l_script_editor.service_registry netdisk_client     :: 打印该服务 url
+```
+
+```python
+from l_script_editor import service_registry as reg
+
+reg.list_services()                 # 全部服务（含僵尸清理）
+reg.resolve_url("netdisk_client")   # 该服务 url（找不到返回 ""）
+reg.run_dir()                       # 发现文件目录（默认 ~/.Lugwit/run）
+```
+
+### 3B.2 IPC（命名管道 / UDS）
+
+- Windows：`\\.\pipe\lugwit-<service>-<port>-<user>`；其他平台：`<run_dir>/<service>-<port>.sock`。
+- **名字带端口**：同名服务多实例并存时不会互抢管道（早期不带端口撞过 `[WinError 5] 拒绝访问`）。
+- 实现用 stdlib `multiprocessing.connection`（`AF_PIPE`，**不需要 pywin32**），带 **authkey 鉴权**（默认 key `lugwit-<service>`，可用 `SCRIPT_EDITOR_PIPE_KEY` 覆盖；错误 key 被拒：`AuthenticationError digest sent was rejected`）。
+- **接口与 HTTP 完全一致**（`/status`、`/execute`、`/upload` …），只是换传输层；由 HTTP 服务启动时一并起、停止时一并停；`SCRIPT_EDITOR_PIPE=0` 可关闭。
+- **调用方寻址规则（重要）**：**先读发现文件的 `ipc` 字段**；没有发现文件时按「服务名 + 端口」推导（`resolve_address` 就是这么做的）。
+
+```bat
+python -m l_script_editor.pipe_bridge list
+python -m l_script_editor.pipe_bridge --service netdisk_client --method GET --path /status
+python -m l_script_editor.pipe_bridge --service netdisk_client --path /execute --json "{\"code\":\"print(1)\"}"
+```
+
+```python
+from l_script_editor import pipe_bridge
+
+pipe_bridge.available("netdisk_client")          # 通道是否可用（探测 /status）
+status, headers, body = pipe_bridge.request(
+    "netdisk_client", "GET", "/status")          # 经 IPC 调一次，接口同 HTTP
+print(status, body.decode("utf-8", "replace"))
+
+pipe_bridge.resolve_address("netdisk_client")    # 该服务 IPC 地址（发现文件 ipc 优先）
+```
+
+### 3B.3 已落地的端口分配
+
+| 用途 | 端口 | 服务名 | 备注 |
+|------|:---:|------|------|
+| 独立脚本编辑器服务（托盘菜单拉起，`standalone_server`） | `8764` | `tray`（现由托盘透传） | 托盘 `l_tray/package.py` 设 `SCRIPT_EDITOR_HTTP_PORT=8768`、`_STRICT=1`、`SCRIPT_EDITOR_SERVICE_NAME=tray`；`Tray.py` 常量读环境并把这三项经 `start_rez_package(env_overrides=…)` **透传给子进程** |
+| 网盘客户端（`lugwit_netdisk_client`，内嵌服务） | `8769` | `netdisk_client` | `lugwit_netdisk_client/package.py` 设 `PORT=8769` / `STRICT=1` / `SERVICE_NAME=netdisk_client` |
+| 调试实例示例 | `8766` | `script_editor`（默认名，建议改 `debug`） | 避免与别的默认名实例相撞 |
+
+> ⚠️ **托盘脚本服务是子进程**：`l_tray/package.py` 里设的环境变量只有显式经 `start_rez_package(env_overrides=…)` **透传**才吃得到（子进程环境来自 l_script_editor）。以为"在 `package.py` 里设了就行"是常见误解。
+
+### 3B.4 坑与排障
+
+- **`[WinError 5] 拒绝访问` 启动管道 = 同名管道被占用**（多实例）：给各实例设不同的 `SCRIPT_EDITOR_SERVICE_NAME`，或依赖"管道名带端口"的新命名。
+- **端口固定 + 发现文件 + IPC 三者关系**：固定端口保证"要么是它、要么明确报错"；发现文件保证"调用方永远知道它在哪"；IPC 让本机脚本**完全不需要端口**。
+- **浏览器（含 QtWebEngine 承载的网页）只能用 HTTP over TCP，连不了命名管道** → 这是"**脚本走 IPC、页面走 TCP**"的**双栈**，不是替代关系。
+- 严格模式端口被占又不想手动处理：先看控制台打印的占用进程，用 `taskkill /PID <占用PID> /F` 手动释放，或换 `SCRIPT_EDITOR_HTTP_PORT` 重启。
+
+---
+
 ## 4. 远程调试工作流
 
 **最典型用法：先写 `.py` 文件，再一键远程执行验证**（改代码无需冷重启）：
@@ -698,7 +790,7 @@ wuwor l_nginx -- python <l_nginx包>\999.0\tools\remote_sync.py ^
 ```
 
 > 两个必须注意：① `--remote-dir` 要落在远端 `SCRIPT_EDITOR_FILE_ROOTS` 白名单内，否则 403；
-> ② 跨机走 nginx 时把 `--host` 换成 `https://lugwit.duckdns.org/script_editor`（见 `Rez-Docs/Rez_pkg/HTTPS证书与域名申请总结.md`）。
+> ② 跨机走 nginx 时把 `--host` 换成 `https://121.196.144.88/script_editor`（**域名 `lugwit.duckdns.org` 路线已停用**，只走 IP 入口；见 `Rez-Docs/Rez_pkg/HTTPS证书与域名申请总结.md`）。
 
 ### 4.3 一键部署本包源码到远端并重启远端服务
 
@@ -899,7 +991,8 @@ curl.exe http://127.0.0.1:8764/tools
 - **PowerShell 的 `curl` 是 `Invoke-WebRequest` 别名**，必须用 `curl.exe`；内联 JSON 含特殊字符（`\n`、反斜杠）易解析失败，最稳妥是写入文件用 `--data-binary "@file.json"`。
 - `timeout` 设太小时长任务会被提前终止（如扫描上千分类，建议 600s 以上）。
 - 服务为后台守护线程运行（bottle + wsgiref 零依赖后端），不阻塞 UI。
-- 端口冲突会自动重试绑定；多实例请用 `SCRIPT_EDITOR_HTTP_PORT` 分开端口。
+- 端口冲突会自动重试绑定（向上递增，最多 20 个）；需要**端口固定**时设 `SCRIPT_EDITOR_HTTP_PORT_STRICT=1`，被占即询问/放弃而不漂移（见 §2）。
+- 多实例请用 `SCRIPT_EDITOR_HTTP_PORT` 分开端口，并各设不同的 `SCRIPT_EDITOR_SERVICE_NAME`；调用方寻址改读**服务发现文件**（`~/.Lugwit/run/<service>.json`）或走 **IPC 命名管道**，不要写死端口（见 §3B）。
 - `/upload` 与 `/download` 走 JSON body，二进制内容必须 **base64 编码**传输，避免 JSON 转义与编码问题。
 - `/upload` 会**自动创建父目录**；`/download` 远程文件不存在返回 404、非文件返回 400。
 - `upload_file` / `download_file` 底层是同机 HTTP 请求，跨机器时只要远端 HTTP 服务可访问（防火墙放行端口）即可使用。
@@ -945,6 +1038,8 @@ python src\smoke_e2e.py
 | `ScriptEditorHttpServer` | HTTP 服务管理器（后台线程；默认 `127.0.0.1`，非回环需令牌） |
 | `check_bind_guard` / `_read_token` / `_read_file_roots` | 安全守卫与环境变量解析（`http_server`） |
 | `_parse_ip_whitelist` / `_ip_whitelisted` / `_read_ip_whitelist_raw` | IP 白名单解析（单 IP + CIDR，非法条目忽略）与对端 IP 匹配（仅用 `REMOTE_ADDR`）（`http_server`） |
+| `service_registry` | 服务发现：`publish` / `read` / `list_services` / `resolve_url` / `run_dir` / `service_name`（发现文件 `~/.Lugwit/run/<service>.json`，见 §3B.1） |
+| `pipe_bridge` | IPC 客户端：`request(service, method, path, ...) -> (status, headers, body)` / `available` / `resolve_address`（命名管道，接口同 HTTP，见 §3B.2） |
 | `ui_automation` | UI 自动化引擎：`parse_locator` / `resolve_widget` / `dump_widget_tree` / `perform_action` / `wait_for` / `grab_png_b64` |
 | `CodeEditorWithCompletion` / `CodeCompleter` | 编辑器 + 自动补全 |
 | `PythonHighlighter` / `SyntaxHighlightColors` | 语法高亮 |

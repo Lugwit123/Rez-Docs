@@ -1,5 +1,7 @@
 # lugwit_baidu_netdisk 使用文档
 
+状态：使用手册，截至 2026-09-17。已实现存储模型见[../网盘版本库Depot设计.md](../网盘版本库Depot设计.md)，计划与 T2 状态见[../网盘版本库Depot演进计划.md](../网盘版本库Depot演进计划.md)，百度 md5 实测事实以[百度云接口元数据实测.md](百度云接口元数据实测.md)为准。本文只说明使用、接口与操作语义，不重复底层实现证明。
+
 > 把百度网盘当**内容寻址 blob 仓**用，在它之上做一套简版 Perforce：
 > 提交 / 版本 / 回滚 / 签出 / 待提交列表。
 > 改名、移动、回滚**零流量**——网盘上的文件一个字节都不动，只改数据库。
@@ -77,13 +79,25 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 
 ### 2.3 登录闸门
 
-**所有页面和接口都要 `lugwit_auth` 登录**，token 从 cookie `lugwit_token`
+**所有页面和接口都要 `lugwit_auth` 登录**：每个 depot HTTP 请求都过 `gate.require_lugwit_token`（**本地验 JWT**，不依赖认证服务在线），token 从 cookie `lugwit_token`
 或环境变量 `LUGWIT_ACCESS_TOKEN` 读。
 
 - 页面端点未登录 → 302 跳 `/login?next=原路径`
 - API 端点未登录 → 401 `{"detail": "未登录 lugwit_auth"}`
 - **本机请求**（`127.0.0.1` / `::1`）会自动去 `lugwit_auth` 的
   `/api/v1/auth/auto` 换一个 token，所以本机脚本一般不用手动带 token
+
+> **2026-09-17 实测：本机自动授权静默失败。** `web_server._auto_local_token` → `POST {auth}/api/v1/auth/auto`
+> 在本机**实测静默失败**（访问日志只有 401、无任何异常记录）。因此**三处调用方改为自带凭据**，
+> 并在 401 时换新 token 重试一次：
+>
+> | # | 调用方 | 链路 |
+> |---|--------|------|
+> | 1 | `l_notepad_server/depot_map.py` 的 `http()` | note server → 1028 |
+> | 2 | `l_tray/src/l_tray/depot_bridge.py` | 网页 → 托盘 19527 → 1028 |
+> | 3 | `lugwit_netdisk_client`（本地桥） | 主窗口登录后 `bridge.setToken()`；另从持久化 WebEngine profile 的 cookie 抓 `lugwit_token` |
+>
+> token 获取顺序：env `LUGWIT_ACCESS_TOKEN` → `POST http://127.0.0.1:1027/api/v1/auth/auto`（缓存；401 时清缓存重试）。
 
 登录名就是 depot 里的 `owner`（提交人、锁的归属、have 表的主键之一）。
 
@@ -208,10 +222,10 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 | 字段 | 含义 | 网络开销 |
 |------|------|:---:|
 | `dedup` | 数据库里已登记这个 md5 | 零 |
-| `rapid` | 网盘 `precreate` 秒传命中 | 零上行 |
+| `rapid` | 网盘 `precreate` 秒传命中（**当前实测不命中**） | 零上行 |
 | `uploaded` | 真传了 | 有 |
 
-> 秒传判定：`precreate` 返回 `return_type == 2`。
+> 秒传判定：`precreate` 返回 `return_type == 2`（**当前实测不命中**，见 §14.4）。
 > 旧代码把返回的空 `block_list` 当成"所有分片都要传"，白传一遍，已修。
 
 ### 4.6 大文件
@@ -411,7 +425,7 @@ window.addEventListener("depot-api", function (ev) {
 | `GET /api/files/stream` | 在线预览（视频/音频/图片/PDF/文本等），inline + Range |
 | `GET /api/files/thumb` | 缩略图代理 |
 | `POST /api/files/upload` | `{local_path, remote_dir, remote_name, auto_mkdir, overwrite}` 传**服务端本地**文件 |
-| `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传；响应含 `rapid`（秒传命中＝零上行）与 `md5_real` |
+| `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传；响应含 `rapid`（秒传命中＝零上行；**当前实测不命中**，见 §14.4）与 `md5_real` |
 | `POST /api/upload/prepare` | **客户端直连百度的第一步**：`{dir, name, size, block_list}` → 秒传探测 / 直传票据（见 §14） |
 | `POST /api/upload/finish` | **客户端直连百度的最后一步**：`{dir, name, size, uploadid, block_list, md5}` → create + 复核（见 §14） |
 | `POST /api/files/download_local` | 下载到服务端本地目录 |
@@ -581,7 +595,14 @@ Postgres 连不上。检查 `chatroom` 库连接串（和 `lugwit_auth` 用同�
 
 **401 未登录 lugwit_auth**
 非本机请求必须带 cookie `lugwit_token` 或环境变量 `LUGWIT_ACCESS_TOKEN`。
-本机请求会自动换 token，如果也失败说明 `lugwit_auth` 没起来。
+本机请求会自动换 token —— **但本机自动授权 2026-09-17 实测静默失败**（见 §2.3），
+所以三处调用方（note server / 托盘 `depot_bridge` / 客户端本地桥）改为**自带凭据 + 401 换新 token 重试一次**；
+若仍 401，先查调用方 token 来源（env / `auth/auto`），再看 `lugwit_auth` 是否起来。
+
+**列表能通、下载 500 / 经 nginx 502（内容取不到）**
+depot **元数据在 PostgreSQL**（`/api/depot/list`、`/api/kb/{kb}/depot/list` 离线可用、返回 200），
+**文件内容在百度网盘**（`pan.baidu.com`）。机器连不上外网时取内容就报 **500 / 经 nginx 502**，**与代码无关**。
+实测：`curl https://pan.baidu.com` 返回 `000` 时，列表 200、下载 500。
 
 **409**
 路径被别人签出了，`detail` 里写了是谁。等对方提交/撤销，
@@ -728,7 +749,7 @@ Content-Type: application/json
 ```
 
 - 最新版同时写到"活文件"真实路径，百度云客户端直接可见/可下载
-- 历史版本放同目录 `.versions/<文件名>/vNNN/` 快照（同内容秒传，不额外占空间）
+- 历史版本放同目录 `.versions/<文件名>/vNNN/` 快照（同内容本应秒传不额外占空间；**秒传当前实测不命中，见 §14.4**，所以会按真文件各占一份）
 - 版本元数据仍由 `depot_file_rev` 表记录（rev/history/回滚语义不变）
 - 提交时预取下一版号 `next_rev = head.rev + 1`，上传到活文件 + vNNN，再以显式 rev 落库
 
@@ -856,7 +877,7 @@ python tests\test_upload_direct_client.py --host https://121.196.144.88
 
 前端 JS（`l_WChat/999.0/src/l_WChat/static/upload_direct.js`）的本机验证：
 `l_WChat/999.0/tests/test_direct_upload_local.mjs`（Node 跑真实 JS + 真发百度），
-或用 Playwright 打开本机相册页（细节见 `l_WChat_上传直连百度改造计划.md` §13.9）。
+或用 Playwright 打开本机相册页（直传计划、验收状态与现行限制见[../网盘版本库Depot演进计划.md](../网盘版本库Depot演进计划.md)的 T2）。
 
 ### 14.7 已知限制
 
@@ -865,6 +886,25 @@ python tests\test_upload_direct_client.py --host https://121.196.144.88
   JS 侧已固化优先级：`window.LwDirectUpload.uploadPart(url, headers, base64) → {status, text}`
   → `CapacitorHttp` → 回退服务器代传。
 - `prepare` 只覆盖 `LUGWIT_UPLOAD_ROOTS` 白名单内的路径。
+
+---
+
+## 15. 客户端与本地桥（`lugwit_netdisk_client`，2026-09-17）
+
+PC 客户端（PySide6 + QWebEngineView）本次新增：
+
+- **启动登录窗**：注入 `LoginStore(data_dir=~/.Lugwit/lugwit_netdisk_client)`（库自带标题栏登录按钮 +
+  启动静默恢复）；**没有任何已保存 token 时，启动 400ms 后自动弹登录对话框**
+- **登录成功**：把 token ① 注入 WebEngine cookie（域名/路径按 `base_url` 设）② `bridge.setToken(token)`，然后 reload；
+  **登出**清 cookie + 清桥 token
+- **本地桥新增 4 个 QWebChannel 槽**（返回 JSON 字符串，**本地进程内直连 depot 服务**，基址
+  `L_CLIENT_DEPOT_URL` > `L_DEPOT_SERVICE_URL` > `http://127.0.0.1:1028`）：
+  `depotBase` / `depotList` / `depotDownload` / `depotVersions`
+- 与托盘的 `depot_bridge`（见 §2.3 表 #2）是**同一套语义**（谁在谁服务），两处都做路径校验
+  （绝对路径、无 `..`、单文件 8MB 上限、文本类扩展名回文本否则 base64）
+
+页面里 `window.lugwitBridge` 存在时优先走本地桥（如知识库页归档内容读取，见《Rez_pkg/l_notepad_server.md》§7.1），
+浏览器里该对象不存在则降级到托盘中转 / `/baidu/api/depot/download` 直连。桥内自动带 lugwit 登录态。
 
 
 

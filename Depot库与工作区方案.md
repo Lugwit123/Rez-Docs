@@ -1,6 +1,9 @@
 # Depot 库与工作区方案（对齐 P4 Client View）
 
-状态：**方案待评审，尚未实施**
+> # ⚠️ 状态：**未实施 / 待评审（截至 2026-09-17）**
+>
+> 本文是工作区与 client view 的候选方案，不是当前 Depot 实现。当前已实现设计见[网盘版本库Depot设计.md](网盘版本库Depot设计.md)，后续计划见[网盘版本库Depot演进计划.md](网盘版本库Depot演进计划.md)。未完成评审、迁移与验收前，不得把本文字段、接口或数据模型当作已上线事实。
+
 涉及包：
 
 - `lugwit_baidu_netdisk/999.0` — 服务端：元数据库 + blob 仓 + Web 页面
@@ -133,7 +136,7 @@ platform  pickFolder  pickFiles  revealInExplorer  fileMd5
 fileInfo  listDir     treeDir    homeDir           openExternal
 ```
 
-- `fileMd5` = **单文件**整文件 md5（上传前探秒传）
+- `fileMd5` = **单文件**整文件 md5（仅作本地 md5 计算；秒传探测当前不可用）
 - `listDir` / `treeDir` = 列本地目录（`treeDir` 注释明说"给前端 Workspace 标签用"）
 - **没有**：工作区配置、本地根目录记忆、路径映射、目录级扫描/差异比对
 

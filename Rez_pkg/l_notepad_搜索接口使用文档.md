@@ -1,6 +1,6 @@
 # l_notepad 搜索接口使用文档
 
-> 适用版本：`l_notepad_server` 999.0（2026-09-16，含倒排索引 + 向量语义检索 + 知识库归档映射）
+> 适用版本：`l_notepad_server` 999.0（2026-09-17 更新，含倒排索引 + 向量语义检索 + 知识库归档映射）
 > 代码位置：`l_notepad_server/src/l_notepad_server/{search_index.py, search_vec.py, routers/search.py, routers/kb.py, depot_map.py}`
 
 ## 0. 快速开始
@@ -35,6 +35,47 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/search/embed_async?
 
 交互式文档（public，无需登录）：`$BASE/docs`（Swagger UI）、`$BASE/redoc`、`$BASE/openapi.json`。
 可视化入口：浏览器打开 `$BASE/web/index`（导航「🔎 搜索索引」）—— 试搜框 + 索引状态 + 模型切换。
+
+### 0.1 最小可用四条（本机直连 8765，免 token，实测 2026-09-17）
+
+给 agent / 脚本用的最短路径：**搜索拿路径 → 再读正文**。搜索结果只有 180 字 `snippet`，正文必须另外调 `workspace/file`。
+
+```bash
+B=http://127.0.0.1:8765
+
+# 1) 全局搜索（笔记 + 全部知识库）
+curl -s "$B/api/search?q=%E5%88%9B%E5%BB%BA%E5%8C%85&limit=5"
+
+# 2) 单个知识库内搜索（q 要 URL 编码；空格用 %20）
+curl -s "$B/api/kb/rez_pkg/search?q=l_qt_wgt_lib&limit=10"
+
+# 3) 列这个知识库的全部文件（拿 rel 用于下一步）
+curl -s "$B/api/kb/rez_pkg/workspace"
+
+# 4) 读正文 —— 参数名是 path，值 = 上面拿到的 rel
+curl -s "$B/api/kb/rez_pkg/workspace/file?path=Rez_pkg/l_script_editor.md"
+```
+
+搜索响应里够用的就 4 个字段：
+
+| 字段 | 用途 |
+|---|---|
+| `total` | 命中数；`0` 说明关键词切分对不上，换词而不是翻页 |
+| `hits[].rel` | 直接喂给 `workspace/file?path=` 读正文 |
+| `hits[].snippet` / `matches` | 快速判断这篇要不要读全文 |
+| `hits[].score` | `< 1.0` 基本是向量噪声（只有 `vec` 分、`coverage=0`），别当命中 |
+
+Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体加双引号，否则 `&` 被 cmd 当命令分隔符。
+
+踩过的坑（省得再试一遍）：
+
+| 试法 | 结果 |
+|---|---|
+| `GET /api/kb`、`/api/kb/{kb}/stats` | **405** —— 没有「列知识库」的 GET；知识库名要么已知，要么从 `/api/search` 结果的 `kb_name` 里看 |
+| `GET /api/kbs` | 404 |
+| `workspace/file?rel=...` | **422 `Field required: path`** —— 这个端点用 `path`，只有 `depot/*` 系列用 `rel` |
+| `GET /api/kb/{kb}/depot/file?rel=...` | 本机实测 **500**（depot 版本库未连通时如此）；只要读当前文本，走 `workspace/file` 就够 |
+| `raw` / `content` / `read` / `doc` 等猜出来的端点名 | 全部不存在，别猜，`$BASE/openapi.json` 里有全表 |
 
 ---
 
@@ -73,7 +114,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/search/embed_async?
 | GET | `/api/kb/{kb}/depot/list?rel=` | 列归档目录（返回项带 `rel`，相对 `base_path`） |
 | GET | `/api/kb/{kb}/depot/file?rel=&rev=0` | 读归档文件内容（`rev=0` = 最新） |
 | POST | `/api/kb/{kb}/depot/submit?rel=&description=` | 把 body 原始字节提交为新版本 |
-| GET/PUT | `/api/kb/{kb}/workspace[/file]` | 工作区本地目录（服务端模式；托盘模式见《知识库本机模式》） |
+| GET/PUT | `/api/kb/{kb}/workspace[/file?path=]` | 工作区本地目录（列表带 `rel/name/size/mtime`）与单文件读写；**参数名 `path`，不是 `rel`**（服务端模式；托盘模式见《知识库本机模式》） |
 | GET | `/api/kb/{kb}/workspace/reveal` | 在**服务器**资源管理器打开目录 |
 
 ---
@@ -206,6 +247,13 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   - 服务内增删改 → `file_store` 变更通知即时标脏，下次查询补索引；
   - 外部改动（桌面端落盘、托盘写入）→ **5 秒 TTL** 全量比对 `mtime/size`，内容没变不重读；
   - 后台重建期间 `refresh()` 直接跳过（搜索读旧索引，不阻塞）
+- **刷新机制（2026-09-17 明确）**：**没有定时重建**；每次搜索前调用 `search_index.refresh()`：
+  ① 进程内被标脏的文件（增删改钩子）立即增量索引；
+  ② 距上次全量比对 ≥ **`SCAN_TTL_S = 5` 秒**时，遍历所有源（个人笔记目录 + 各知识库 workspace）按 `size/mtime` 增量比对。
+  **全量重建仅手动**：`POST /api/search/reindex`（同步）/ `POST /api/search/reindex_async`（后台），
+  时间点见 `stats.reindex.started_at` / `finished_at`
+- **慢查询先看这条**：**无 ollama 时默认 `hybrid` 每次约 6 秒**（反复探测 `127.0.0.1:11434` 超时），
+  而 `mode=lex` 约 10ms
 - **`GET /api/search/stats` 字段**：`docs` / `fts_rows` / `fts_consistent` / `db_bytes` / `sources[]`（每源 `root/docs/bytes/last_indexed_at`，`deep=1` 加 `disk_files/missing/changed/extra`）/ `pending` / `scan_ttl_s` / `last_scan_ago` / `max_index_bytes` / `workspace_exts` / `reindex`（后台重建进度）/ `vec`（模型、块数、维度、嵌入进度、下载进度、目录）/ `deep` / `fts_integrity`
 
 ```bash

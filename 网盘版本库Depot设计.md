@@ -1,5 +1,7 @@
 # 网盘版本库（Depot）设计与实现
 
+状态：**已实现设计主文档，截至 2026-09-17**。实施计划唯一台账见[网盘版本库Depot演进计划.md](网盘版本库Depot演进计划.md)；百度接口 md5 实测唯一事实源见[Rez_pkg/百度云接口元数据实测.md](Rez_pkg/百度云接口元数据实测.md)。（2026-09-17 增补：鉴权闸门与浏览器/客户端取内容链路，见 §6.1 与 §8.1。）
+
 涉及包：
 
 - `lugwit_baidu_netdisk/999.0` — blob 仓 + 元数据 + Web 页面
@@ -15,6 +17,8 @@
 ## 2. 核心设计：内容寻址 blob 仓 + 数据库唯一权威
 
 ### 2.1 网盘只存 blob，只追加
+
+blob 按**库根隔离**：同一 md5 在不同库分别有实体和元数据行；库内重复才直接复用，跨库可借百度秒传复制而不共享物理文件。
 
 ```text
 /apps/Lugwit/.depot/blob/<md5[:2]>/<md5>
@@ -43,7 +47,7 @@
 
 | 表 | 作用 | P4 对应 |
 |----|------|---------|
-| `depot_blob(md5 PK, size, remote_path)` | 内容 → 网盘路径 | — |
+| `depot_blob(lib_root, md5 PK)`, `size`, `remote_path` | 库内内容 → 网盘路径；主键为 `(lib_root, md5)`，保证按库隔离 | — |
 | `depot_changelist(id, owner, description, status)` | 变更列表，`status`=pending/submitted | CL |
 | `depot_pending_file(cl_id, path, action, blob_md5, src_path, base_rev)` | 待提交区条目 | opened files |
 | `depot_file_rev(path, rev, action, blob_md5, cl_id, owner)` | 文件某个版本 | revision |
@@ -103,7 +107,9 @@ blob 已上传但无人引用 → 孤儿，靠 GC 回收（尚未实现）。
 
 ### 4.1 秒传（之前是错的）
 
-`precreate` 返回 `return_type == 2` 就是**秒传命中，零上行**。
+`precreate` 返回 `return_type == 2` 原本判定为**秒传命中，零上行**；判定逻辑保留，
+但**本账号/应用实测命中不了**（见 `Rez_pkg/lugwit_baidu_netdisk.md` §14.4，2026-09-16 实测），
+上传会走真分片。
 旧代码把返回的空 `block_list` 当成"所有分片都要传"，白传一遍。现已在
 `upload_file` 和 `upload_file_stream` 两处都拦截。
 
@@ -124,7 +130,7 @@ read_chunk(path, i)                                    # 按需 seek
 scan_file 得 md5
   → store.blob_get(md5) 命中？ 零网络，直接复用      (dedup)
   → 否则 upload_file_stream
-       → precreate return_type==2 ?  秒传，零上行     (rapid)
+       → precreate return_type==2 ?  秒传，零上行     (rapid；当前不可达，勿据此估算流量/空间收益)
        → 否则只传缺失分片                             (uploaded)
   → store.submit() 事务写元数据
   → write_manifest()   失败只记日志，不影响提交
@@ -159,6 +165,103 @@ lock  unlock  locks  sync_plan  download
 `.topbar` / `.topbar-meta` 样式；两栏布局 `minmax(0,1fr) 400px`，左侧文件表 + CL 视图，
 右侧版本历史面板。
 
+### 6.1 鉴权闸门与内容获取链路（2026-09-17）
+
+**每个 depot HTTP 请求都过 `lugwit_baidu_netdisk/gate.require_lugwit_token`** ——
+**本地验 JWT**，不依赖认证服务在线；token 认 **cookie `lugwit_token`** 或环境变量 `LUGWIT_ACCESS_TOKEN`。
+
+⚠️ 服务自带的「本机自动授权」（`web_server._auto_local_token` → `POST {auth}/api/v1/auth/auto`）
+**在本机实测静默失败**（访问日志只有 401、无任何异常记录）。因此**三处调用方改为自带凭据**，
+并在 401 时换新 token 重试一次：
+
+| # | 调用方 | 链路 |
+|---|--------|------|
+| 1 | `l_notepad_server/depot_map.py` 的 `http()` | note server → 1028 |
+| 2 | `l_tray/src/l_tray/depot_bridge.py` | 网页 → 托盘 19527 → 1028 |
+| 3 | `lugwit_netdisk_client`（本地桥） | 主窗口登录后 `bridge.setToken()`；另从持久化 WebEngine profile 的 cookie 抓 `lugwit_token` |
+
+token 获取顺序：env `LUGWIT_ACCESS_TOKEN` → `POST http://127.0.0.1:1027/api/v1/auth/auto`（缓存；401 时清缓存重试）。
+
+**内容怎么取（浏览器不再直连 depot）**：知识库页归档（版本库）内容读取优先级
+**① 客户端本地桥 `window.lugwitBridge.depotDownload` → ② 托盘中转（`depot_download` 动作，经 19527）→
+③ 回退 `/baidu/api/depot/download`**；无论走哪条都要带上 lugwit 登录态（桥/托盘内部自动补 token）。
+托盘状态浮层新增一行「版本库读取：客户端本地桥 / 经托盘中转（基址） / 回退 `/baidu` 直连」。
+归档逻辑路径必须取映射的 `base_path`（形如 `/notes/rez_pkg/xxx.md`）——
+旧写法 `/<kbName>/<rel>`（缺 `/notes` 前缀）会 404「版本不存在」，本次已修。
+
+**元数据 vs 内容（选错方向会白查一小时）**：
+
+- depot **元数据在 PostgreSQL** → 列表类接口（`/api/depot/list`、`/api/kb/{kb}/depot/list`）**离线可用（200）**
+- depot **文件内容在百度网盘**（`pan.baidu.com`）→ 机器连不上外网时取内容报 **500 / 经 nginx 502**，**与代码无关**
+- 实测：`curl https://pan.baidu.com` 返回 `000` 时，列表 200、下载 500
+
+### 6.2 工作区数据源 = 托盘（2026-09-17）
+
+**结论：页面（`web_depot.html`）的工作区列表与增删改，唯一数据源是托盘服务
+（`l_tray` ExecServer，`POST http://127.0.0.1:19527/run`）——不落 `localStorage`、
+也不直连 `/api/depot/workspace`，且**不做任何回退**（托盘不在就明确报错）。**
+
+之前的毛病：`wsList` 初始化先用 `localStorage["depot_ws_v2"]` 播种（还兼容更老的
+`depot_ws_root`），再拉 `/api/depot/workspace` 覆盖。客户端里登录是异步的（标题栏登录
+成功后才注入 `lugwit_token`），初始化那次拉取可能 401，而调用点 `.catch(function () {})`
+把错误吞了 → 列表停在 localStorage 旧值，于是**浏览器与客户端工作区列表不一致**
+（客户端少/为空），且工作区状态跨机器根本不成立——"哪个库对应哪个本地目录"是
+**那台机器的属性**，本就该由本机代理（托盘）回答。
+
+托盘侧新增三个网页白名单动作（`l_tray/depot_bridge.py`）：
+
+| 动作 | 透传到 depot 服务 |
+|------|------------------|
+| `depot_workspace_list` | `GET /api/depot/workspace`（回 `owner` / `workspaces` / `libraries`） |
+| `depot_workspace_save` | `POST /api/depot/workspace`（JSON：`name` / `library` / `local_root` / `host` / 可选 `id`） |
+| `depot_workspace_delete` | `DELETE /api/depot/workspace/{ws_id}` |
+
+调用约定：
+
+- 请求体 `{"action": "<名>", "kwargs": {...}}`；成功信封 `{"ok":true,"result":"<repr>","data":<结构化结果>}`，
+  **页面取 `data`**（`result` 只是 repr 字符串）；失败 `{"ok":false,"error":"<traceback>"}`。
+- 跨源：执行机上的 `127.0.0.1:8080` / 生产域名等已在 ExecServer 的 CORS 白名单内
+  （`DEFAULT_WEB_ORIGINS`，可用 `L_TRAY_EXEC_ORIGINS` 追加）；浏览器只能调 `web_actions`。
+- 托盘的 depot 基址：`L_TRAY_DEPOT_URL` > `L_DEPOT_SERVICE_URL` > `http://127.0.0.1:1028`；
+  token：env `LUGWIT_ACCESS_TOKEN` > `POST http://127.0.0.1:1027/api/v1/auth/auto`（401 换新重试）。
+
+**工作区按用户归属（2026-09-17 二次修正）**：页面把 cookie 里的 `lugwit_token` 随 `kwargs`
+一起传给托盘（三个动作都带 `token` 参数），托盘走 `_http(token_override=...)` **以该用户身份**
+访问 depot 服务 —— `depot_workspace` 的 `owner` 取 JWT `sub`，`workspaces()/workspace_upsert()/
+workspace_delete()` 全部带 owner 过滤，所以**归属就是登录的人**（实测新建得到 `47/admin01`）。
+只有没传 token 时才退回托盘的本机自动授权账号（那会解析成 `system01`，是另一套视角，别混用）。
+
+⚠️ 早期版本没传 token，导致页面看到的是 `system01` 名下那几条（本机视角）。现已改掉：
+`GET /api/depot/workspace` 只返回**当前用户**的工作区，卡片与下拉都显示 `👤 owner`，
+标题右侧显示当前登录用户，工作区标签一眼能看出归属。
+
+**多选删除**：`depot_workspace_delete` 支持 `ws_id`（单个）与 `ws_ids`（数组，批量），批量
+逐个删、不因个别失败中断，返回 `{"deleted":[...],"failed":[{"id":...,"error":...}]}`。
+页面侧：每张卡片一个勾选框 + 「全选」+ 「🗑 删除选中 (N)」（N=0 时禁用），删除前 confirm
+列出待删名称，删完清空选中并重拉列表。
+
+**改了动作不用重启托盘**（动作表是 `ExecHandler` 的类属性，注册即对运行中的服务生效）：
+
+```bat
+curl -s -X POST http://127.0.0.1:19527/run -H "Content-Type: application/json" ^
+     -d "{\"module\":\"l_tray.depot_bridge\",\"function\":\"reregister\",\"reload\":true}"
+```
+
+`reload: true` 让托盘重新加载 `depot_bridge` 拿到新的 `_WEB_ACTIONS`，`reregister()` 再灌进
+运行中的 ExecServer。验证：`curl -s http://127.0.0.1:19527/health` 的 `web_actions` 里应出现
+`depot_workspace_*`。
+
+实测（2026-09-17，客户端 8769 内重载页面）：
+
+- 列表 = **当前登录用户**的工作区：`✓ admin01-l_wchat  👤 admin01  库 /l_wchat  未设本地路径`；
+  标题右侧 `👤 admin01`，下拉 `✓ 📁 admin01-l_wchat · 👤 admin01 · /l_wchat · 未设本地路径`。
+- 多选：勾一张卡 → 按钮变「🗑 删除选中 (1)」并解禁；「全选」勾上即全选、再点即清空。
+- 归属 + 批量删除实测：页面内建 `zz-multi-del` → 回包 `47/admin01`；`ws_ids=[47]` 批量删 →
+  `{"deleted":[47],"failed":[]}`，再列表只剩 `2:admin01-l_wchat`（测试数据自清）。
+- `localStorage.depot_ws_v2` 里旧的 `admin01-l_wchat` **原封未动**——页面既不读也不写，解耦确认。
+
+已实测：`list` / `save` / `delete`（含 `ws_ids` 批量）三件都跑通，见上面的实测记录。
+
 ## 7. 路径安全
 
 `normalize_depot_path()` 拒绝：空路径、含 `..`、首段为 `.depot`。
@@ -172,9 +275,23 @@ wuwor lugwit_netdisk_client -- netdisk_client_doctor   :: 体检
 wuwor lugwit_netdisk_client -- netdisk_client          :: 启动
 ```
 
+### 8.1 登录与本地桥（2026-09-17）
+
+- **启动登录窗**：注入 `LoginStore(data_dir=~/.Lugwit/lugwit_netdisk_client)`（库自带标题栏登录按钮 +
+  启动静默恢复）；**没有任何已保存 token 时，启动 400ms 后自动弹登录对话框**
+- **登录成功**：把 token ① 注入 WebEngine cookie（域名/路径按 `base_url` 设）② `bridge.setToken(token)`，然后 reload；
+  **登出**清 cookie + 清桥 token
+- **本地桥**（QWebChannel）新增 4 个槽，返回 JSON 字符串，**本地进程内直连 depot 服务**
+  （基址 `L_CLIENT_DEPOT_URL` > `L_DEPOT_SERVICE_URL` > `http://127.0.0.1:1028`）：
+  `depotBase` / `depotList` / `depotDownload` / `depotVersions`
+- 与托盘的 `depot_bridge` 是**同一套语义**（谁在谁服务），两处都做路径校验
+  （绝对路径、无 `..`、单文件 8MB 上限、文本类扩展名回文本否则 base64）
+
+因此页面在 PC 客户端里**优先走本地桥取内容**（见 §6.1），不再依赖浏览器直连 depot。
+
 ## 9. 已验证
 
-真实网盘 + 真实 `chatroom` 库跑通：提交 / 去重 / 秒传 / 历史 / 回滚 / 加锁 /
+真实网盘 + 真实 `chatroom` 库跑通：提交 / 去重 / 秒传（**未验证：接口命中不了**，见 `Rez_pkg/lugwit_baidu_netdisk.md` §14.4）/ 历史 / 回滚 / 加锁 /
 锁冲突 409 / sync_plan / blob 路径 / manifest 路径。测试数据已清理（errno 0）。
 
 ## 10. 已知未做

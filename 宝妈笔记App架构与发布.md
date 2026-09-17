@@ -1,5 +1,8 @@
 # 宝妈笔记 App 架构与发布（l_WChat）
 
+> **历史/需核实警示（截至 2026-09-17）**：本文包含早期 `http`、`cleartext` 与 uvicorn `--reload` 描述，不能当作当前部署基线。现行 HTTPS 见[Rez_pkg/HTTPS证书与域名申请总结.md](Rez_pkg/HTTPS证书与域名申请总结.md)，网络路由见[Nginx反向代理机制.md](Nginx反向代理机制.md)，源码热重载见[src_hot_reload_源码热重载与主页常驻.md](src_hot_reload_源码热重载与主页常驻.md)。Python 改动须按服务当前机制手动重启核验。
+
+
 > 项目根：`rez-package-source/l_WChat/999.0/src/l_WChat`
 > 后端：FastAPI（`app.py`，端口 1234，uvicorn `--reload`）
 > App：`wchat-android/`（Capacitor + Android WebView）
@@ -11,7 +14,7 @@
 手机 App（Capacitor WebView）
    │  capacitor.config.json → server.url
    ▼
-http://121.196.144.88:1234   ← 云服务器（App 实际加载的页面/接口）
+https://121.196.144.88        ← 云服务器（443 入口，App 实际加载的页面/接口）
    ▲
 http://localhost:1234        ← 开发机（改代码先在这里验证）
 ```
@@ -19,7 +22,7 @@ http://localhost:1234        ← 开发机（改代码先在这里验证）
 **关键点：`capacitor.config.json` 的 `server.url` 指向云服务器，App 加载的 ALL 页面来自云。**
 开发机上改完代码，手机 App 看不到任何变化，必须同步到云服务器。本地验证用浏览器开 `http://localhost:1234/...`。
 
-- `cleartext: true`（允许 http 明文）
+- 壳里 `cleartext` 只对 `http://` 放行，https 强制；`network_security_config` 默认禁明文
 - `webDir: "www"`（本地产物壳，实际页面全部由 server.url 提供）
 
 ## 2. 缓存坑（踩过最深的一个）

@@ -1,4 +1,7 @@
-# l_homepage 依赖关系图页（deps）开发笔记
+# l_homepage 主页卡片 / 局部刷新开发笔记
+
+> 源码热加载、`L_SRC_WATCH`、守护和自重启的现行说明集中在[src_hot_reload_源码热重载与主页常驻.md](../src_hot_reload_源码热重载与主页常驻.md)。本页仅保留主页专属的卡片、deps、SSE 局部刷新与前端排错；`l_notepad_server` 的 Python 改动必须手动重启，勿以本页历史热加载描述作为保障。
+
 
 - 页面：`/homepage/deps`
 - 模板：`l_homepage/999.0/src/l_homepage/templates/deps.html`

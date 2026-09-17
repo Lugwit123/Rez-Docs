@@ -1,8 +1,9 @@
-# 网盘版本库 Depot 演进计划（md5 权威化 · 客户端直传 · 存量纳管 · 空间回收）
+# 网盘版本库 Depot 演进计划（唯一计划台账）
+
+状态：**计划台账，截至 2026-09-17**。已实现设计见[网盘版本库Depot设计.md](网盘版本库Depot设计.md)；百度 md5 实测事实以[Rez_pkg/百度云接口元数据实测.md](Rez_pkg/百度云接口元数据实测.md)为准。
 
 对象包：`rez-package-source/lugwit_baidu_netdisk/999.0`（999.0 源码即环境）。
-相关文档：`Rez-Docs/Depot库与工作区方案.md`（总体设计）、`Rez-Docs/网盘版本库Depot设计.md`（网盘侧存储）、
-`Rez-Docs/Rez_pkg/lugwit_baidu_netdisk_depot_blob.md`（blob 按库隔离与上传链路，已完成部分）。
+相关文档：`Rez-Docs/Depot库与工作区方案.md`（待评审方案）、`Rez-Docs/网盘版本库Depot设计.md`（已实现设计）、`Rez-Docs/Rez_pkg/百度云接口元数据实测.md`（md5 实测事实源）。
 
 ---
 
@@ -11,7 +12,7 @@
 | 任务 | 状态 | 交付物 / 证据 |
 |---|---|---|
 | T1 md5 权威化 | **实测后改判并落地** | `remote_meta()` / `meta_by_path()`；`ensure_blob` 上传后校验 size（+trusted md5）。**百度 md5 是混淆指纹，不能当权威**（见 T1 实测表） |
-| T2 上传字节不过服务器 | **未做**（需客户端改动） | 端点设计与凭证方案见 T2；A 档 `register` 可先做 |
+| T2 上传字节不过服务器 | **部分已实现，待端到端核实** | WChat 侧已实现「相册直传 + 登录闸门（`/login` 页）+ `static/upload_direct.js?v=3` 拦截层 + 懒回源」；通用 Depot 客户端直传、真实手机/公网流量验收与凭据边界仍待核实。详见本节；细节见 `Rez_pkg/lugwit_baidu_netdisk.md` §14 与 §7。 |
 | T3 l_wchat 纳管 | **工具已实现并验证** | `tools/depot_import_tree.py`；实测源 686 文件/66.8MB；已导入 motherhood 9 个（CL #241/#242） |
 | T4 manifest 优化 | **工具已实现并验证** | `tools/depot_manifest_gc.py`（保留策略 + `--verify` 抽样校验，实测 `CL #242: manifest=4 DB=4 缺=0 多=0 OK`） |
 | T5 blob GC | **工具已实现并验证** | `tools/depot_blob_gc.py`（dry-run 实测：登记行 16 / 无引用 0 / 盘面孤儿 0） |
@@ -23,8 +24,7 @@
 **待办**：T2 客户端直传；purge 测试库时顺带删掉对应 CL 的 manifest（现在会留下空壳清单）。
 
 **前置（早前已完成）**：blob 按库隔离 —— `depot_blob` 主键改成 `(lib_root, md5)`，
-同一 md5 在每个库各有一份物理文件，删某库不影响别的库（跨库复制走秒传，零上行）。
-详见 `Rez_pkg/lugwit_baidu_netdisk_depot_blob.md`。T3/T5 都建立在它之上。
+同一 md5 在每个库各有一份物理文件，删某库不影响别的库（跨库复制靠服务端 `filemanager opera=copy`，字节仍过服务器出口；秒传当前不可用，2026-09-16 实测）。T3/T5 都建立在这项隔离语义上。
 
 ---
 
@@ -87,9 +87,18 @@
 
 ### T2 上传字节不过服务器（客户端直传）
 
+**统一状态（截至 2026-09-17）**：WChat 侧已实现「相册直传 + 登录闸门（`/login` 页）+ `static/upload_direct.js?v=3` 拦截层 + 懒回源」，并有服务端 / 客户端 / 前端 JS 三套测试（见下）；但这些未构成通用 Depot 客户端直传已完成的证据，也未提供真实手机端到端流量验收。因此 T2 记为“部分已实现，待端到端核实”。保留服务端代理作为回退路径；不得据此断言所有上传字节已绕过服务器。
+
 **现状**：`/api/depot/submit_stream`（`web_server.py:1615-1644` 附近）把整个 body 读进内存；
 `mark_add_stream`（`web_server.py:1810-1835` 附近）流式落临时文件；
 两者都由服务端再分片上传到百度。没有下发 `access_token`、没有下发 `dlink`。
+
+**已落地（WChat 侧，2026-09-16/17）**：相册直传 + 登录闸门（`/login` 页）+ 前端
+`static/upload_direct.js?v=3` 拦截层 + 懒回源；闸门 = 「`lugwit_auth` 登录 + HTTPS（本机回环例外）」。
+测试：`tests/test_upload_direct_server_side.py`（服务端自证链路）、
+`tests/test_upload_direct_client.py`（外部客户端全链路）、
+`l_WChat/999.0/tests/test_direct_upload_local.mjs`（前端 JS 本机验证）。
+**仍待**：通用 Depot 客户端直传、真实手机端公网流量验收、凭据边界核实。
 
 **方案（分两档，先 A 后 B）**
 
@@ -99,22 +108,24 @@
   适合"先在网盘里有内容，再登记进 depot"（也正好是 T3 的登记口）。
 
 **B 档：客户端直传百度**
-1. 服务端下发上传凭证：`GET /api/depot/upload_ticket?path=&size=` 返回
-   `{access_token（或短期凭证）, upload_host（locateupload 结果）, target_dir, rtype, 分片大小}`。
+1. 服务端下发上传凭证（**现行端点**：1028 的 `POST /api/upload/prepare` / `POST /api/upload/finish`；
+   l_WChat 侧 `POST /api/upload/album/prepare|finish`）返回
+   `{access_token（账号级）, upload_host（locateupload 结果）, target_dir, rtype, 分片大小}`。
    复用 `locate_upload_host()`（`baidu_netdisk_api.py:252-282`）与 `precreate()`（`:283-330`）。
+   闸门 = 「`lugwit_auth` 登录 + HTTPS（本机回环例外）」。
 2. 客户端按 4MB 分片直传 `superfile2` → `create`，全程不经过本服务。
 3. 客户端回传 `{path, md5, size, fs_id}` → 服务端 `file_metas` 复核 → 登记 → 进 pending。
 4. **秒传探测前移**：登记前先用 `md5+size` 问百度（同库同 md5）→ 命中则直接标 `rapid`，
-   客户端连传都不用传。
+   客户端连传都不用传。**（2026-09-16 实测不命中，`rapid` 字段仅保留、当前恒为假）**
 
 **改动点**
-- `web_server.py`：新增 `register` / `upload_ticket` 端点；`submit_stream` / `mark_add_stream`
+- `web_server.py`：新增 `register` 与直传端点（现行 `/api/upload/prepare` / `/api/upload/finish`）；`submit_stream` / `mark_add_stream`
   保留为兼容路径（服务端代理），标注"会过服务器"。
 - `baidu_netdisk_api.py`：导出 `locate_upload_host` / `precreate` / `create_file` 给 HTTP 层用
   （现在只在内部用）。
 - 客户端（`l_notepad_client` / 调度器 / depot 页面）：实现直传 + 回执；页面直传可先做
   （浏览器 → 百度 CORS 限制待实测，若不通则退回 A 档：先上传到网盘再登记）。
-- 鉴权：凭证最小权限、短有效期；只允许写 `version_depot/blob/<该用户可写的库>/`。
+- 鉴权（**原"凭证最小权限、短有效期"结论错误，2026-09-17 更正**）：下发的是**服务器自己的账号级 `access_token`（同一把，约 30 天，无法单独撤销）**；`uploadid`/`upload_host` 只是会话票据；客户端不接触授权码 `code` 与 `refresh_token`；`LUGWIT_UPLOAD_TICKET_TOKEN` 开关只能**停止继续下发**，追不回已发出的，真收回只能撤销应用授权（服务端也需重新授权）。
 
 **验收**
 - 客户端直传一个 20MB 文件：服务端进程网络出口流量 ≈ 0（用 `netstat`/计数验证），
@@ -286,7 +297,7 @@ T6 (dir 快照) ─┼─> T5 (blob GC)         [T5 的 live 集依赖 T4/T6 的
 4. **隔离不破坏**：任何回收都要验证"别的库同 md5 实体仍在"。
 5. **守恒校验**：执行后跑 `tools/depot_scan_test_libs.py`（只读）+ 抽样 `download`。
 6. **文档同步**：改动 `depot_blob`/路径形状/接口时，同步
-   `web_help.html`（`GET /help`）与 `Rez-Docs/Rez_pkg/lugwit_baidu_netdisk_depot_blob.md`。
+   `web_help.html`（`GET /help`）与《网盘版本库Depot设计.md》。
 
 ---
 
@@ -303,7 +314,7 @@ T6 (dir 快照) ─┼─> T5 (blob GC)         [T5 的 live 集依赖 T4/T6 的
 | `tools/depot_blob_gc.py` | T5 | blob 引用计数 GC |
 | `baidu_netdisk_api.py` | T1/T3 | 新增 `remote_meta()`（取 md5）、`copy_remote()`（filemanager opera=copy） |
 | `depot_service.py` | T1/T2 | 上传后回读比对；`register_items()`（只登记不传字节） |
-| `web_server.py` | T2 | `/api/depot/register`、`/api/depot/upload_ticket` |
+| `web_server.py` | T2 | `/api/depot/register`、`/api/upload/prepare`、`/api/upload/finish`（l_WChat 侧 `/api/upload/album/prepare|finish`） |
 | 客户端包 | T2-B | 直传实现 + 回执 |
 
 ---
@@ -312,7 +323,7 @@ T6 (dir 快照) ─┼─> T5 (blob GC)         [T5 的 live 集依赖 T4/T6 的
 
 1. `filemetas` 是否返回 `md5`（若否，T1 退化为本地算 + size 校验）。
 2. `filemanager opera=copy` 是否支持跨目录复制、是否计入配额、是否有单目录条目上限。
-3. 同账号内"秒传"是否真的不额外占用空间（影响 T3/T5 的空间收益估算）。
+3. ~~同账号内"秒传"是否真的不额外占用空间（影响 T3/T5 的空间收益估算）。~~ **已关闭（2026-09-16/17）：秒传不可用，该问题不适用。**
 4. 浏览器直传百度是否受 CORS 限制（决定 T2-B 是"页面直传"还是"客户端直传"）。
 5. `.versions/vNNN` 快照删除后，`history` + `download` 是否确实走 blob 兜底（T6 前置）。
 

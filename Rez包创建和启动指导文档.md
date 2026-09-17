@@ -1,5 +1,7 @@
 # Rez 包创建指导文档
 
+> 更新：2026-09-17 —— `.script_server` 补充脚本编辑器端口固定 / 服务发现 / IPC 说明（见 §10 修饰符表）。
+
 路径：`D:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\rez-package-source`
 
 本文基于当前目录下已有 Rez 包结构整理，用于新建、维护、调用同类 Rez 包。
@@ -511,7 +513,7 @@ wuwor postgresql -- postgres_stop
 
 | 修饰符 | 作用 | 识别方 / 行为 |
 |--------|------|--------------|
-| `.script_server` | 设 `L_SCRIPT_SERVER=1` | 标题栏（`L_FramelessMainWindow`）优先识别，**总是启动脚本编辑器 HTTP 远程执行服务**（l_script_editor，默认 8764，被占用时自动向上找可用端口） |
+| `.script_server` | 设 `L_SCRIPT_SERVER=1` | 标题栏（`L_FramelessMainWindow`）优先识别，**总是启动脚本编辑器 HTTP 远程执行服务**（l_script_editor，默认 8764，被占用时自动向上找可用端口）。端口可用 `SCRIPT_EDITOR_HTTP_PORT` 固定（配合 `SCRIPT_EDITOR_HTTP_PORT_STRICT=1` 不漂移）；服务会发布发现文件 `~/.Lugwit/run/<service>.json` 并提供 IPC 命名管道，调用方无需写死端口 |
 | `.dev_mod` | 设 `L_DEV_MOD=1` | 各后端服务（auth/netdisk/chat/note/agent 等）识别后**启用 uvicorn 热更新**（reload，勿手动重启，见 9.1）；主页卡片可配专用热更新别名（`reload_args`，如 l_notepad_server 的 `l_notepad_api_reload`） |
 | `.comfyui_lite` | 设 `COMFY_LITE=1` | 轻量 ComfyUI 模式 |
 | `.solo` | 动作 | 单实例守卫：已有实例运行时**交互确认**是否结束（5 秒无输入默认 Y=结束旧实例进程树 taskkill /F /T 后继续启动）；选 n 保留旧实例并退出本次启动 |

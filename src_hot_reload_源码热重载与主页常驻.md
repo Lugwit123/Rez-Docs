@@ -1,6 +1,8 @@
-# src_hot_reload 源码热重载 + 主页常驻守护（替代 uvicorn --reload）
+# src_hot_reload 源码热重载 + 主页常驻守护（现行机制）
 
-路径：`D:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\rez-package-source\Rez-Docs`
+状态：**现行主文档，截至 2026-09-17**。`.dev_mod` → `L_DEV_MOD=1` 的启动门控与 wuwo `ENV_MODIFIERS` 约定仍保留；早期 uvicorn `--reload` 方案仅作历史背景，见[dev_mod_热更新机制_fa50f01f.md](dev_mod_热更新机制_fa50f01f.md)。
+
+**重要实测警示**：`l_notepad_server` 的 `L_SRC_WATCH` 对 Python 改动仍不可靠；改动 `.py` 后必须手动重启服务，不能把自动自重启视为已验证保障。
 
 ## 背景：uvicorn --reload 的三个坑（对全部后端服务通用）
 
@@ -317,11 +319,18 @@ def _resolve_src_watch(use_env: bool) -> str:
 
 | 机制 | 位置 | 行为 |
 |---|---|---|
-| **并发锁** | `%TEMP%/lugwit_hotreload/<alias>.lock`（JSON：pid/at/trigger/pkg） | `spawn_self_restart()` 先查锁，被**别的 pid** 持有时直接跳过；执行进程 `restart_self()` 也让位。TTL 30s（进程崩了也不会卡住后续重启） |
+| **并发锁** | `%TEMP%/lugwit_hotreload/<alias>.lock`（JSON：pid/at/trigger/pkg） | `spawn_self_restart()` 先查锁，被**别的 pid** 持有时直接跳过；执行进程 `restart_self()` 允许**父进程/自身**持锁（原实现只认自身 pid → 重启执行进程永远让位、**静默不重启**：lock 出现、breaker 计数涨、PID 不变），出口 `finally` 释放锁。TTL 30s（进程崩了也不会卡住后续重启） |
 | **熔断** | `<runtime>/restart_guard.json`（events / blocked_until / backoff） | 180s 窗口内重启 ≥4 次 → 封 60s，之后按次**翻倍**（上限 15min）。熔断期间 `spawn_self_restart` 返回 False 且**限频**打日志（30s 一条，不再用日志刷爆日志） |
 
 对外：`restart_in_progress(alias, ttl)` 供外部动作避让；`state()` 带 `breaker`（recent/blocked_until/remaining）
 与 `restart_lock`，前端可提示"已熔断 / 正在重启"。
+
+**`l_app_ready.is_restart_exec()`（服务启动期自检必须放行"重启执行进程"，2026-09-16/17）**：
+服务的启动期自检（"端口被占用就 `sys.exit`"）必须放行"重启执行进程"——它是**故意**在旧实例仍占用
+端口时启动的。未放行的后果同上（**静默不重启**）：import 阶段退出、`DEVNULL` 下无任何日志。
+`l_WChat/app.py` 已改；`lugwit_auth` / `lugwit_baidu_netdisk` 等待办。
+相关参数 `debounce_max`(60s)（见上节）；回归测试：
+`wuwo/packages/l_app_ready/1.0.0/tests/test_hotreload_debounce.py`、`wuwo/packages/l_app_ready/1.0.0/tests/test_restart_lock.py`。
 
 **主页侧的配合**（`l_homepage/homepage_cli.py`）：
 - `_watchdog_tick()`：`_restart_in_progress(svc)` 为真时**跳过**（原来会在热重载过渡期把服务再拉一个起来）；

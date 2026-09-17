@@ -4,15 +4,16 @@
 > **知识库**（多知识库，每库独立路由 `/web/kb/{name}`，内含目录层级与多篇文章）。
 > 不依赖桌面库（PySide6），认证经 `lugwit_auth`（1027）HTTP 接入，客户端/服务端经 REST + token 契约通信。
 >
-> 更新：2026-09-03
+> 更新：2026-09-17
 
 ## 访问入口
 
 - **知识库页面**：<http://localhost:8080/note/web/kb/rez_pkg>（`rez_pkg` 知识库，总览页 `/note/web/kb`）
-- **登录账号**：`admin01`
-- **登录密码**：`666`
+- **入口页 `/`**：**302 → `/web`（我的笔记列表）**；未登录访问先 302 → `/login`（2026-09-17 变更，详见 §8）
+- **登录账号**：使用受控账号凭据
+- **登录密码**：使用受控账号凭据
 
-> 登录页：`http://localhost:8080/note/login`；知识库需登录后访问，发布/查看均要求具备笔记访问权限（admin01 可见全部）。
+> 登录页与网络入口见[../Nginx反向代理机制.md](../Nginx反向代理机制.md)；知识库访问权限由认证服务控制。
 
 ---
 
@@ -57,8 +58,8 @@ requires = [
 
 - **不直接依赖 `lugwit_baidu_netdisk` 包**——cloud_sync（云端镜像/网盘链接）经其 Web 服务 HTTP 接口接入
   （同机 127.0.0.1 自动授权，服务端复用其持有的百度 token），避免拉入服务端重依赖
-- `watchfiles` 来自 `requires`（而非硬编码 `E:\py_flow\py312` PYTHONPATH hack），供 uvicorn `--reload`
-  覆盖全文件类型热更新（依赖缺省时 wuwo 会自动下载，见《Rez包创建和启动指导文档.md》）
+- `watchfiles` 为 `SrcWatchService` 的可选监视后端；服务不再使用 uvicorn `--reload` 作为现行机制。
+- **重要**：截至 2026-09-17，`l_notepad_server` 的 `L_SRC_WATCH` 对 `.py` 改动实测不可靠。Python 改动后必须手动重启；模板是否刷新仍按现行热重载文档核验。
 
 ## 2. 端口与网络拓扑
 
@@ -150,10 +151,14 @@ for _p in _migrated:
 
 | 配置键 | 含义 | 生产默认（公网机） | 开发默认（开发机） |
 |--------|------|--------------------|--------------------|
-| `auth_url` | 认证服务地址（nginx 入口） | `http://121.196.144.88:8080` | `http://127.0.0.1:8080` |
+| `auth_url` | 认证服务地址（nginx 入口） | `https://121.196.144.88` | `http://127.0.0.1:8080` |
 | `auth_route` | 认证路由前缀 | `/api/v1/auth` | `/api/v1/auth` |
-| `api_url` | 笔记/账号 API | `http://121.196.144.88:8080/note` | `http://127.0.0.1:8080/note` |
+| `api_url` | 笔记/账号 API | `https://121.196.144.88/note` | `http://127.0.0.1:8080/note` |
 | `log_server_url` | 远端日志服务 | 同上 | 同上 |
+
+> 2026-09-17 更正：生产入口已从 `http://121.196.144.88:8080` 改为 **`https://121.196.144.88`**（
+> 8080 已收成 `listen 127.0.0.1`，只供本机调试；公网唯一入口是 443）。
+> 域名来自 wuwo 的 `LUGWIT_DOMAIN_URL`，而 `wuwo/config/config.yaml` 的 `domain` 已留空（只走 IP）。
 
 登录 / 认证端点拼接规则：`auth_url + auth_route + "/..."`。
 
@@ -212,6 +217,11 @@ for _p in _migrated:
 - **上传守卫**：`submitToBaidu()` 和「➕ 上传本地文件」只处理 `仅本地`/`已修改`；未修改（已同步）的直接提示跳过
 - **右键菜单**：显示状态 + 版本 + 百度云地址（`dir` 模式显示真实物理路径，`blob` 模式显示逻辑路径），
   仅 `仅本地`/`已修改` 时提供「提交到百度云」
+- **归档（版本库）内容读取优先级**（2026-09-17）：① 客户端本地桥 `window.lugwitBridge.depotDownload`
+  → ② 托盘中转（`depot_download` 动作，经 19527）→ ③ 回退 `/baidu/api/depot/download`；
+  托盘状态浮层新增一行「版本库读取：客户端本地桥 / 经托盘中转（基址） / 回退 `/baidu` 直连」。
+  归档逻辑路径必须取映射的 `base_path`（形如 `/notes/rez_pkg/xxx.md`）——
+  旧写法 `/<kbName>/<rel>`（缺 `/notes` 前缀）会 404「版本不存在」，本次已修。
 
 ### 7.2 工作区接口
 
@@ -256,7 +266,29 @@ Depot 支持多存储模式（blob / 目录镜像），按逻辑根登记，详�
 存量笔记（老 `<apps>/notes` 里的文件）用「全部同步到百度云」重推一遍即可进入库；
 旧的裸目录确认无误后可删除。
 
-## 8. 排查速查
+## 8. Web UI：入口页与顶栏全局搜索（2026-09-17）
+
+本次 Web UI 两处变化。**模板由 Jinja 缓存，改模板后必须重启 8765 才生效。**
+
+### 8.1 入口页 `/` 改为 302 → `/web`
+
+- 访问 `/` 不再渲染欢迎页，改为 **302 重定向到 `/web`（我的笔记列表）**；`templates/index.html` **已删除**
+- 未登录访问 `/` 先 **302 → `/login`**；`login.html` 登录成功本来就跳 `/web`
+- 顶栏导航去掉「🏠 首页」项，品牌 logo 链接改为 `/web`
+
+### 8.2 顶栏全站统一搜索框
+
+由 `base.html` 注入，**所有页面都有**（**含 `/web/index` 搜索索引页**）：
+
+- **DOM**：`#global-search-input`（输入框）+ `#global-search-pop`（弹窗容器）
+- **交互**：输入即弹窗（**220ms 防抖**），请求 `/api/search?q=…&limit=8&mode=lex`；点击结果打开对应文档
+- **样式与「搜索索引」页同源**：结果 CSS 抽到 `static/app.css`（`.hit / .hit-head / .badge-score / .snip / .sig*`），
+  渲染逻辑抽到 `static/app.js` 的 **`LN.renderSearchHits(hits)`**；搜索索引页（`web_index.html`）也改用它 → 两处永不漂移
+- **各页原有搜索框去重**：
+  - `web_list.html`、`web_kb_overview.html`：删掉顶栏搜索框（统一用全局的）
+  - `web_kb.html`：「搜索本知识库」框**下移到页内工具栏**（id `kb-search-input` 不变）
+
+## 9. 排查速查
 
 | 现象 | 排查 |
 |------|------|
@@ -265,7 +297,7 @@ Depot 支持多存储模式（blob / 目录镜像），按逻辑根登记，详�
 | 想改服务器地址 | 标题栏「服务器设置」或 `~/.Lugwit/l_notepad_server/server_config.json` |
 | 登录/API 不通 | 见第 6 节排查（Lugwit_deploy、server_config.json 残留、nginx 路由） |
 
-## 9. 相关文档
+## 10. 相关文档
 
 - 《Nginx反向代理机制.md》— 路由与转发
 - 《标题栏提供的服务.md》— 客户端标题栏能力
