@@ -432,6 +432,26 @@ window.addEventListener("depot-api", function (ev) {
 
 `overwrite=true` → `rtype=3` 同名覆盖；`false` → `rtype=1` 同名重命名。
 
+**授权失效要能看见（2026-09-18 修）**
+
+百度侧 errno `-6`（鉴权失败）/ `111`（access_token 过期）过去被一律当 **404** 抛（前端只认 401），
+且 `GET /api/state` 的 `token_ok` 只看「本地有没有 token 字符串」→ 页面一直显示「已授权」，
+用户只看到一个 3.5 秒的 toast，无从判断是证书、路由还是授权。现在：
+
+| 表现 | 现状 |
+|------|------|
+| 文件类接口遇 errno `-6`/`111` | **401** + `{"detail":"…","code":"baidu_auth_expired","errno":-6}`（前端据 `code` 与「未登录 lugwit_auth」区分） |
+| 所有页面的顶栏 | 红色横幅：写清 errno 与 `errmsg`，带「刷新 Token」「去重新授权」按钮 |
+| 前端 `api()` | 命中 `code=baidu_auth_expired` → 自动用 refresh_token 续期**一次**并重放原请求；失败才把错误抛给调用方（上传类请求体已发完，不重放） |
+| `GET /api/state` | 新增 `auth.token_valid`（True/False/null＝未知）、`token_errno`、`token_msg`；`token_ok` 语义不变（仅表示本地有 token） |
+| `GET /api/account` | 不再吞百度报错：失败时 `auth_ok=false` + `auth_errno` + `auth_msg`（`quota_ok`/`quota_msg` 同理） |
+| `POST /api/auth/refresh` | 刷新后**真打一次百度**校验，响应带 `valid`；`valid=false` 表示 refresh_token 也废了，须重新授权 |
+
+`token_valid` 的探测结果按 token 缓存 `LUGWIT_NETDISK_TOKEN_PROBE_TTL` 秒（默认 60；设 `0` = 每次真打）。
+探测打的是 `uinfo`（纯鉴权接口）：**百度只要回非 0 errno 就判失效**——实测无效 token 返回
+`errno=20017`，不在 `-6`/`111` 里，所以文件接口的判据仍是 `-6`/`111`，探测则不看码。
+网络异常（exception）判 `null`＝未知，不误报失效。
+
 ### 7.1 全类型文件预览
 
 `/files` 页所有文件都有「预览」按钮（原「播放」只支持图片/视频）。分类由
@@ -589,6 +609,13 @@ wuwor lugwit_baidu_netdisk -- python tests\purge_autotest.py --yes   真删
 ---
 
 ## 10. 排障
+
+**顶栏红条「百度授权已失效（errno=-6）」/ 文件页提示 `读取目录失败 errno=-6`**
+errno `-6` = 鉴权失败、`111` = access_token 过期（判据同 `baidu_netdisk_push_sync`）。
+本地 token 文件在、百度不认，就是这种情况：先点横幅「刷新 Token」；仍失效说明 refresh_token 也废了
+→ 按 §3.2 重新授权。**不是**证书/路由问题：证书问题表现在 TLS 握手（`ERR_CERT_*` / 000），
+路由问题的 404 不带百度 errno。旧版本（2026-09-18 前）会把这类失败报成 404 且只弹 3.5 秒 toast，
+排查时容易误判——现已统一走 401 + `code=baidu_auth_expired`。
 
 **`db: false` / 503 版本元数据库不可用**
 Postgres 连不上。检查 `chatroom` 库连接串（和 `lugwit_auth` 用同一套）。

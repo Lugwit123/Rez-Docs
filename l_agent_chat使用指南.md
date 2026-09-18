@@ -4,7 +4,9 @@
 
 `l_agent_chat` 是本地 AI 编码 Agent 聊天服务：FastAPI 提供 Web UI + SSE 流式对话，
 可调用本地工具集（文件/命令/Git/HTTP）辅助编码，支持对话存储、远程工具服务、
-上下文压缩与 token 统计。模型走 OpenAI 兼容 Chat Completions 接口（默认 DeepSeek）。
+上下文压缩与 token 统计。模型走 OpenAI 兼容 Chat Completions 接口，支持多个供应商
+（厂商），默认火山方舟 `volcengine` + `DeepSeek-V4.1-Flash`；模型目录与 API Key
+复用 `l_model_hub` 的统一注册表（`models.json`）与密钥库（`config.json`）。
 
 ## 包信息
 
@@ -15,7 +17,7 @@
 | 作者 | Lugwit Team |
 | 依赖 | `python-3.12+<3.13`, `fastapi`, `uvicorn`, `jinja2`, `requests`, `psutil`, `l_agent_tool` |
 | 默认端口 | `1250` |
-| 默认模型 | `deepseek-v4-flash` |
+| 默认供应商 / 模型 | 火山方舟 `volcengine` / `DeepSeek-V4.1-Flash` |
 
 ## 启动
 
@@ -88,8 +90,23 @@ SSE 事件类型：
 
 - **快速路径**：`run_fast_tools` 直接解析用户消息命中简单工具（读文件/列目录等），
   不触发危险工具。
-- **Planner 路径**：`_planner_action` 让模型逐步规划，最多 `max_tool_steps` 步；
-  命中 `APPROVAL_TOOLS`（write_file/run_command/kill_port/git_push）时先审批。
+- **Planner 路径**：`_planner_step` 走**多轮工具循环**——每轮把
+  `assistant(tool_calls)` + `role=tool` 的结果追加进 planner 对话（带 `tool_call_id`），
+  模型看得到自己已调过什么、结果是什么，因此能不重复地逐步推进；一轮里模型返回多个
+  `tool_calls` 时会**并行执行多个工具**。轮数上限 `max_tool_steps`（内置默认 6，设置页可改）。
+  命中 `APPROVAL_TOOLS`（write_file/edit_file/run_command/kill_port/git_push）时先审批。
+  工具失败也会把失败结果回填给模型，让它换别的工具继续。
+
+### 改代码与 diff
+
+- `edit_file(path, old_string, new_string, count=1)`：**修改代码首选**——精确替换，比 `write_file`
+  整文件重写安全省 token；`count=1` 只换第一处，`0` 换全部。工具在 `l_agent_chat/agent_tools.py`
+  内注册进 `l_agent_tool.DEFAULT_TOOLS`（与 `rez_knowledge` 同一套路）。
+- **审批预检**：`edit_file` 审批前用 `preview_edit_file` 干跑（不写盘）——审批卡片直接显示 diff，
+  且 `old_string` 找不到 / 出现次数不足这类错误提前回填给模型，不必让用户批准一个注定失败的改动。
+- **diff 展示**：审批卡片与执行结果都用 `buildDiffBlock` 渲染彩色 diff（`+` 绿 / `-` 红 / `@@` 蓝，
+  头部带 `+N -M` 统计）；`tool_result` 事件新增 `diffs: [{path, diff}]` 字段供前端渲染。
+- 连续改多个文件时 Planner 不会在第一个 `edit_file` 后停止（只有 `run_command` / `write_file` 成功才停）。
 
 ### 上下文压缩
 
@@ -113,19 +130,30 @@ SSE 事件类型：
 
 会话文件存储于 `<工作区>/.l_agent_ws/sessions/session_<id>.json`。
 
-### 远程工具服务
+### 工具服务（含本机自动发现）
 
-`l_agent_chat` 可连接外部同类服务（如远程脚本编辑器 `121.196.144.88:8764`），
-在设置页添加并激活后，Agent 走远程工具服务执行。
+工具调用发生在**聊天服务所在那台机器**上，与用户从哪台设备打开网页无关；服务清单存在
+`<存储根>/.l_agent_ws/tool_services.json`（每个工作区一份）。
+
+- **本机自动发现**：读 `~/.Lugwit/run/<service>.json`（可用 `LUGWIT_RUN_DIR` 覆盖），
+  没有发现文件时兜底探测 `127.0.0.1:${SCRIPT_EDITOR_HTTP_PORT:-8764}`；命中即作为内置
+  服务（`builtin: true`，名称后缀「（本机自动发现）」，不可编辑/删除，只能选用/测试）。
+  因此**从手机浏览器打开**访问服务器实例时，用的就是服务器自己那台机器的脚本编辑器。
+- **手工服务**：在设置页添加外部同类服务（如对端 PC 的 `http://<ip>:8764`）后，Agent 也能调。
+- **调用协议**：优先 `POST {url}/call_tool`；服务未实现（404/405）时自动退回
+  `POST {url}/execute` + 执行环境里的 `agent` 命名空间
+  （`agent.list_tools()` / `agent.call_tool(name, **args)`）—— 现网 l_script_editor 属于后者。
+- 模型看到的工具描述带来源前缀：远程为 `[远程服务 <名称> @ <url>]`，本机为 `[本机服务 <名称>]`；
+  本机服务与本地内置工具同名的会被去重（同一台机器同一套实现）。
 
 | 端点 | 说明 |
 |------|------|
-| `GET /api/tool-services` | 列出服务 |
+| `GET /api/tool-services` | 列出服务（含本机自动发现的 `builtin` 服务） |
 | `POST /api/tool-services` | 创建服务 |
 | `POST /api/tool-services/activate` | 激活服务 |
-| `POST /api/tool-services/test` | 测试连通 |
+| `POST /api/tool-services/test` | 测试连通（`/tools` 不可用时自动用 `/execute` 发现） |
 | `POST /api/tool-services/invoke` | 调用远端服务的一个工具 |
-| `POST/DELETE /api/tool-services/<sid>` | 更新/删除 |
+| `POST/DELETE /api/tool-services/<sid>` | 更新/删除（内置服务不支持删除） |
 
 ### 其他端点
 
@@ -150,9 +178,10 @@ SSE 事件类型：
 
 | 配置键 | 环境变量 | 默认 | 说明 |
 |--------|----------|------|------|
-| `api_url` | `AGENT_CHAT_API_URL` | `https://api.deepseek.com/chat/completions` | OpenAI 兼容接口 |
-| `api_key` | `DEEPSEEK_API_KEY` | `""` | API 密钥（不硬编码内置） |
-| `default_model` | `AGENT_CHAT_MODEL` | `deepseek-v4-flash` | 默认模型 |
+| `ai_provider` | `AGENT_CHAT_PROVIDER` | `volcengine` | 默认供应商（siliconflow/minimax/zhipu/deepseek/volcengine/aliyun） |
+| `<供应商>_model` | `AGENT_CHAT_MODEL` | 各供应商默认模型 | 各供应商模型 ID（火山方舟默认 `DeepSeek-V4.1-Flash`） |
+| — | `<供应商>_API_KEY` | l_model_hub 密钥库 | API 密钥统一存 l_model_hub（`~/.lugwit/l_model_hub/config.json` 或包目录 `config.json`），不落 settings.json |
+| — | `AGENT_CHAT_API_URL` | 按供应商推导 | 全局 API 地址覆盖（调试用） |
 | `host` | `AGENT_CHAT_HOST` | `127.0.0.1` | 监听地址（局域网设 `0.0.0.0`） |
 | `port` | `AGENT_CHAT_PORT` | `1250` | 服务端口 |
 | `temperature` | — | `0.1` | 采样温度 |
@@ -163,6 +192,7 @@ SSE 事件类型：
 | `compress_threshold` | — | `0.85` | 达到阈值比例触发压缩 |
 | `compress_keep_recent` | — | `6` | 压缩时保留最近轮数 |
 | `translator_backend` | `AGENT_CHAT_TRANSLATOR` | `baidu` | 翻译后端（baidu/mymemory/ai） |
+| `mobile_msg_height` | — | `66` | 移动端单条消息气泡限高（屏幕高度百分比，`0` = 不限；≤860px 生效） |
 | `rez_roots` | `AGENT_CHAT_REZ_ROOTS` | 源码+3rd 仓库 | rez 包仓库根（`;` 分隔） |
 
 ## 依赖该包的包
@@ -196,6 +226,13 @@ Windows 独占绑定防共享（治本）：
 - **改了源码不生效**：确认 `reload` 生效的条件——启动器需以 `reload=True` 且
   `reload_dirs` 指向 `src/l_agent_chat`（已默认）。独占绑定下旧进程残留会导致
   启动直接报错而非静默抢请求，用 `-y` 重启即可自动清理（含僵尸 socket）。
-- **API key 报错**：通过 `DEEPSEEK_API_KEY` 环境变量或设置页配置，见 `/api/settings`。
+- **API key 报错**：密钥统一在 l_model_hub 密钥库管理（环境变量 `<供应商>_API_KEY`
+  或 l_model_hub 的 `config.json`），设置页只读展示各供应商密钥状态。
+- **公网/手机访问时看不到流式、审批总是被拒（user_rejected）**：nginx 默认会缓冲上游响应，
+  SSE 会攒到请求结束才一次性下发（人工审批 120s 超时即判为拒绝）。应用侧已在 SSE 响应加
+  `X-Accel-Buffering: no` 关掉本响应的缓冲；若仍被缓冲，可在 nginx 的 `location /agent_chat/`
+  里加 `proxy_buffering off; proxy_cache off;`（`/v1/chat/completions` 段已有同样配置）。
+- **改代码后整个文件都变成已修改（git diff 全红）**：`edit_file` 会按原文件换行风格写回
+  （CRLF 文件仍 CRLF、LF 文件仍 LF），如遇到请确认是原文件本身混用了换行。
 - **启动报"端口仍不可用（僵尸 socket 或无权限）"**： zombie 持有者不在本用户
   进程树内（如系统服务占用），手动 `netstat -ano | findstr :1250` 排查或重启系统。
