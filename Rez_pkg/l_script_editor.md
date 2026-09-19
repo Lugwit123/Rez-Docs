@@ -895,25 +895,38 @@ helper 日志 `23:57:22 before listeners=['7628']` → `23:57:23 taskkill 7628 r
 - 本机能免 token 直连，靠的是远端 `SCRIPT_EDITOR_IP_WHITELIST` 含本机出口网段（见 §3A.2）；
   `/upload_folder` 同样吃这条豁免（白名单命中即放行，不校验令牌）。换机器或换出口网段后需重新加白名单，或改用 `--token`。
 
-**⚠️ 本机那份不会自己生效**（最常见的踩坑）：
+**⚠️ 本机那份不会自己生效，而且"重启宿主"不一定够**：
 
-| 实例 | 谁在跑 | 改了源码怎么让它生效 |
+本机 8764 有两种可能的宿主，先 `netstat -ano | findstr :8764` 看占用者是谁：
+
+| 占用者 | 长什么样 | 改了源码怎么生效 |
 |---|---|---|
-| **远端** `121.196.144.88:8764` | **独立进程**（`wuwo\wuwor.bat` 拉起的 `l_script_editor_server`） | 上面这套 `deploy_remote.py`：同步 + 重启，中断约 10 秒 |
-| **本机** `127.0.0.1:8764` | **宿主程序进程内**的 `ScriptEditorTab.start_http_server()` | `deploy_remote.py` **管不到**；必须**重启宿主程序** |
+| ① **独立进程** | `python -m l_script_editor.standalone_server`（托盘/命令行/收藏脚本拉起，**常驻多天**） | **重启宿主没用** —— kill 掉它再起一个 |
+| ② **宿主进程内** | `ScriptEditorTab.start_http_server()` 起的 HTTP 线程 | 必须**重启宿主**（或进程内调 `editor_tab.set_http_port(port, restart=True)`） |
 
-> 所以在本机改完 `http_server.py` 后打 `127.0.0.1:8764` 发现行为没变，**通常是没重启宿主**，
-> 不是代码写错。
+> **最容易踩的坑**：老的独立实例还占着 8764 时，新起的服务会**自动换端口**（端口冲突会自动重试绑定），
+> 于是 `127.0.0.1:8764` 上跑的还是几天前的老代码 —— 看起来就是"改了没生效"。
+> 判断依据：`/status` 的 **`server_id` 没变＝还是同一个进程**。
 >
-> 进程内的替代做法：在宿主里（脚本编辑器自己的控制台）调
-> `editor_tab.set_http_port(port, restart=True)` 重启那条 HTTP 线程。
+> 处理（本机，先确认占用者再动手）：
 >
-> 想在本机验证新代码又不想重启宿主：另起一个**独立实例** ——
-> `set SCRIPT_EDITOR_HTTP_PORT=8774` 后
-> `python -m l_script_editor.standalone_server`（同一份源码、独立进程）。
-> 纯 HTTP 端点（`/status`、`/upload*`、`/download`）可用；
-> `/execute` 依赖 Qt 执行桥，临时实例里通常不可用。
-> 也可以完全不起 Qt，直接 `_create_bottle_app(stub_bridge, file_roots=[...])` + `bottle.run(...)` 只验上传端点。
+> ```powershell
+> netstat -ano | findstr :8764                 # 拿到 pid
+> Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select CommandLine, CreationDate
+> # 若是 standalone_server 且在跑老代码：kill 掉，再起一个
+> taskkill /F /PID <pid>
+> set SCRIPT_EDITOR_HTTP_PORT=8764
+> wuwor l_script_editor -- python -m l_script_editor.standalone_server
+> ```
+>
+> 想在本机验证新代码又不想动 8764：另起临时实例（换端口）——
+> `set SCRIPT_EDITOR_HTTP_PORT=8774` 后跑 `standalone_server`（同一份源码、独立进程）；
+> 纯 HTTP 端点（`/status`、`/upload*`、`/download`）可用，`/execute` 依赖 Qt 执行桥、临时实例里通常不可用。
+> 也可完全不起 Qt：`_create_bottle_app(stub_bridge, file_roots=[...])` + `bottle.run(...)` 只验上传端点
+> （stub 记得给 `executing` / `exec_elapsed_s` 属性，`/status` 会读）。
+>
+> **远端** 8764 是独立进程（`wuwor.bat` 拉起），用上面的 `deploy_remote.py` 同步 + 重启（中断约 10s）；
+> `--no-restart` 只同步（纯文档/资源改动时用，不必重启）。
 
 ---
 
