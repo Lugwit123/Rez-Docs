@@ -307,3 +307,92 @@ wuwor lugwit_netdisk_client -- netdisk_client          :: 启动
 
 LAN 直连 / WireGuard 打洞 / Headscale / `Transport` 抽象层。
 只做网盘一条路。过早抽象比不抽象更糟。
+
+> **（2026-09-19 补充）该判据不变**：现在仍然只做百度一条路，不写第二个后端、不建插件框架、不改表结构。
+> 但不妨碍把「将来可能换成自建云盘 / 自建公网服务器」这件事**预留成一条明确的缝**，见 §12
+> —— 只定义接口形状、配置键与迁移路径，不写多后端代码。
+
+## 12. 存储后端抽象（预留：未来自建云盘 / 自建公网服务器）
+
+### 12.1 与 §11 的关系
+
+§11 反对的是**现在**去建 `Transport` 抽象层 / LAN 直连 / 打洞。本节只做三件"零成本"的事：
+
+1. 把百度特有的怪癖**收口**到一个模块边界内（现在它们散在 `depot_service` 里）；
+2. 把**根前缀**从"百度 token 派生"改成**显式配置**（迁移时最痛的一条）；
+3. 写明换后端的**迁移路径**，使将来是"换 driver + 搬实体"，而不是"重写"。
+
+### 12.2 现状耦合面（证据）
+
+| 层 | 现状 | 后端无关？ |
+|---|---|---|
+| HTTP 层 `web_server.py:2107,2859` | 只讲 `path`/`rev`/`ws` | ✅ |
+| 元数据 `depot_store.py` | `depot_blob.remote_path` 存"后端内路径" | ✅（仅前缀语义相关） |
+| manifest / 日志 / GC 工具 | cl_id json、按 `remote_path` 取文件 | ✅ |
+| 闸门 `gate.py` | JWT 本地验签 | ✅ |
+| **`depot_service.py`** | **8 处 `from .baidu_netdisk_api import …`**：`scan_file`、`upload_file_stream`、`meta_by_path`、`file_list`、`file_metas`、`download_dlink_to_path`、`normalize_dlink`，外加 `baidu_netdisk_auth.state_dir` | ❌ **唯一要收口的地方** |
+| 百度特有语义 | 秒传(`rapid`)、**非报备应用 md5 不可信**(`md5_real`)、`dlink` 直链、`opera=copy`、`mkdir_cache`、限流 errno 31034 | ❌ 应被 driver 吞掉，不上浮 |
+
+### 12.3 最小接口（driver seam，草案）
+
+```python
+class StorageBackend(Protocol):
+    name: str                 # 'baidu' | 's3' | 'webdav' | 'localfs'
+    root_prefix: str          # 取代 token 派生的 apps_root：'/apps/Lugwit' 或 's3://bucket/depot'
+    caps: BackendCaps         # 能力标志，见 12.4
+
+    def put(self, local: Path, remote: str, *, mkdir_cache=None) -> PutResult: ...
+    def get(self, remote: str, dest: Path) -> None: ...
+    def meta(self, remote: str) -> Meta | None: ...          # md5 可信度由 caps 表达
+    def listdir(self, remote: str) -> list[Entry]: ...
+    def exists(self, remote: str) -> bool: ...
+    def mkdirs(self, paths: Iterable[str], cache: set[str]) -> None: ...
+    def copy(self, src: str, dst: str) -> None: ...          # 可选；无实现则上层退化 get+put
+    def delete(self, remote: str) -> None: ...               # GC 用
+```
+
+配套：`get_backend()` 按 `LUGWIT_DEPOT_BACKEND` 返回单例；`depot_service` 只 import 它，不再直接 import `baidu_netdisk_api`。
+
+### 12.4 能力矩阵（缺什么就退化成什么）
+
+| 能力 | 百度网盘 | 自建（对象存储 / WebDAV / 本地 FS） | 缺失时的退化 |
+|---|---|---|---|
+| `supports_rapid_upload` | ✅（命中率不稳，见 §14.4） | ⚠️ S3 无跨桶秒传；本地 FS 可用硬链 | 全量上传（慢但正确） |
+| `trusted_md5` | ❌（非报备应用只有混淆指纹） | ✅（单段 ETag 可当 md5；本地 FS 直接算） | 一律本地读字节算 md5（**现状已如此**） |
+| `supports_server_copy` | ✅ `opera=copy` | ⚠️ S3 `CopyObject` / WebDAV `COPY` | 上层 get+put |
+| `direct_download_url` | ✅ `dlink`（有时效） | ✅ 签名 URL 或直读 | 服务端流式代理 |
+| `path_style` | 绝对路径 `/apps/...` | bucket+key / WebDAV URL | 由 driver 归一成 `root_prefix + 逻辑段` |
+| 限流 | errno 31034 退避 | HTTP 429/503 | 统一成 `RateLimited` 异常 + 退避 |
+
+### 12.5 现在就该定下来的三个配置键
+
+| 键 | 现状 | 预留语义 |
+|---|---|---|
+| `LUGWIT_DEPOT_BACKEND` | 无（隐含 baidu） | `baidu`（默认）｜将来 `s3` / `webdav` / `localfs` |
+| `LUGWIT_DEPOT_ROOT_PREFIX` | 隐含 = token 里的 `apps_root`（`/apps/Lugwit`） | **显式**配置；baidu 后端缺省时仍回退 token 派生（向后兼容） |
+| `LUGWIT_DEPOT_BASE_URL` | 隐含 `http://127.0.0.1:8080/baidu`（本机调试口） | **跨机一律走 nginx 单入口 + 前缀**：生产 `https://<入口>/baidu`（将来域名可带非标端口）。公网只开 443（+ 未来 8443），后端端口不对外 → 本机开发用回环 8080/1028，**跨机不得直连 1028**。见《Nginx反向代理机制》§2.1、§7 |
+| 后端凭据 | `baidu_netdisk_token.local.json` | 按后端分文件：`~/.lugwit/baidu_netdisk/*`、将来 `~/.lugwit/depot_s3/*` … |
+
+> `depot_blob.remote_path` 里**已经**是后端内完整路径，所以"换后端 = 改前缀 + 搬实体"，**不用改表**。
+
+### 12.6 换后端的迁移路径（真到那天照做）
+
+1. 新增 driver（实现 §12.3 的 8 个函数）+ 注册进 `get_backend()`；
+2. `tools/depot_migrate_backend.py --from baidu --to s3 --lib <库> --dry-run`：
+   逐 blob `get` → `put` → 校验 size/md5 → `UPDATE depot_blob SET remote_path=…`；
+   **复用现有范式**：`depot_migrate_blob_lib.py` / `depot_migrate_dir.py` 的「dry-run 优先 + 云端先动 DB 后动 + 失败即中止」；
+3. 切 `LUGWIT_DEPOT_BACKEND` + `ROOT_PREFIX`，跑 `depot_manifest_verify`（待补，见演进计划 T4）+ 抽样下载；
+4. 双写/只读期 → 观察期 → 下线旧后端凭据；
+5. dir 模式的活文件由 driver 落盘到新后端（`.versions/vNNN` 语义与保留策略不变）。
+
+### 12.7 对 auth 的影响：**零**
+
+auth 只依赖 **HTTP 契约**（`submit_stream` / `download` / `list`），不 import 任何百度 SDK；
+`/l_auth_backup` 的备份与恢复逻辑与后端无关。**换后端不动 auth** —— 这正是"预留扩展能力"要保住的性质
+（见《lugwit_auth统一用户授权服务设计》§13.7、§13.4 P-B 的离线验签同样与后端无关）。
+
+### 12.8 现在**不做**的（守住 §11）
+
+- 不写第二个 driver；不引入 `Transport` / 多后端插件框架；不把 driver 暴露成对外 API；不改 DB 表结构；
+- **唯一"现在做"的动作**：把 `LUGWIT_DEPOT_ROOT_PREFIX` 显式化 —— 它是"token 派生"这层百度耦合里
+  最容易被遗忘、迁移时最痛的一条。

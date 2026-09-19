@@ -253,12 +253,43 @@ LUGWIT_CA_FILE（环境变量）
 
 只要消费方包声明了 `requires: l_qframelesswindow`（如 `l_notepad_client`、`l_notepad_server`、`lugwit_netdisk_client` 等），**零安装**即得信任（包 env 注入 `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`，`ssl_support` 再兜底重建默认 context）。
 
-### 11.3 两个已知缺口（注意）
+### 11.3 网页/WebView 侧的缺口与解法（2026-09-19 补充）
 
-1. **`l_tray` 不依赖 `l_qframelesswindow`** → 托盘 Python 侧的裸 `urllib` **拿不到这份 CA 分发**（本地 `http://127.0.0.1:1028` 无碍；一旦指向远端 `https://…` 会证书失败）。
-2. **QtWebEngine（客户端承载的网页）用 Chromium 自己的信任库**，Python 的 `ca_bundle` 对它**无效** → 把客户端指向 `https://121.196.144.88/...` 的自签页面会**白屏 / 证书错误**。处理方式二选一：
-   - 处理 `QWebEnginePage.certificateError`（仓库先例：`ChatRoom/.../l_cgtw/maya_plugin/maya_plugin.py:427,522`）；
-   - 或把自签 CA 装进 **Windows 系统根证书库**。
+**先分清"网页"有几种形态** —— 只有第 3、4 类没解决：
+
+| # | 形态 | 状态 | 依据 |
+|---|---|---|---|
+| 1 | 桌面 Python（`urllib` / `requests`） | ✅ 已解决 | §11、§11.2：随包分发 `ca_bundle.pem` + `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` + `install_default_ca()` |
+| 2 | Android WebView | ✅ 已解决 | `l_WChat/.../res/xml/network_security_config.xml` + `res/raw/lugwit_ca.pem` |
+| 3 | **内嵌 QtWebEngine 页面**（`l_notepad_client`、`lugwit_netdisk_client` 里的 QWebEngineView） | ❌ **未解决** | Chromium 用自己的信任库，Python 的 `ca_bundle` 对它**无效** → 指向 `https://121.196.144.88/...` 会**白屏 / 证书错误** |
+| 4 | **外部浏览器**（Chrome/Edge 打 `/baidu` `/note` `/chat` `/homepage` `/docs/`） | ❌ **未解决** | 仓库内**无任何装根证书的手段**（全仓搜 `certutil` / `addstore` 只命中一条与 Appx 签名无关的文档） |
+| 5 | 托盘 `l_tray` 的 Python | ⚠️ 缺口 | 不依赖 `l_qframelesswindow` → 拿不到 CA 分发（本机回环 `http://127.0.0.1:1028` 无碍，指远端 https 才失败） |
+
+> 今天没炸的原因：内部桌面程序的页面一律走**本机回环 `http://127.0.0.1:8080`**（明文、无 TLS）。
+> `l_notepad_server` 的 CHANGELOG 明确记着：服务端调认证固定走回环 8080，**就是为了绕开自签证书**。
+> 只有"从别的机器用浏览器打开 IP 入口"才暴露第 3、4 类。
+
+**解法（按推荐顺序）**
+
+| 方案 | 覆盖 | 成本 | 说明 |
+|---|---|---|---|
+| **1. 把自签 CA 装进 Windows 根库** | 第 3、4 类（**一次解决**），顺带解掉第 5 类 | 一次性脚本 + 管理员权限 | 新脚本：**`l_nginx/999.0/tools/install_lugwit_ca.bat`**（安装 / `/uninstall` / `/y`）。Chrome、Edge、QtWebEngine 在 Windows 上读**系统根库** → 装一次这几类都好（**待实测确认**：装后重启浏览器/客户端再验） |
+| 2. 接 `QWebEnginePage.certificateError` | 只管自家客户端内嵌页；外部浏览器无效 | 小 | ⚠️ 必须**按证书指纹白名单**放行，别写成无条件忽略（那是 MitM 敞口）。仓库先例：`ChatRoom/.../l_cgtw/maya_plugin/maya_plugin.py:427,522` |
+| 3. 上域名 + Let's Encrypt（`8443`，免备案） | 根治 | 买域名 | 已拍板方向（§4.3、`Nginx反向代理机制` §11.4） |
+
+**脚本 1 的实测记录（2026-09-19）**
+
+- CA 文件查找顺序：`LUGWIT_CA_FILE` > `C:\certs\lugwit\ca.pem` > 本仓 `l_qframelesswindow/999.0/src/l_qframelesswindow/config/ca.pem`；本机三处里前两处都在，取到 `C:\certs\lugwit\ca.pem`。
+- 该证书可直接当根：`BasicConstraints(ca=True, path_length=0)` + `keyCertSign`（`tools/make_self_signed_cert.py:70-78`）。
+- 实测值：`Subject=O=Lugwit Internal, CN=121.196.144.88`、`NotAfter=2036-09-11`、`Thumbprint=831663D9907F224B0EA4AA01F746BD33FEB17314`；本机根库查询 `MISSING`（尚未安装）。
+- ⚠️ **踩坑（写进脚本注释了）**：`certutil -dump` 对 **PEM 文件不输出** `Subject` / `Cert Hash(sha1)` 行（只有先转 DER 才给），所以脚本改用 PowerShell 的 `X509Certificate2` 读 PEM；且**不要**用临时文件 + `WriteAllLines` 传数组（实测 4 行被并成 1 行），改为"一次取一个值"。
+
+**⚠️ 装根证书的安全须知（必须一起讲清）**
+
+1. 装完后，**凡持有这张 CA 私钥签发的证书者，都能对本机所有 HTTPS 做中间人**。
+2. 当前自签形态下**「服务器证书私钥」与「CA 私钥」是同一把**（`C:/certs/lugwit/privkey.pem`，自签 = leaf 即 CA）→ 一旦外泄，全平台流量可被劫持。**只放服务器、严格保管**。
+3. 只对可信内网机器推送；公用机/离职机建议先 `/uninstall`。
+4. 长期更稳的做法：把"自签 CA"改成**只签服务器证书的中间 CA** + 短有效期，把私钥用途分离。
 
 ### 11.4 证书轮换
 

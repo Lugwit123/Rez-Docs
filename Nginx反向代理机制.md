@@ -297,6 +297,15 @@ l_nginx/999.0/
 - 后端服务启动参数里绑定 `127.0.0.1`（如 `backend_server --host 127.0.0.1`），双保险
 - 健康检查暴露一个只读端点 `GET /nginx-health`（`location = /nginx-health`），供监控探测，不打到任何后端
 - **nginx 入口不做 Basic Auth**：业务路由（`/note` `/baidu` `/chat` `/api`）由各上游服务自己的认证负责；门户主页 `/homepage` 由 l_homepage 提供独立网页登录（凭据由受控配置提供，不查 lugwit_auth 账号库），文档站 `/docs/` 公开无需登录
+- **收/放端口时的连带清单**（2026-09-19 补充，改暴露面前逐条核对）：
+  1. `conf/routes.conf` 是**唯一** location 源，443 与 8080 共用 → 新增/改前缀只改这一份，改完 `nginx_check` → `nginx_reload`；
+  2. **客户端 base 不得硬编码端口**：`auth_url` 走"包覆盖 > 环境变量 > 默认"三层，域名带非标端口（如 `https://lugwit.cn:8443`）时只需改配置（见《标题栏提供的服务》§3）；Depot 侧的 `LUGWIT_DEPOT_BASE_URL` 同理；
+  3. **新增的公网路径必须是 location 白名单里的前缀**：白名单外的根级路径（如 `/.well-known/`）公网取不到 —— 需要的端点要挂到已开放前缀下（例：JWKS 用 `/api/v1/.well-known/…` 而不是根级）；
+  4. **回环判定会因反代而失真**：反代下 `request.client.host` 恒为 `127.0.0.1`，凡"本机才允许"的逻辑（如 `lugwit_auth` 的 `/api/v1/auth/auto`）必须额外要求**无 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` 头**，否则公网请求会被当成本机；生产建议该能力默认关；
+  5. **8080 对外 = 明文降级**：无 TLS，cookie/token 裸奔；对外只能作诊断，不能当客户端入口（§11.1 已收成回环，放开需显式决策）。
+  6. **当前无域名（IP 自签）→ 将来上域名的两件事**：
+     - 客户端信任的是 **CA 文件不是 host**（`l_qframelesswindow/ssl_support.py`：`LUGWIT_CA_FILE` > 包内 `config/ca_bundle.pem` > `config/ca.pem` > `C:/certs/lugwit/ca.pem`，且 `ca_bundle.pem` 已把"自签 CA + 公网根"合并成单文件）→ **换 IP/域名只需重生成该 bundle，不改代码**；过渡期 IP 与域名并存时同一份 bundle 即可。
+     - `lugwit_token` 是 **host-only cookie**（不写 `Domain`）→ **换域名后用户要重新登录一次**（旧 cookie 不跨 host），但 token 本身与 host 无关、仍然有效（不用全员改密）。
 
 ## 8. 排查手段
 
