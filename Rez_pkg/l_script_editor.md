@@ -68,6 +68,11 @@ curl.exe http://127.0.0.1:8764/status
 | `/execute_async/result/<id>` | GET | 查询异步执行任务的结果（非阻塞） |
 | `/upload` | POST | 把单个文件内容写入远程路径（文本或二进制） |
 | `/upload_folder` | POST | 递归上传本地文件夹到远程目录（文件树，跨机器） |
+| `/upload_start` | POST | **分块上传**：开始一次会话，返回 `upload_id`（大文件正路，见 §3.8.1） |
+| `/upload_chunk` | POST | **分块上传**：追加一片（base64；可带 `offset` 校验，防错位/便于续传） |
+| `/upload_finish` | POST | **分块上传**：校验字节数后 `os.replace` 原子替换到目标路径 |
+| `/upload_abort` | POST | **分块上传**：放弃并删掉临时文件 |
+| `/upload_status` | GET | **分块上传**：查询已收字节数（断点续传用） |
 | `/download` | POST | 从远程路径读取文件内容（文本或二进制） |
 | `/status` | GET | 健康检查（含执行观测：executing / inflight / async_tasks） |
 | `/tools` | GET | 发现 agent 工具清单 |
@@ -416,6 +421,52 @@ curl.exe -X POST http://192.168.1.100:8764/upload_folder ^
 > l_agent_tool 提供配套客户端函数 `upload_folder_to_server(base_url, local_dir, remote_dir, ...)`，
 > 自动遍历本地文件夹并按此协议提交。
 
+### 3.8.1 分块上传（大文件，绕开单请求体积上限）
+
+`/upload` 走 JSON body，整个文件要一次性塞进请求体（base64 后 ×1.33）。超过 `MEMFILE_MAX`
+（默认 32MB，见 §6）就得用这套：**流式落盘、内存恒定、可续传、原子替换**。
+
+| 步 | 请求 | 说明 |
+|:--:|------|------|
+| 1 | `POST /upload_start` `{remote_path, total_bytes?, overwrite?}` | 返回 `upload_id`；**自动建父目录**；`overwrite=false` 且目标已存在 → 409 |
+| 2 | `POST /upload_chunk` `{upload_id, content(base64), offset?}` × N | 追加一片；带 `offset` 则校验必须等于已收字节数，不符 → 409 |
+| 3 | `POST /upload_finish` `{upload_id, total_bytes?}` | 校验字节数 → `os.replace` **原子替换**到目标 |
+| — | `POST /upload_abort` `{upload_id}` | 放弃并删掉临时文件 |
+| — | `GET /upload_status?upload_id=…` | 查已收字节数（断点续传用） |
+
+```python
+import base64, requests
+
+BASE = "http://127.0.0.1:8764"
+src, dst = "D:/big/model.bin", "D:/remote/model.bin"
+data = open(src, "rb").read()
+
+uid = requests.post(BASE + "/upload_start", json={
+    "remote_path": dst, "total_bytes": len(data)}).json()["upload_id"]
+
+CH = 4 << 20                                     # 4MB/片
+for off in range(0, len(data), CH):
+    requests.post(BASE + "/upload_chunk", json={
+        "upload_id": uid,
+        "content": base64.b64encode(data[off:off + CH]).decode(),
+        "offset": off,                           # 带上更安全：错位会 409，而不是静默写歪
+    }).raise_for_status()
+
+requests.post(BASE + "/upload_finish",
+              json={"upload_id": uid, "total_bytes": len(data)}).raise_for_status()
+print("done")
+```
+
+行为约定：
+
+- 内容先写**目标同目录**下的 `.part-<uid>`，`finish` 才 `os.replace` —— **中断不会留下半个目标文件**
+  （同盘 replace 是原子的）；
+- `total_bytes` 不符 → **400 且保留会话**（补齐分片后重试 `finish`）；`offset` 不符 → **409**；
+  未知/已结束的 `upload_id` → **404**；
+- 超时未收尾的会话按 `SCRIPT_EDITOR_UPLOAD_TTL`（默认 3600s）回收并删临时文件；
+- 命令行别自己拼这套：用 `l_nginx/999.0/tools/remote_push.py`（自动选路，小文件走 `/upload`、
+  大文件走本协议、413 自动减半重试）。
+
 ### 3.9 `/ui/*` — UI 自动化端点（Qt 版 Playwright）
 
 允许外部客户端像 Playwright 驱动网页一样驱动脚本编辑器所在的整个 Qt 窗口：
@@ -619,7 +670,16 @@ curl.exe -X POST http://192.168.1.100:8764/execute -H "X-Editor-Token: 一串随
 - `/status` 与 `/docs` 免鉴权（仅暴露健康状态与文档，无敏感信息）
 - 令牌校验用 `hmac.compare_digest`，防时序攻击
 - `/upload_folder` 的 `rel_path` 始终有路径穿越防护（拒绝 `..` / 绝对路径 / 盘符）
-- 单请求体积上限约 **117KB**（超出 413）：大文件用 `POST /execute` 分片追加写盘，或直接用 `l_nginx` 包的 `tools/remote_sync.py`（自动分批 + 分片 + 重试；见 §4.1）
+- **单请求体积上限**由 Bottle 的 `BaseRequest.MEMFILE_MAX` 决定：服务端默认已放宽到 **32MB**
+  （`SCRIPT_EDITOR_MEMFILE_MAX` 可调；2026-09-19 之前是 100KB，超了直接 413）。nginx 侧是
+  `client_max_body_size 100g`，**不是**瓶颈。
+- **超过上限的大文件走分块协议**（`/upload_start` → `/upload_chunk`… → `/upload_finish`，见 §3.8.1）：
+  内容先写目标**同目录**下的 `.part-<uid>`，`finish` 时 `os.replace` 原子替换 —— 中断不会留下
+  半个目标文件，内存恒定、与文件大小无关。单文件用 `l_nginx` 包的 `tools/remote_push.py`
+  （自动选路：小文件 `/upload`、大文件走分块协议、413 自动减半重试）；整棵目录树用
+  `tools/remote_sync.py`（自动分批 + 大文件分片 + 重试；见 §4.1）。
+- **别自己拿 `/execute` 拼分片**：要先自建父目录、自己校验字节数；而且 `/execute` 的失败是
+  **HTTP 200 + `{"success": false}`**，不看这个字段就会静默丢文件。
 - 运维建议：8764 优先**只绑回环**（本机自用）；确需跨机时配令牌 + 防火墙只放行来源 IP，别长期对全网开放
 
 ---
@@ -834,6 +894,26 @@ helper 日志 `23:57:22 before listeners=['7628']` → `23:57:23 taskkill 7628 r
   「脚本编辑远程服务」菜单或命令行恢复。所以**不确定远端 `wuwo\wuwor.bat` 与包路径可用时，先用 `--no-restart`** 只同步。
 - 本机能免 token 直连，靠的是远端 `SCRIPT_EDITOR_IP_WHITELIST` 含本机出口网段（见 §3A.2）；
   `/upload_folder` 同样吃这条豁免（白名单命中即放行，不校验令牌）。换机器或换出口网段后需重新加白名单，或改用 `--token`。
+
+**⚠️ 本机那份不会自己生效**（最常见的踩坑）：
+
+| 实例 | 谁在跑 | 改了源码怎么让它生效 |
+|---|---|---|
+| **远端** `121.196.144.88:8764` | **独立进程**（`wuwo\wuwor.bat` 拉起的 `l_script_editor_server`） | 上面这套 `deploy_remote.py`：同步 + 重启，中断约 10 秒 |
+| **本机** `127.0.0.1:8764` | **宿主程序进程内**的 `ScriptEditorTab.start_http_server()` | `deploy_remote.py` **管不到**；必须**重启宿主程序** |
+
+> 所以在本机改完 `http_server.py` 后打 `127.0.0.1:8764` 发现行为没变，**通常是没重启宿主**，
+> 不是代码写错。
+>
+> 进程内的替代做法：在宿主里（脚本编辑器自己的控制台）调
+> `editor_tab.set_http_port(port, restart=True)` 重启那条 HTTP 线程。
+>
+> 想在本机验证新代码又不想重启宿主：另起一个**独立实例** ——
+> `set SCRIPT_EDITOR_HTTP_PORT=8774` 后
+> `python -m l_script_editor.standalone_server`（同一份源码、独立进程）。
+> 纯 HTTP 端点（`/status`、`/upload*`、`/download`）可用；
+> `/execute` 依赖 Qt 执行桥，临时实例里通常不可用。
+> 也可以完全不起 Qt，直接 `_create_bottle_app(stub_bridge, file_roots=[...])` + `bottle.run(...)` 只验上传端点。
 
 ---
 
