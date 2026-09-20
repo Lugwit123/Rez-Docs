@@ -113,6 +113,94 @@ SSE 事件类型：
 当估算 token 超过 `CONTEXT_LIMIT_TOKENS * COMPRESS_THRESHOLD` 时，把早期对话历史
 交给 LLM 压缩成中文摘要，保留最近 `COMPRESS_KEEP_RECENT` 轮，避免上下文超限。
 
+### 工作区规则
+
+按 CodeMaker `RulesHandler` 的语义把工作区规则注入 system 提示词（实现见 `rules.py`）；
+追加位置在「AI 偏好」之后，段首标记 `Project rules (follow strictly):`。
+
+| 来源 | 开关（默认开） |
+|------|----------------|
+| `<工作区>/AGENTS.md` | `rules_enable_agents_md` |
+| `<工作区>/CLAUDE.md` | `rules_enable_claude_md` |
+| `<工作区>/.codemaker.codebase.md` | 无独立开关，随总开关 |
+| `<工作区>/.codemaker/rules/**` | `rules_enable_codemaker` |
+| `<工作区>/.cursor/rules/**` | `rules_enable_cursor` |
+| `~/.codemaker/rules/**` | `rules_enable_user` |
+
+`.md` / `.mdc` 用 frontmatter 描述作用域，字段 `name` / `description` / `alwaysApply` / `globs`：
+
+- `alwaysApply: true`（以及 `AGENTS.md` / `CLAUDE.md` / `codebase.md` 这类天然常驻文件）
+  → **常驻**，全文注入 system
+- 有 `description` 或 `globs` → 只注入「名称 | 适用范围 | 描述 | 路径」索引，正文由模型自己读
+- 两者都无 → **不注入**（不静默塞进上下文）
+
+同一 realpath 只取一次（防软链成环）；目录递归有深度上限（`rules_max_depth`）；
+扫描结果有 TTL 缓存（`rules_ttl`，默认 5 秒）——因为 `_build_messages` 每个规划步都会调。
+总开关 `rules_enabled` 关掉即整段不注入。
+
+### 工具钩子（hooks）
+
+在工具调用前后执行你配置的钩子（实现见 `hooks.py`）：
+
+| 来源 | 说明 |
+|------|------|
+| `<工作区>/.codemaker/hooks.json` | 项目级 |
+| `~/.codemaker/hooks.json` | 用户级 |
+| Claude Code 各层 `settings.json` | 仅当 `hooks_sync_cc` 打开，或项目/用户配置里写了 `syncCcHooksConfigs: true` |
+
+- 已接线事件：`PreToolUse` / `PostToolUse`；其余 34 个事件在枚举内但当前不会触发
+- handler 四型：`command`（JSON 载荷走 stdin）/ `http`（受 `allowedHttpHookUrls` 白名单门控）/
+  `prompt`（需显式写 `model`，LLM 求值由 `app.py` 注入）/ `mcp_tool`（依赖 MCP 客户端）
+- `PreToolUse` 返回 `decision: "deny"` → 该工具不执行。判定**在审批之前**：
+  规则说不行的，不必再打扰你
+- 返回的 `additionalContext` / `updatedToolOutput` 随工具结果回填给模型
+- 设置门：`disableAllHooks` / `allowManagedHooksOnly`（后者只有 managed 源算数）；
+  `allowedHttpHookUrls` / `httpHookAllowedEnvVars` 取并集
+- **全部 fail-open**：钩子自身出错、超时、输出非 JSON 都只写日志，不阻断主流程
+- 未实现：hook 信任台账 `hook-trust.json`（本仓无插件体系，没有「不可信来源」的概念）
+
+### MCP（外部工具服务器）
+
+配置：`~/.codemaker/mcps.json`（用户级）+ `<工作区>/.codemaker/mcps.json`（项目级，
+按 server 名逐个覆盖）。
+
+```json
+{ "mcpServers": {
+    "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/x"] }
+} }
+```
+
+- 传输：`stdio`（有 `command` 即默认）/ `streamableHttp`（`url`）
+- 字段白名单：stdio 认 `type,command,args,env,cwd,timeout,user,token,disabled,autoApprove,autoApproveTools`；
+  远程认 `type,url,headers,timeout,disabled,autoApprove,autoApproveTools`。
+  未知字段**只警告**；未知传输类型、缺必填、`disabled` 非布尔才是硬错误
+- `autoApprove: true` → 该 server 全部工具免审批；`autoApproveTools: [...]` → 只放行列出的
+- 自愈：断连先重连再重试一次；`spawn ENOENT` 刷一遍 PATH 后重试；
+  stderr 尾巴（UTF-8 乱码时回退 gb18030）会附在错误里
+- 逐个 server 隔离失败：某个连不上只跳过它，不影响其它 server 的工具表
+- 未实现：`sse` 传输、心跳、stdio 发送停滞看门狗、`resources`/`prompts` 能力探测
+- 开关 `mcp_enabled`
+
+### 工具行为开关（l_agent_tool）
+
+ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`（`l_script_editor` 也在用它），
+所以**存储不在本包**，而在本机 `~/.lugwit/l_agent_tool/settings.json`
+（整份路径可用环境变量 `L_AGENT_TOOL_SETTINGS` 覆盖）。
+
+优先级：**运行时 `set()` > 环境变量 > 该 JSON > 默认值**。
+设置页「🧰 工具行为」卡片改完**立即生效**（经 `config.py` 的 `_EXTERNAL` 映射转发），无需重启。
+
+| 设置页字段 | 环境变量 | 默认 | 作用 |
+|---|---|---|---|
+| `tool_ignore_enabled` | `AGENT_TOOL_IGNORE` | `1` | 启用 `.codemakerignore` 治理 |
+| `tool_ignore_root` | `AGENT_TOOL_IGNORE_ROOT` | 空 | 强制指定 ignore 根（空=从目标路径向上找） |
+| `tool_shell_env_enabled` | `AGENT_TOOL_SHELL_ENV` | `1` | 子进程并入注册表 Machine + User PATH |
+| `tool_shell_env_ttl` | `AGENT_TOOL_SHELL_ENV_TTL` | `60` | 注册表 PATH 缓存秒数 |
+| `tool_rg_path` | `AGENT_TOOL_RG` | 空 | rg 可执行文件（空=按 PATH 探测；填 `0` 禁用） |
+
+`l_agent_tool` 是被复用的库，不能反向依赖 `l_agent_chat`，所以它自带这一份最小设置层
+（`l_agent_tool/settings.py`），由本包的 `_EXTERNAL` 映射桥接。
+
 ### Token 统计
 
 每次 LLM 调用的 `usage`（prompt/completion/total tokens）累计到当前会话 `stats`
@@ -194,6 +282,23 @@ SSE 事件类型：
 | `translator_backend` | `AGENT_CHAT_TRANSLATOR` | `baidu` | 翻译后端（baidu/mymemory/ai） |
 | `mobile_msg_height` | — | `66` | 移动端单条消息气泡限高（屏幕高度百分比，`0` = 不限；≤860px 生效） |
 | `rez_roots` | `AGENT_CHAT_REZ_ROOTS` | 源码+3rd 仓库 | rez 包仓库根（`;` 分隔） |
+| `rules_enabled` | `AGENT_CHAT_RULES_ENABLED` | `1` | 工作区规则注入总开关 |
+| `rules_enable_agents_md` | — | `1` | 读工作区根 `AGENTS.md` |
+| `rules_enable_claude_md` | — | `1` | 读工作区根 `CLAUDE.md` |
+| `rules_enable_codemaker` | — | `1` | 递归读 `<工作区>/.codemaker/rules` |
+| `rules_enable_cursor` | — | `1` | 递归读 `<工作区>/.cursor/rules` |
+| `rules_enable_user` | — | `1` | 读 `~/.codemaker/rules` |
+| `rules_max_chars` | — | `20000` | 常驻规则正文上限（字符） |
+| `rules_index_chars` | — | `4000` | 按需规则索引上限（字符） |
+| `rules_max_depth` | — | `4` | 规则目录递归深度上限 |
+| `rules_ttl` | — | `5` | 规则扫描缓存秒数 |
+| `specs_enabled` | — | `1` | OpenSpec 索引开关 |
+| `specs_max_chars` | — | `4000` | OpenSpec 索引字符上限 |
+| `specs_ttl` | — | `5` | OpenSpec 扫描缓存秒数 |
+| `hooks_enabled` | — | `1` | 工具钩子总开关 |
+| `hooks_timeout` | — | `10` | 单个 hook 超时秒数 |
+| `hooks_sync_cc` | — | `0` | 并入 Claude Code 各层 `settings.json` 的 hooks（默认关，读别的产品的配置该显式选择） |
+| `mcp_enabled` | — | `1` | MCP 客户端开关 |
 
 ## 依赖该包的包
 

@@ -56,6 +56,27 @@ status, headers, body = pipe_bridge.request("netdisk_client", "POST", "/execute"
 base = service_registry.resolve_url("netdisk_client")   # 需要走 HTTP 时用它（含回退）
 ```
 
+## 4. 特例：托盘宿主自己的服务（不走发现文件）
+
+托盘（`l_tray`）除了**拉起**别家的服务，它本身也是一个"带 HTTP 服务的宿主"，但这几个服务**不发布发现文件**，
+调用方（网页 / 本机脚本）按固定地址或本机约定访问：
+
+| 服务 | 地址 | 用途 | 怎么调 |
+|---|---|---|---|
+| 进程内执行服务 **ExecServer** | `http://127.0.0.1:19527`（`DEFAULT_PORT`） | 在托盘进程内执行 Python 函数，省掉 spawn 开销 | GET `/health` `/docs` `/list_packages` `/worker_stats`；POST `/run`（预注册动作）/`/register`。**浏览器跨源只放行白名单**（`DEFAULT_WEB_ORIGINS` + `L_TRAY_EXEC_ORIGINS` 追加） |
+| 备用解释器池 **WorkerPool** | —（进程内） | 小工具网格 `use_worker: true` 的项秒开 | 通过 ExecServer 的 `/worker_stats` 看空闲数 |
+| 统一登录回环页 | `http://127.0.0.1:<随机端口>/callback` | 浏览器授权码回调 +（可选）页面上账号密码登录 | 仅登录期间存在，端口随机、用完自动关 |
+| 启动管理调度 / 进程监督 plugSync | —（进程内调度 / 父进程） | 随托盘拉起启动项；托盘异常退出会被拉起 | 菜单「服务管理」面板查看运行态 |
+
+```cmd
+curl.exe -s http://127.0.0.1:19527/health          :: 预注册动作 + 网页可调白名单
+curl.exe -s http://127.0.0.1:19527/worker_stats    :: 备用解释器池
+```
+
+> 托盘自身服务的清单与运行态可以在**托盘菜单 →「服务管理」**里看到（`services_panel.py`）。
+> 细节与排错见 `l_tray.md`。
+
+
 ## 4. 当前端口分配（固定端口 + 严格模式）
 
 | 用途 | 端口 | 服务名 | 由谁设定 |

@@ -301,7 +301,8 @@ l_nginx/999.0/
   1. `conf/routes.conf` 是**唯一** location 源，443 与 8080 共用 → 新增/改前缀只改这一份，改完 `nginx_check` → `nginx_reload`；
   2. **客户端 base 不得硬编码端口**：`auth_url` 走"包覆盖 > 环境变量 > 默认"三层，域名带非标端口（如 `https://lugwit.cn:8443`）时只需改配置（见《标题栏提供的服务》§3）；Depot 侧的 `LUGWIT_DEPOT_BASE_URL` 同理；
   3. **新增的公网路径必须是 location 白名单里的前缀**：白名单外的根级路径（如 `/.well-known/`）公网取不到 —— 需要的端点要挂到已开放前缀下（例：JWKS 用 `/api/v1/.well-known/…` 而不是根级）；
-  4. **回环判定会因反代而失真**：反代下 `request.client.host` 恒为 `127.0.0.1`，凡"本机才允许"的逻辑（如 `lugwit_auth` 的 `/api/v1/auth/auto`）必须额外要求**无 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` 头**，否则公网请求会被当成本机；生产建议该能力默认关；
+  4. **回环判定会因反代而失真**：反代下 `request.client.host` 恒为 `127.0.0.1`，凡"本机才允许"的逻辑（如 `lugwit_auth` 的 `/api/v1/auth/auto`）必须额外要求**无 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` 头**，否则公网请求会被当成本机；生产建议该能力默认关。
+  **✅ 2026-09-20 已落地**（P0-1）：`/auth/auto` 改为 `LUGWIT_AUTO_AUTH_ENABLED` **默认关**、判定收紧为「peer ∈ {`127.0.0.1`,`::1`} **且** 无转发头」、返回 `role=service` 降权令牌；全仓消费方已改为 env / 登录取 token，`_auto_local_token` 兜底与相关调用已删（见 `lugwit_auth统一用户授权服务设计.md` §9 P0）。
   5. **8080 对外 = 明文降级**：无 TLS，cookie/token 裸奔；对外只能作诊断，不能当客户端入口（§11.1 已收成回环，放开需显式决策）。
   6. **当前无域名（IP 自签）→ 将来上域名的两件事**：
      - 客户端信任的是 **CA 文件不是 host**（`l_qframelesswindow/ssl_support.py`：`LUGWIT_CA_FILE` > 包内 `config/ca_bundle.pem` > `config/ca.pem` > `C:/certs/lugwit/ca.pem`，且 `ca_bundle.pem` 已把"自签 CA + 公网根"合并成单文件）→ **换 IP/域名只需重生成该 bundle，不改代码**；过渡期 IP 与域名并存时同一份 bundle 即可。

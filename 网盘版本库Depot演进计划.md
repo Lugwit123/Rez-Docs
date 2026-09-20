@@ -14,7 +14,7 @@
 | T1 md5 权威化 | **实测后改判并落地** | `remote_meta()` / `meta_by_path()`；`ensure_blob` 上传后校验 size（+trusted md5）。**百度 md5 是混淆指纹，不能当权威**（见 T1 实测表） |
 | T2 上传字节不过服务器 | **部分已实现，待端到端核实** | WChat 侧已实现「相册直传 + 登录闸门（`/login` 页）+ `static/upload_direct.js?v=3` 拦截层 + 懒回源」；通用 Depot 客户端直传、真实手机/公网流量验收与凭据边界仍待核实。详见本节；细节见 `Rez_pkg/lugwit_baidu_netdisk.md` §14 与 §7。 |
 | T3 l_wchat 纳管 | **工具已实现并验证** | `tools/depot_import_tree.py`；实测源 686 文件/66.8MB；已导入 motherhood 9 个（CL #241/#242） |
-| T4 manifest 优化 | **工具已实现并验证** | `tools/depot_manifest_gc.py`（保留策略 + `--verify` 抽样校验，实测 `CL #242: manifest=4 DB=4 缺=0 多=0 OK`） |
+| T4 manifest 优化 | **工具已实现并验证** | `tools/depot_manifest_gc.py`（保留策略 + `--verify` 抽样校验，实测 `CL #242: manifest=4 DB=4 缺=0 多=0 OK`）；`depot_manifest_verify.py` / `depot_manifest_replay.py` 2026-09-20 补齐（auth P7 灾备前置，回环实测：178 份清单 / 868 条版本 → 重建 SQL 覆盖全部、带 setval、apply 幂等；并检出库里既有漂移：**清单引用到的 blob 登记缺 71 条**） |
 | T5 blob GC | **工具已实现并验证** | `tools/depot_blob_gc.py`（dry-run 实测：登记行 16 / 无引用 0 / 盘面孤儿 0） |
 | T6 dir 快照保留 | **工具已实现** | `tools/depot_dir_snapshot_gc.py`（含"blob 兜底缺失则跳过"强校验；dir 根 `/notes` 的 `.versions` 已有快照） |
 
@@ -195,13 +195,21 @@
 
 **方案**
 1. **保留策略**：`keep_recent_buckets`（默认 1 个桶 = 最近 1000 个 CL）+ `keep_min`（默认 200 份）
-   取并集，其余按桶删除；提供 `tools/depot_manifest_gc.py --dry-run/--yes`。
+   取并集，其余按桶删除；提供 `tools/depot_manifest_gc.py --dry-run/--yes`。✅ 已实现
 2. **一致性校验**：`tools/depot_manifest_verify.py` 抽样比对
    `manifest.json` ↔ `depot_file_rev`/`depot_blob`（路径集合、md5、size），输出差异清单。
-3. **回放工具**：`tools/depot_manifest_replay.py --from <cl_id>` 在空库上按序重建
+   ✅ **已实现**（2026-09-20，供 auth 灾备 P7 用）：递归读清单目录 → `(path,rev)` 唯一性与
+   rev 递增检查 → 与库里 `depot_file_rev`（action/md5/size）逐条比对 → 「清单有库里没有」/
+   「库里有清单没有」/「字段不一致」/「blob 登记缺失」四类漂移 + `--json` 报告 + 退出码
+   （0 一致 / 1 漂移 / 2 清单不可解析）。
+3. **回放工具**：`tools/depot_manifest_replay.py` 在空库上按序重建
    （DB 灾难恢复用）；先只做 dry-run + 生成 SQL/CSV，不直接写库。
+   ✅ **已实现**（默认 dry-run 出 SQL、`--sql-out` 落文件、`--apply` 单事务写库）：
+   重建 `depot_changelist` + `depot_file_rev`（+ `depot_blob` 登记，`--blob-mode ensure|only-existing|none`），
+   并补 `setval` 对齐自增序列（否则回放后新建 CL 撞主键）。`--from-cl/--to-cl` 可分段。
+   ⚠️ `blob-mode=ensure` 只补"登记"，不校验网盘上物理文件是否存在。
 4. 写 manifest 改成**幂等 upsert**（现在是覆盖写文件），并对失败加一次重试，
-   避免"提交成功、兜底清单缺失"。
+   避免"提交成功、兜底清单缺失"。⏳ 未做
 
 **验收**
 - GC dry-run 输出"将删 N 份 / 保留 M 份"，确认后执行，`.depot/manifest` 只剩保留集；

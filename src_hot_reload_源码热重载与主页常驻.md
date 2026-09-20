@@ -336,6 +336,24 @@ def _resolve_src_watch(use_env: bool) -> str:
 - `_watchdog_tick()`：`_restart_in_progress(svc)` 为真时**跳过**（原来会在热重载过渡期把服务再拉一个起来）；
 - `_svc_manage_impl()`：`start` 撞上锁直接返回 `skipped: restart-in-progress`；`restart/reload/hotstart`
   先 `_wait_restart_lock_free()`（≤8s）再动手。
+- **检查周期（2026-09-20 调整）**：`WATCHDOG_INTERVAL` 默认 **60s**（旧 1800s，`L_HOMEPAGE_WATCHDOG_INTERVAL` 可覆盖）。
+  一轮只是对每张卡的端口做一次 TCP connect（毫秒级），**只在掉线时**才走
+  `_svc_manage(name, "start", wait_ready=WATCHDOG_WAIT_READY=20s)`；旧周期下"掉线后最长半小时才被拉回"，
+  体感等于没开常驻。周期值同时驱动 UI 文案：`_watchdog_interval_text()` 注入 `_home_context()` 与 deps 上下文，
+  卡片 ♻ title / 常驻图例 / 编辑表单共用（以前四处写死"每 30 分钟"，改周期必漏改页面）。
+- **失败退避（同一轮调整）**：周期短了就必须防硬重试 —— `WATCHDOG_BACKOFF = (30, 60, 120, 300)` 秒，
+  每卡片内存态 `_watchdog_fail[name] = {fails, next_at, error, at}`；拉起成功或端口恢复即清零；
+  退避窗口内的轮次记 `skipped: "backoff"` + `fails` + `retry_in` 且**不再动手**（否则一张长期起不来的卡
+  会每分钟起一条 wuwor/rez 链并等 20s，守护线程几乎一直在忙、`watchdog.log` 被刷爆）。
+  退避状态在 `/api/v1/watchdog/status → last_check.checked[]` 可查（内存态，主页重启即清零）。
+- **就绪超时按卡片自适应（2026-09-20）**：`_ready_timeout_for(svc)` = 该卡最近成功记录中最慢耗时 ×1.5，
+  夹在 `[WATCHDOG_WAIT_READY(20s), READY_TIMEOUT_MAX(120s)]`，缓存 60s；历史读 `restart_history.jsonl`
+  （跨重启保留，无记录退化 20s）。原因：固定 20s 会把"起得来但慢"判成失败 —— 实测 `l_model_hub` 冷启动
+  **47s**，自适应后为 70.5s。tick 记录带 `ready_timeout` 便于回看。
+- **手动启停的短窗（同日）**：手动 start/restart 不等就绪（避免 UI 卡 47s），但用
+  `_wait_instant_exit()`（`MANUAL_START_GRACE=4s`）兜住"子进程立刻死"——只判"进程已退出且端口没起来"，
+  命中就把日志尾部一起回给前端（无输出时明说"进程在加载阶段就死了"）。见《l_homepage》踩坑第 22 条
+  （实例级 spawn 失能 `0xC0000142` 就是这么被糊成 `ok:true` 的）。
 
 ---
 

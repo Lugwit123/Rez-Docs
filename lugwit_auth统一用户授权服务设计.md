@@ -1,6 +1,7 @@
 # lugwit_auth 统一用户授权服务设计
 
-> 状态：**设计稿（待评审）**，2026-09-19
+> 状态：**设计稿（待评审）**，2026-09-19；**P0–P5 已完成并跑完验收**，
+> **P6 读/写侧 + 消费方收尾完成**，**P7 逻辑备份/恢复 CLI 完成（Depot 侧前置脚本未做）**，2026-09-20（见 §9）
 > 范围：把 `lugwit_auth`（1027）从"JWT + 密码 + 用户表"升级为**全公司唯一的用户授权服务**：
 > 统一身份、统一登录窗口、统一授权判定、统一共享能力（凭据/偏好/收藏/审计），
 > 业务服务只做业务，不再各自实现鉴权。
@@ -59,7 +60,7 @@
 | `users` | id/username/password_hash/status/display_name/email/phone/last_login_at | `models.py:12-27` |
 | `user_roles` | user_id + role 字符串 + is_primary | `models.py:30-40` |
 | `sessions` | refresh_token/revoked/user_agent/client_ip | `models.py:43-58` —— **建表但运行期零读写** |
-| `l_notepad_accounts` / `l_notepad_custom_fields` / `l_notepad_fav_items` | 账号收藏 + 自定义字段 + 通用收藏（密码 Fernet 加密） | `account_service.py:87-135` |
+| `l_notepad_accounts` / `l_notepad_custom_fields` / `l_notepad_fav_items` | 账号收藏 + 自定义字段 + 通用收藏（密码 Fernet 加密）**→ 已被 P4 的 `credentials`/`favorites`/`user_profiles` 取代，旧表降级为冻结快照** | 旧 `account_service.py:87-135`（已删除） |
 | 权限/角色字典/应用注册/审计 | **不存在** | 全包 grep 无 `audit`、无 roles 字典表 |
 
 角色取值 `user|admin|system`（`enums.py:12-20`），JWT 里编码成 int `0/1/2`（`auth_server.py:57-59`）。
@@ -91,7 +92,7 @@
 
 | 能力 | 现状 | 问题 |
 |---|---|---|
-| 第三方账号收藏 + 密码加密托管 | ✅（Fernet，密钥 `~/.lugwit/l_notepad/.accounts_key`） | **表名/API 命名绑定 `l_notepad`**，其他包用不了 |
+| 第三方账号收藏 + 密码加密托管 | ✅（Fernet，密钥 `~/.lugwit/l_notepad/.accounts_key`）**注：2026-09-20 已迁移** —— 主密钥改为 `~/.lugwit/lugwit_auth/master.key`（DPAPI），旧文件 `.bak`，详见 §9 P4 | **表名/API 命名绑定 `l_notepad`**，其他包用不了 |
 | 通用收藏（folder/cmd/url） | ✅ `fav-items` | 同上，命名绑死 |
 | 服务进程监督（start/stop/restart/reload） | ✅ | 与"授权"职责混在一起 |
 | 用户资料 | ✅ | 无头像/无扩展字段 |
@@ -435,7 +436,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 
 | 现状 | 评价 |
 |---|---|
-| 凭据密文在 PG、Fernet 主密钥在本机文件（`~/.lugwit/l_notepad/.accounts_key`，`account_service.py:25`） | ✅ **方向正确**；但密钥路径绑死 `l_notepad`，且与密文同机 → 单机被入侵即明文。建议主密钥改 DPAPI/离线介质（§12 D4） |
+| 凭据密文在 PG、Fernet 主密钥在本机文件（**现状：`~/.lugwit/lugwit_auth/master.key`，DPAPI 包裹**；旧路径 `~/.lugwit/l_notepad/.accounts_key` 已 `.bak`） | ✅ 方向正确且已归位：路径不再绑死 `l_notepad`、DPAPI 按"用户+机器"加密（拷走文件换机/换用户也解不开）、可选 `LUGWIT_AUTH_MASTER_KEY` 注入不落盘；残留风险是**同机同用户被入侵**仍可解（要更高强度得走离线介质签名，见 §12 D4） |
 | `audit_logs` | ⚠️ 表还没建；建了也要按「PG 热 + Depot 冷」设计，别直接当在线表 |
 | 头像 | ⚠️ 无落地（§5.1 的 `users.avatar_file_id` 正是指向 Depot） |
 | 服务监督端点（start/stop/restart） | ❌ 与授权无关，是「auth 反向依赖各业务」的耦合，建议移出（§12 D2） |
@@ -556,7 +557,25 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 
 ## 9. 迁移路线（每阶段独立可上线 / 可回滚）
 
-### P0 — 止血（0.5 天，不动接口签名）
+> **落地状态（2026-09-20）**：P0 / P1 / P2 / P3 **已实现并跑完验收**；
+> P4–P7 未开始。已落地的代码位置：`auth_server.py`（端点）、`jwt_keys.py`（RS256+JWKS）、
+> `jwt_service.py`（双验）、`schema_upgrade.py`（幂等补列/建表）、`session_service.py`（会话/轮转/吊销）、
+> `authz_service.py`（RBAC + ACL 判定）、`seed_roles.py`（角色种子 CLI）、
+> `client.py`（离线验签）、`templates/login.html` + `home.html`（不再用 JS 读写 cookie）、
+> `lugwit_baidu_netdisk/gate.py`（`require_perm()` + 离线降级）。
+> 两个落地时的口径调整：
+> 1. **access TTL 保持 30 天**（未收短到 15 分钟）：P5 的 SDK `refresh/ensure_token` 未落地前，
+>    收短会让所有现存客户端与 7 天 cookie 集体 401。吊销首发靠 `token_version`（P1 已生效）。
+> 2. **refresh 复用检测额外递增 `users.token_version`**：access 仍是 30 天时，只吊销 refresh
+>    挡不住已被偷走的 access；检测到复用时连 access 一起作废（与 §7「吊销靠短 TTL + 版本号」同源）。
+>
+> ⚠️ 行为变更（P0 生效后）：`LUGWIT_AUTO_AUTH_ENABLED` **默认关** → `/api/v1/auth/auto`、
+> `/login`、`/`、`/settings` 的**回环免登录全部需要显式开开关**。依赖它的本机消费方
+> （`lugwit_baidu_netdisk/web_server.py:_auto_local_token`、`l_tray/depot_bridge.py`、
+> `l_notepad_server/depot_map.py`）需在被启动的环境里设 `LUGWIT_AUTO_AUTH_ENABLED=1`，
+> 否则改用 `LUGWIT_ACCESS_TOKEN`（l_scheduler 会注入）。
+
+### P0 — 止血（0.5 天，不动接口签名）✅ 已实现
 1. `/auth/auto` 收紧：不再信任 `X-Forwarded-For`；返回 `role=service`；加显式开关 `LUGWIT_AUTO_AUTH_ENABLED`（默认关，本机脚本设 env）。
 2. `services/status` 加鉴权。
 3. cookie 统一由服务端设置（`HttpOnly`）+ 清理 domain/path 一致性；把前端 JS 写 cookie 的地方改为调 API。
@@ -564,58 +583,343 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 
 **验收**：`curl -X POST http://127.0.0.1:1027/api/v1/auth/auto` 在未开开关时返回 403；带 `X-Forwarded-For: 127.0.0.1` 的外部请求也 403。
 
-### P1 — 会话与吊销（1~2 天）
+### P1 — 会话与吊销（1~2 天）✅ 已实现
 启用 `sessions`；加 `/auth/refresh`、`/auth/logout`（真撤销）、`/auth/sessions*`、`token_version` 字段；改密/禁用/删号即 `+1`。
 
 **验收**：登录 → 改密 → 旧 access 访问 `/auth/me` 返回 401；`DELETE /auth/sessions/{id}` 后该 refresh 失效。
+**实测**：27 项端到端断言全绿（注册/登录 → cookie-only 认证 → 会话列表 → refresh 轮转 →
+旧 refresh 复用被拒且连 access 一起作废 → 改密后旧 access 401 → 登出后 refresh 失效）。
 
-### P2 — 非对称签名与 JWKS（1 天）
+### P2 — 非对称签名与 JWKS（1 天）✅ 已实现
 RS256 + `/…/jwks.json`；`gate` 增加公钥缓存；双验期（HS/RS 并存，按 `alg` 分支）。
 
 **验收**：拿旧 HS256 token 仍可访问；新 token 用 JWKS 在**离线**（断网）的情况下验签通过。
+**实测**：HS256 存量 token 本地验签通过；RS256 新 token 读本机 `~/.lugwit/lugwit_auth/jwks.json`
+离线验签通过（auth 指向黑洞端口仍通过）；篡改 token 被拒。私钥落在密钥目录（0600，不进 PG/Depot）。
 
-### P3 — RBAC + 授权判定（2~3 天）
+### P3 — RBAC + 授权判定（2~3 天）✅ 已实现
 建 `roles/permissions/role_permissions/acl_grants` + `/authz/*` + `/roles`、`/users/{id}/roles`；`gate` 增加 `require_perm()`。
 
 **验收**：`/authz/check` 对 `depot.read /l_agent_chat/u01` 返回 `allow=true` 给 owner、`false` 给他人；管理员 `allow=true`。
+**实测**：P3 30 项 HTTP 断言 + gate 判定链 7 项全绿（角色字典/权限点 19 个、
+改角色权限 200/未知权限点 422/未知角色 404、改用户角色后旧 access 401、
+owner/具名授权/`*`/owner 快路径/管理员/无记录/代查 403、授权与撤销的所有权校验）。
 
-### P4 — 共享能力泛化（2 天）
-`credentials/favorites/user_profiles` 落地 + 旧表双写 + 兼容视图；`l_notepad_server` 切到新端点。
+落地时补的两条口径（设计原文没写细）：
+1. **ACL 动作匹配**：`acl_grants.perms` 是粗粒度动作（`read,write,admin`），而 `/authz/check`
+   的 `perm` 是权限码（`depot.read` / `depot.write.any`）→ 匹配时取权限码的**第二段**作动词
+   （`depot.write.any`→`write`；`auth.users.read`→`users`，不会误命中 `read`），ACL 含 `admin` 视为全权。
+2. **`/authz/check` 调用方约束**：设计写「Bearer(服务)」，但 P0 已把 `/auth/auto` 默认关、
+   服务令牌引导路径没了 → 放宽为「服务身份(`typ=service`) **或**管理员可代查任意 subject，
+   普通用户只能查自己」（否则它就是个权限探测接口）。
 
-**含主密钥归位（§12 D4 / §5.3 D 类）**
+**未做（留给 P6）**：`audit_logs` 表与"改角色权限落审计"（§6.3 尾部要求）—— 与 §6.6 的
+审计接口一起做，避免出现"只对角色改动记审计、登录/凭据全不记"的半截审计。
 
-1. **密钥存储抽象**：新增 `lugwit_auth.secret_store`，接口 `load_master_key()/store_master_key()`；实现两条：
-   - `DpapiSecretStore`（Windows 默认；`CryptProtectData`，按当前用户+机器加密，不落明文）
-   - `FileSecretStore`（Linux/无 DPAPI 环境；文件 0600 + 目录 0700，保留兼容）
-2. **路径去 `l_notepad` 化**：主密钥从 `~/.lugwit/l_notepad/.accounts_key` 迁到 `~/.lugwit/lugwit_auth/master.key`；
-   迁移脚本 `lugwit_auth_rotate_master_key`：读旧 key → 解密全部 `password_enc` → 用新 key 重加密 → 原子提交（失败回滚）→ 旧 key 改名 `.bak`
-   （**注意：先确认 l_notepad 侧也已切到新接口，否则会把它读不了旧数据**）
-3. **密钥与密文分机**（可选，二选一）：① 主密钥改由 `LUGWIT_AUTH_MASTER_KEY` 注入（部署时不落盘）；
-   ② 保留落盘但用 DPAPI 包裹。二者都要求 §5.3 D 类的铁律不变：**密钥永不进 PG / Depot**。
-4. **文档同步**：`account_service.py:8-9,25,28-36` 的注释与实现改成新路径；`l_notepad` 的共享密钥说明标注废弃期限。
+### P4 — 共享能力泛化（2 天）✅ 已实现（表/端点/迁移/密钥全做完）
 
-**验收（P4 增量）**：
-- 明文密码在磁盘上**搜不到**：`findstr /s /i "accounts_key"` 旧路径无引用；
-- 迁移前后 `credentials` 全量解密校验一致（逐行 `_decrypt` 对比，0 差异）；
-- 删除新 key 文件后服务拒绝解密并给出明确告警（不静默返回空密码）；
-- `l_notepad` 旧端点读写同一份数据仍通过（与上面主验收同跑）。
+#### 已完成：泛化表与端点（credentials / favorites / user_profiles）
 
-### P5 — 统一登录窗口（2~3 天）
-`lugwit_auth.client` 出 SDK（`login_via_browser/refresh/ensure_token/verify_local`）+ 回环回调；`l_qframelesswindow` 的 `LoginDialog` 改为只驱动 SDK；4 份旧实现逐步废。
+1. **表**（`schema_upgrade.py`，幂等建表）：`credentials`（`secret_enc bytea`）、`favorites`、
+   `user_profiles`（KV，主键 `(username, key)`）。
+2. **服务**：`credential_service.py`（asyncpg，owner+scope 隔离；加解密复用 `secret_store`
+   的主密钥，fail-closed）。
+3. **端点**（`auth_server.py`）：`GET/POST /credentials`、`PUT/DELETE /credentials/{id}`、
+   `POST /credentials/{id}/reveal`、`GET/PUT /credentials/custom-fields`、
+   `GET/POST /favorites`、`PUT/DELETE /favorites/{id}`、`GET/PUT /prefs/{scope}`、
+   `GET/PUT /users/{id}/profile`；均支持 `?scope=`。
+4. **数据迁移**：`lugwit_auth_migrate_credentials`（`migrate_credentials.py`，幂等 + 标记位）：
+   `l_notepad_accounts`→`credentials`（12 行，密文原样搬，同密钥不需重加密）、
+   `l_notepad_fav_items`→`favorites`（9 行）、`l_notepad_custom_fields`→
+   `user_profiles['credentials.custom_fields:l_notepad']`。
+5. **旧端点不双写，改「同一份数据」**（**偏离设计原文，理由写在这**）：
+   设计原写"旧表双写 + 兼容视图"，但旧表的**唯一读者是死代码**（`l_notepad_*/account_store.py`），
+   双写只会造出两份真相 + 一套同步逻辑。改为：旧 `/accounts*`、`/fav-items*` **URL 与返回结构不变**，
+   内部改调新的 `credential_service`（`scope='l_notepad'`，`reveal=True` 回明文 `password` 字段），
+   旧表**保留为只读历史**（不再写入、不删）。
+6. **口径（新增，设计未细化）**：
+   - 凭据/收藏/偏好一律**按 owner 收紧**（管理员也不跨用户读写；跨用户管理留给 `/authz/*`）；
+   - `reveal`：**本人凭据可直接读**（owner 即信任边界）；**跨用户**读需 `credentials.reveal` 权限，
+     且 P6 审计上线后必须落审计；
+   - `/credentials` 列表里 `secret` 恒为 `****`（只写不读），明文只能经 `reveal` 拿；
+   - `/users/{id}/profile` 本人或管理员（与他人 profile 的读取不同，这是设计 §6.1 明确写的）。
 
-**验收**：`l_notepad_client` 登录不再落盘密码；token 过期自动续期无感；登出后 refresh 也被撤销。
+**验收（P4 泛化部分）实测**：HTTP 断言 **31/31 通过**
+（掩码/scope 隔离/reveal 两种来源/空 secret 不改密文/自定义字段名/收藏过滤/
+prefs 往返/profile 越权 403/新旧端点互见同一份数据/owner 域边界）。
 
-### P6 — 业务接入与 owner 强校验（按包推进）
-`lugwit_baidu_netdisk` 的 `download/list/history` 接 `/authz/check`；`l_agent_chat` 的 depot 同步改为**带真实用户身份**（PKCE 或 `lugwit_token` 透传），不再吃回环 `system01`；`l_agent_chat` 的库/路径按用户分区（`/l_agent_chat_<user>` 或库内 `<user>/`）。
+#### 已完成：主密钥归位（§12 D4 / §5.3 D 类）
 
-**验收**：A 用户登录后无法读取 B 用户的 `/l_agent_chat_b/**`（返回 403 而非 200/404 混淆）；`l_agent_chat` 的 depot 提交 owner 为登录用户而非 `system01`。
+1. **密钥存储抽象**：新增 `lugwit_auth/secret_store.py`：`load_master_key() / store_master_key()`；
+   两条实现合并在同一模块：
+   - **DPAPI**（Windows 默认；`CryptProtectData`，纯 ctypes **不引 pywin32**，按当前用户+机器加密）
+   - **文件**（Linux/无 DPAPI；key 明文 + 文件 0600 / 目录 0700）
+   - 来源优先级：`LUGWIT_AUTH_MASTER_KEY`（env，不落盘）> `<key_dir>/master.key` > 自动生成
+2. **路径去 `l_notepad` 化 —— 无兼容回退**：运行时只认 `~/.lugwit/lugwit_auth/master.key`；
+   旧路径 `~/.lugwit/l_notepad/.accounts_key` 仅由 `load_legacy_key()` 暴露给**迁移脚本**读取，
+   **不参与密钥解析**。能这么干的前提已核实：`l_notepad_client/l_notepad_server` 的
+   `account_store.py` 是**死代码**（全仓无 import，账号功能早已走 auth 的 `/accounts*`），
+   没有活跃消费方读旧密钥 → 无需保留过渡分支。
+   **一次性轮转已执行（2026-09-20）**：`lugwit_auth_rotate_master_key --apply --no-legacy-consumers`
+   → 4 行 `custom_fields` 重加密、单事务提交、`master.key.prev` 留档、
+   旧文件改名 `.accounts_key.bak`。
+3. **`--apply` 安全阀**：不带 `--no-legacy-consumers` → 退出码 4、拒绝写库；
+   默认 dry-run（逐行 `decrypt(旧)→encrypt(新)→decrypt(新)` 比对）。
+4. **fail-closed**：主密钥不可用时 `_decrypt/_encrypt` **抛 `MasterKeyUnavailable`**
+   （不再把密文当明文回吐、也不静默返回空密码），服务侧统一转 **503 + 明确 detail**。
+5. **文档同步**：`.env` 增注释；旧 `account_service.py`（legacy 表专用实现）已随死代码清理删除。
+6. **顺带修掉的回归**：P0 关掉 `/auth/auto` 后，auth 自己的每日 DB dump 任务靠该端点兜底拿身份 →
+   401。按 §13.4 P-A「自签不自调」落地：新增 `lugwit_auth/tokens.py`（`auth_server` 与
+   `db_backup` 共用签发），`db_backup._token()` 改签 **降权服务令牌**（RS256 + `typ=service`），
+   且 `_http` 同时带 `Authorization` 与 `lugwit_token` cookie（netdisk 的 `_current_user` 只认 cookie）。
 
-### P7 — 备份与灾备（1~2 天，依赖 Depot 侧前置）
-按 §13 落地：`/l_auth_backup` 库（dir 模式）+ 每日/关键变更后异步 dump（本地 + Depot 双份，**密钥不入云**）+
-`lugwit_auth_restore` CLI + **P-C/P-D/P-E 三条破环改造**（自签不自调、离线验签硬约束、恢复走 CLI）。
-Depot 侧前置：补 `tools/depot_manifest_replay.py`、`depot_manifest_verify.py`（演进计划 T4）。
+**验收（P4 增量）实测**
+- ✅ dry-run：`l_notepad_accounts` 12 行、需重加密 4 行（custom_fields 里的密文值）、**回读差异 0**；
+- ✅ 安全阀：`--apply` 不带确认 → 退出码 4、拒绝写库；
+- ✅ DPAPI 往返一致、env 注入优先、`describe()` 能报出实际来源；
+- ✅ 无主密钥时加/解密都抛错（不静默），服务返回 503；
+- ✅ **轮转已落地并复核**：新密钥可解 6 个密文值、旧密钥对这 6 个值**已全部失效**
+  （证明确实重加密）、`.bak` / `master.key.prev` 均在位、`secret_store` 不再导出 `legacy_in_use`；
+- ✅ 自签服务令牌被 netdisk 接受（`_remote_exists` 不再 401），备份调度已正常启动；
+- ⚠️ `custom_fields` 里另有 **3 个历史遗留密文**（异机/旧密钥写入）解不开 —— 改动前同样解不开，
+  非本次回归；当前 UI 会原样显示密文串，待人工清理或忽略；
+- ✅ 「`accounts_key` 全仓无引用」**已签收**：三个死文件（`l_notepad_client/account_store.py`、
+  `l_notepad_server/account_store.py`、auth 的 `account_service.py`）已删除，
+  代码里 0 引用（唯一命中是 `secret_store.py` 顶部一段"为何没有回退"的历史说明）；
+- ✅ 活表 `credentials` 里 3 条不可解密的历史残值已清理，复核后**0 个不可解密值**；
 
-**验收**：① 停掉 Depot 后 auth 登录/改密/`/authz/check` 无感；② 空库 + 只给网盘 blob 与 manifest，用 CLI 完成 `users` 重建（§13.6 的 ①→⑥）；③ `latest.json` 的 checksum 校验能识别被篡改的 dump；④ 备份文件里**搜不到**私钥/主密钥。
+#### 遗留（不属于本阶段阻塞项）
+
+- `l_notepad_server` / `l_notepad_client` 仍走**旧 URL**（`/accounts*`、`/fav-items*`）——
+  功能正常（已指向新表）；切到 `/credentials*`、`/favorites*` 属 P5/P6 的收尾，可随时做。
+- 旧表 `l_notepad_accounts` / `l_notepad_custom_fields` / `l_notepad_fav_items` 保留为
+  **冻结快照**（只读、不再写入），数据核验无误后可择期删表；快照里有 3 个历史残值密文
+  （异机/旧密钥写入，不可恢复）未清 —— 活表 `credentials` 里的同类残值已清理。
+
+### P5 — 统一登录窗口（2~3 天）✅ 已实现（服务端 PKCE + SDK + 三处 UI 收敛）
+
+**已完成：服务端授权码（PKCE）**
+
+- 新增 `oauth_service.py` + 两张表（`schema_upgrade.py`）：`clients`（`client_id`/`redirect_uris`/`is_public`）、
+  `auth_codes`（**只存 SHA-256 哈希**、60 秒过期、原子 `UPDATE … WHERE consumed_at IS NULL` 核销）。
+  内置客户端种子（幂等）：`desktop`（回环 `http://127.0.0.1`/`[::1]`/**任意端口** + `lugwit://auth/callback`）、
+  `web`（浏览器 SSO）。
+- 新增 `GET /api/v1/auth/authorize`：校验 client + `redirect_uri`（回环允许任意端口）→ 未登录 302 到
+  `/login?next=<本 URL>` → 已登录发一次性 code 并 302 回 `redirect_uri?code&state`。
+- `POST /api/v1/auth/token` 扩展 `grant_type=authorization_code`（+ `code_verifier` PKCE S256 校验），
+  password 授权（Swagger/CLI）保持原样。
+- `templates/login.html`：`next` 改用 `| tojson` —— 否则带 query 的 authorize URL 会被 HTML 转义成
+  `&amp;`，登录后跳错地址（PKCE 流程的隐性坑）。
+
+**已完成：SDK（`lugwit_auth.client`）**
+
+`make_pkce()`、`LocalCallbackServer`（127.0.0.1 回环、state 校验、超时可配、`stop()` 后仍能取
+`redirect_uri`）、`login_via_browser()`（开浏览器 → 接授权码 → 换 token → **只把 refresh 落盘**）、
+`login_with_password()`（无浏览器时的降级路径，密码只在内存）、`ensure_token()`（剩余寿命 <60s 自动轮转
+refresh，无感续期）、`logout()`（撤销 refresh + 清本地）、`access_token()`。
+新增 `token_store.py`：refresh 存 `<LUGWIT_AUTH_KEY_DIR>/desktop_tokens.json`，Windows 下 **DPAPI 包裹**；
+**access 只在内存**，密码从不落盘。
+
+**已完成：「密码不落盘」**
+
+`l_qframelesswindow/login_store.py`：`save_remembered()` 只写**用户名**（旧签名带 password 直接报 TypeError，
+防止有人再用老写法）；`load_remembered()` 会把历史文件里的 `password` 字段**从磁盘上抹掉**再返回；
+`login_dialog.py` 不再回填/保存密码。
+
+**验收实测**
+- P5 全链路 **24/24**：PKCE 与 redirect_uri 校验（未知 client/未注册 redirect/缺 code_challenge → 400）、
+  未登录 302 到登录页并带 next、`login_via_browser` 走通（脚本化"浏览器"替代 `webbrowser.open`）、
+  access 是 RS256 且可离线验签、**授权码复用 → 400**、**错误 code_verifier → 400**、
+  **落盘是 DPAPI 且不含密码/access**、`ensure_token` 自动续期（refresh 已轮转）、
+  **登出后服务端 refresh 撤销（revoked=1）+ 本地清空 + 旧 refresh 401**。
+- `LoginStore` **5/5**：新写入只有 username/auto_login、历史明文被抹掉、旧签名被拒。
+- 7 个包编译全绿。
+
+**已完成（UI 收敛，三处全做完）**
+
+1. **标题栏登录（`l_qframelesswindow`）**：`LoginDialog` 重写为「浏览器登录（主）/ 账号密码（降级，默认收起）」
+   两个动作 + 已登录态显示 + 登出；网络与浏览器等待都丢到工作线程，UI 不冻结。
+   `login_store.py` 新增 `sdk_client()`（**软依赖**懒导入 —— 不给共享 UI 库塞 fastapi/sqlalchemy 栈）、
+   `restore_session()`（用 DPAPI 里的 refresh 自动续期，替代旧的 token 文件 + HTTP `/verify`）、
+   `logout_session()`（撤销 refresh + 清本地）。`L_FramelessMainWindow.restoreSavedLogin()/logout()`
+   一并改走这两个入口。
+2. **托盘（`l_tray`）**：`Tray.login()` 原来是 `pass` + 不可达的旧启动代码（启动 `lugwit_login/loginUI.py`
+   那套自带 MySQL/FastAPI 的实验栈）→ 改为调 SDK 的 `login_via_browser()`，成功后
+   `depot_bridge.set_session_token()`；`depot_bridge.token()` 优先级变为「托盘会话 token > env > 配置账号登录」。
+   `lugwit_login/loginUI.py` 摘掉 `save_credentials()/load_credentials()` 与「保存密码/自动登录」复选框
+   （该目录是个人实验沙盒，含 `day1.ipynb`/`registered_users.json`，**未删**）。
+3. **`l_WChat` 网页登录**：新增浏览器 SSO 两条路由 `/api/lugwit/sso/start`（带 PKCE + state 跳 authorize）
+   与 `/api/lugwit/sso/callback`（校验 state → 授权码换 token → 写本域 `lugwit_token` cookie，HttpOnly）；
+   登录页加「🌐 用统一认证登录（推荐）」，账号密码输入收进 `<details>` 作为降级。auth 侧只加
+   `make_pkce/sso_authorize_url/exchange_code` 三个纯 `requests` 函数，**不引入 lugwit_auth 包依赖**。
+
+**验收实测（UI 收敛）**
+- `login_store` SDK 辅助 **6/6**：`_auth_root` 去后缀、无登录态返回 None、`login_with_password` 成功、
+  **未落盘任何密码文件**、`restore_session` 拿回 access+用户名、登出后 restore 返回 None。
+- `depot_bridge` **6/6**：无登录态为空串、会话 token 生效、env 不覆盖会话 token、清掉后回落 env、
+  配置账号可登录、源码里不再有 `/auth/auto` 调用。
+- `l_WChat` SSO **9/9**：start 302 到 authorize（S256）、state/verifier HttpOnly cookie、
+  state 不匹配 400、真授权码、callback 302 + HttpOnly 登录 cookie（RS256）、清临时 cookie、
+  该 cookie 能过 `/api/lugwit/me` 闸门。
+- 7 个包编译全绿。
+
+**剩一件可选收尾**：access TTL 仍 30 天 —— SDK 的 `ensure_token()` 与三处 UI 都已就位，
+可按 §7 收短到 15 分钟（消费方会自动续期）。
+
+### P6 — 业务接入与 owner 强校验（按包推进）🟡 读侧+写侧+l_agent_chat 分区已完成；两个次级调用方待清
+
+**已完成：netdisk depot 读接口的 owner 强校验**
+
+`web_server.py` 的 `download` / `list` / `history` 在**取数据之前**调 `gate.require_perm()`：
+管理员/系统角色本地放行 → 「路径首段 = owner」本机快判 → 跨用户/共享场景问 auth `/authz/check`
+→ auth 不可达时只认自己的路径。判定失败回 **403**（不是 404/200 混淆）。
+新增辅助 `_depot_perm(request, user, dpath, perm)` + `_auth_token(request)`（跨用户判定要把
+原始 token 带给 auth）。`list` 对库根（如 `/l_agent_chat`）只做登录校验，库根下按 `<user>/` 隔离。
+
+**已完成：`l_agent_chat` 的 depot 路径按用户分区 + 真实身份**
+
+`depot_sync.depot_path()` 由平铺 `{library}/{rel}` 改为 **`{library}/{user}/{rel}`**
+（设计 §12 D6），`user` 取自 `LUGWIT_USER`（同时是 `_login()` 用的账号）：
+- 没配身份 → **直接报错**，不再悄悄写平铺路径（那等于所有人互相覆盖同一份文件）；
+- 身份含路径分隔符 → 拒绝；
+- `config.LUGWIT_USER` 的注释改为"必填"（原因：`/auth/auto` 回环兜底已按 P0 默认关）。
+
+**验收实测**
+- netdisk 读接口 **11/11**：A 读 B 的 `download` → **403**、读自己的路径 → 过权限层（404）、
+  管理员 → 过权限层、无凭据 → 401；`history`/`list` 同样 403；B 用 `/authz/grant` 授读权后
+  A 立即可通过、`/authz/revoke` 后立刻恢复 403（ACL 生效，无需重启）。
+- `l_agent_chat` 路径 **5/5**：`settings.json` → `/l_agent_chat/u01/settings.json`、
+  `sessions/session_1.json` 分区正确、反斜杠/前导斜杠归一、无身份报错、身份含分隔符报错。
+
+**未做（写侧）**：原计划留作后续，**本轮已补齐**（见下）。
+
+**已完成（本轮续）：写侧 + 消费方收尾**
+
+写侧在**取数据/落库之前**调 `_depot_write_perm(request, user, paths)`（同一 `depot.write` 判定）：
+`submit`、`submit_stream`、`delete`、`move`（源与目标都判）、`revert`、`checkout`、`edit_text`、
+`import`（非 dry-run 才判）、`mark_delete`、`mark_move`、`mark_add_stream`、`revert_pending`；
+`submit_pending` 落库前把**待提交列表里的每个路径**都判一遍，且**取不到列表就拒绝**（fail-closed，
+不因判权取数失败而放行）。`cl_description`/`lock`/`unlock` 仍只做登录校验（仅改描述/建议锁）。
+
+消费方不再依赖 `/api/v1/auth/auto`（该端点 P0 起默认关）：
+- `l_tray/depot_bridge.py`：删 `_auto_token()`；登录态 = `LUGWIT_ACCESS_TOKEN` >（`LUGWIT_USER`/`LUGWIT_PASSWORD` 登录）；
+  网页传来的真实用户 token 仍走 `token_override` 优先；取不到时打印一次明确告警（不再静默发匿名请求）。
+- `l_notepad_server/depot_map.py`：同样删 `_auto_token()`，新增 `require_token()` —— 没登录态**直接抛
+  DepotError 并说明怎么配**，不再发匿名请求等 401。
+- `lugwit_baidu_netdisk/web_server.py`：删掉 `_auto_local_token()` 与 `_current_user`/`_page_user` 里的
+  回环兜底分支（未登录就是 401 / 跳登录页）。
+
+**验收实测（新增）**
+- 写侧 **11/11**：A 往 B 的路径 `submit_stream`/`delete`/`move`/`revert`/`edit_text`/`mark_add_stream`
+  → **403**；A 写自己的路径 → 过权限层（无工作区 → 400）；B `grant write` 后 A 立即可写、
+  `revoke` 后立刻恢复 403。
+- 读侧回归 **11/11** 仍全绿（删兜底后读判定未受影响）。
+
+**待清（同一模式，不在本轮两个消费方内）**：已清（见下）。
+
+**已完成（本轮续 2）：最后三处 `/auth/auto` 调用方改成 env/登录**
+
+| 位置 | 改法 |
+|---|---|
+| `ChatRoom/backend/app/core/auth/facade/auth_facade.py` | 删 `_auth_service_auto()` → 新增 `_auth_env_login()`：`LUGWIT_ACCESS_TOKEN` env >（`LUGWIT_USER`/`LUGWIT_PASSWORD` 登录）；`auto_login()` 未配置时返回 **503 + 明确指引**（不再 500）；env-token 场景经 `/auth/me` 反查用户名 |
+| `l_notepad_client/account_favorites_widget.py` | `_ensure_api_token()` **不再自取 token**：登录态只认 `api.token`（登录后已就位）或 env `LUGWIT_ACCESS_TOKEN`；未登录返回 False（回退本地数据）并打印一次提示；顺手删掉因此不再使用的 `server_config` 导入 |
+| `lugwit_baidu_netdisk/tests/bench_depot.py` | `get_token()` 改为 env token > 账号登录；两者都没有时 `SystemExit` 并说明怎么配 |
+
+**验收实测（新增）**：三处各 3–4 项断言全绿
+（env token 生效 / 账号登录拿到 RS256 token / 无配置时明确失败而非静默匿名请求）。
+ChatRoom 侧用 AST 抽出 `_auth_env_login` 原样执行验证（ChatRoom 的 rez 环境本身缺 `l_notepad`
+包族、`ChatRoom -- python` 起不来，与本改动无关）。
+
+### P7 — 备份与灾备（1~2 天，依赖 Depot 侧前置）✅ 已完成（含 Depot 侧前置脚本）
+
+**已完成：auth 自身数据的逻辑备份（`auth_backup.py`）**
+
+- 按表 dump（设计 §13.7 的备份对象）：`users/user_roles/roles/role_permissions/permissions/
+  sessions/clients/auth_codes/credentials/favorites/user_profiles/acl_grants`
+  （缺表自动跳过并记在结果里；`bytes` 列如 `secret_enc` 以 base64 包装、时间以 ISO 存）。
+- 单文件 `authdump.json.gz` = `{schema_version, exported_at, stamp, tables, checksum}`；
+  `checksum = sha256(canonical(tables))`，读取时**必须**校验 → 能识别被篡改/损坏的 dump（验收 ③）。
+- 双份落盘：本地 `~/.lugwit/auth_backup/<stamp>/`（0600）+ Depot
+  `/l_auth_backup/<stamp>/authdump.json.gz` 与 `/l_auth_backup/latest.json`（指针，含 stamp/checksum/size）。
+- 触发：每日定时（`start_scheduler`）+ **关键变更后异步**（改密 / 删号 / 角色变更 → `trigger_async`，
+  3 次重试、失败只告警，不阻塞认证主流程 —— §13.4 P-E）。
+- **密钥不入云**：dump 文本扫 `BEGIN PRIVATE KEY`/`master.key`/`LUGWIT_AUTH_MASTER_KEY` 等特征，
+  命中立刻告警（验收 ④）。
+- CLI：`lugwit_auth_backup_now`（立刻备份 / `--no-upload` / `--verify <file>` / `--status`）。
+
+**已完成：恢复 CLI（`restore_auth.py` / `lugwit_auth_restore`）——P-D「恢复走 CLI」**
+
+- `--from <file>` 或 `--latest`；先校验 checksum（不通过退出码 3）→ 单事务内按复合主键 upsert
+  （`users.id`/`user_profiles(username,key)`/`role_permissions(…)`/`clients.client_id`/`auth_codes.code_hash`…）
+  → 对齐自增序列（`setval`，否则恢复后新插入会撞主键）→ 输出每表 `dump/upsert/before→after` 差异报告。
+- `--dry-run` 演练后回滚。**不提供 HTTP 恢复端点**（那会变成"恢复要先登录"的环）。
+
+**顺带补的两处（P7 才暴露出来）**
+
+1. **`/authz/check` 支持服务身份**：auth 自己的备份任务是 `typ=service` 令牌，
+   但 `require_user` 要求存在 `users` 行 → 401。改为：服务身份按 **token 里声明的 `roles`** 解析权限
+   （`svc.authz.check` 来自 seed 的 `service` 角色），不要求有用户行；普通用户/管理员路径不变。
+2. **ACL 支持目录继承**（`authz_service._resource_candidates`）：按"自身 → 各级父目录"查授权，
+   所以**在库根发一条** `/l_auth_backup`（grantee=服务身份，read,write）就能覆盖
+   `<库>/<stamp>/authdump.json.gz`。库根授权由 `auth_backup.ensure_grant()` 在服务启动时幂等写入。
+
+**验收实测**
+- dump/恢复 **13/13**：checksum 生成与校验、包含 users/credentials、**不含私钥/主密钥特征**、
+  本地副本落盘、**篡改后 checksum 不匹配且恢复 CLI 退出码 3**、dry-run 回滚、
+  真恢复后各表行数不变（upsert 幂等）、**恢复过程对齐自增序列**、`--latest` 取最新。
+- ACL 继承 **6/6**：候选路径顺序、未授权拒绝、库根授权后子路径（含"另一天"）允许、
+  其他主体仍拒、库外路径不受影响。
+- **真备份上传成功**：`/l_auth_backup/20260920-1415/authdump.json.gz`（本地 3 份 5KB 副本；
+  `acl_grants` 里可见库根授权行）。
+
+**已完成（本轮续）：Depot 侧前置脚本（D9 / 演进计划 T4）**
+
+- `tools/depot_manifest_verify.py`：递归读清单目录 → `(path,rev)` 唯一性/rev 递增检查 →
+  与 `depot_file_rev`（action/md5/size）逐条比对 → 四类漂移（清单有库里没有 / 库里有清单没有 /
+  字段不一致 / blob 登记缺失）+ `--json` 报告；退出码 0 一致 / 1 漂移 / 2 清单不可解析；纯只读。
+- `tools/depot_manifest_replay.py`：按 cl 顺序生成重建 SQL（`depot_changelist` + `depot_file_rev`
+  + `depot_blob`），默认 **dry-run**（可 `--sql-out` 落文件），`--apply` 单事务写库；
+  `--blob-mode ensure|only-existing|none`；`--from-cl/--to-cl` 分段；
+  **补 `setval` 对齐自增序列**（否则回放后新建 CL 撞主键）。
+- 两者的分工写在工具 docstring 里：replay 重建"提交历史"，工作区/have/锁属运行态不在此恢复。
+
+**验收实测（Depot 侧）**：**13/13 通过**（用真实库状态合成的全量清单 178 份 / 868 条版本）
+- replay dry-run：SQL 覆盖全部清单条目、含 2 条 `setval`、BEGIN/COMMIT 包裹；
+- verify：版本表与清单**完全一致**（`--no-blob` 时 0 漂移）；带 blob 检查时只报
+  「blob 登记缺失 71 条」——这是**库里既有的真实漂移**（清单引用的内容没有登记行），
+  不是工具误报；
+- 篡改检出：清单多一条 → 「清单有、库里没有」；清单少一条 → 「库里有、清单没有」（均 rc=1）；
+- `--apply --blob-mode none` 幂等：changelist 183 / file_rev 868 前后不变，再 verify 仍一致。
+
+**灾备演练（①→⑥，2026-09-20 在临时库 `chatroom_dr_drill` 真跑一遍）**
+
+| 步 | 做了什么 | 实测结果 |
+|---|---|---|
+| ① | 网盘 blob 物理内容（外部存储） | 抽样 8 条 `version_depot/blob/<库>/<md5[:2]>/<md5>` 全部 **200 存在** |
+| ② | `.depot/manifest/0000/<cl>.json` 兜底清单 | 抽样 6 份全部存在（291–321 bytes）；另用真实库状态合成全量清单 178 份 / 868 条做回放输入 |
+| ③ | `depot_manifest_replay.py --apply` 在**空库**重建 Depot 元数据 | 临时库从 0 → changelist 178 / file_rev 868（= 清单全量；源库多 9 个 CL 是清单快照之后的提交） |
+| ④ | Depot 可服务（元数据侧不依赖 auth 在线） | 从重建库读出 `head(/rez_pkg/中文测试_abc.md).rev=2`、根目录列出 6 个库 |
+| ⑤ | `lugwit_auth_restore --from <dump>` 重建 auth 数据 | 12 张表行数与 dump **逐表一致**（users 18 / credentials 12 / roles 4 / role_permissions 32 …），夹具账号 `password_hash` **逐字节一致** |
+| ⑥ | 用恢复出来的账号登录 | 指向临时库的实例：登录 **200** + RS256 access + `/auth/me` 返回该用户与角色；dump 里没有的账号 **401**；生产实例不受影响 |
+
+**演练暴露并修掉的真 bug**：`models.py` 的时间列没写 `DateTime(timezone=True)` → **全新库** `create_all`
+会建成 `timestamp without time zone`，而 `session_service.create()` 传的是 aware datetime →
+asyncpg 报 `can't subtract offset-naive and offset-aware datetimes` → **新部署第一次登录就 500**。
+已修：模型改成 `DateTime(timezone=True)`；`schema_upgrade` 增加**条件转换**
+（只在该列确实是"无时区"时才 `ALTER … TYPE timestamptz USING … AT TIME ZONE 'UTC'`，
+避免误动已有的 timestamptz）。生产库三列复核均为 `timestamp with time zone` ✓。
+
+演练环境已清理（临时库删除、夹具账号删除、生产库回到 users 17 / sessions 0 / acl_grants 1）。
+演练脚本在 `D:\Temp\Log\drill_*.py`（临时目录，季度演练可照抄流程：建库 → 回放 → 恢复 → 登录）。
+
+**另发现（Depot 侧既有问题，未改）**：
+1. `depot_blob` **缺 71 条登记**（清单引用到的 (库, md5) 没有对应行）→ 读这些历史版本会落到兜底查找；
+2. `depot_blob.remote_path` 存的是 `/apps/Lugwit/version_depot/version_depot/blob/…`（**多一层 `version_depot`**），
+   而网盘上真实路径是 `/apps/Lugwit/version_depot/blob/…` —— 实测 DB 里那条路径 404、真值 200。
+   这两条都会影响历史版本下载，属 Depot 数据/代码侧修复范围（本设计只做标注）。
+
+**已有的定时/触发与旧物理备份**：`db_backup.py`（整库 `pg_dump`）仍在跑，与本节的**逻辑 dump** 互补：
+物理备份恢复快但要 postgres 工具，逻辑 dump 可读、可校验、可跨版本搬。
 
 ---
 
@@ -797,13 +1101,13 @@ Postgres(chatroom) → lugwit_auth(1027) → lugwit_baidu_netdisk(1028) → 业�
 | 用户 CRUD | `auth_server.py:1016-1085`；`user_service.py:44-254` |
 | 角色硬编码 | `auth_server.py:57`；`enums.py:12-20` |
 | `sessions` 空转 | `models.py:43-58`（仅 `init_db.py:8` 引用） |
-| 收藏/凭据表 | `account_service.py:87-135` |
+| 收藏/凭据表 | `credential_service.py`（P4 泛化后；旧 `account_service.py` 已删） |
 | 服务监督端点 | `auth_server.py:317,489-641` |
 | 消费方闸门 | `R/lugwit_baidu_netdisk/999.0/src/lugwit_baidu_netdisk/gate.py:22-37` |
 | login 只验签名 | `.../gate.py:31-37` |
 | 其他消费点 | `lugwit_baidu_netdisk/.../web_server.py:386,406`；`l_WChat/.../api/auth.py:37-70`；`l_notepad_server/.../auth.py:26-98`；`l_qframelesswindow/.../login_store.py:46-60`；`l_notepad_client/.../api_client.py:104-107` |
 | 桌面登录窗口（明文密码） | `l_qframelesswindow/.../login_dialog.py`、`login_store.py:135-152`；`l_tray/.../lugwit_login/loginUI.py` |
-| depot 读接口不校验 owner | `R/lugwit_baidu_netdisk/.../web_server.py:2859-2880` |
+| depot 读接口不校验 owner | ✅ **已修（P6）**：`web_server.py` 的 `download/list/history` 取数据前调 `gate.require_perm()`，越权返回 403 |
 | 闸门语义（页面 302 / API 401） | `R/Rez-Docs/Rez_pkg/lugwit_baidu_netdisk.md:86` |
 | 标题栏定位（认证接入能力，不弹框） | `R/Rez-Docs/标题栏提供的服务.md:37-46,69-71` |
 
@@ -819,7 +1123,15 @@ Postgres(chatroom) → lugwit_auth(1027) → lugwit_baidu_netdisk(1028) → 业�
 |---|---|---|
 | 装系统根库是否一次解决「浏览器 + QtWebEngine」 | **未在真机验证**（依据：Chromium 在 Windows 上用系统根库） | `install_lugwit_ca.bat` 已就绪，待真机跑一次（§4.5、D10） |
 | `LUGWIT_DEPOT_ROOT_PREFIX` 显式化 | 仍是"从百度 token 派生 `apps_root`"的隐式耦合 | 《网盘版本库Depot设计》§12.5 / §12.8 |
-| `depot_manifest_replay.py`、`depot_manifest_verify.py` | **不存在**（演进计划 T4 仍是计划） | 它是 §13 灾备承诺的前置（D9） |
+| `depot_manifest_replay.py`、`depot_manifest_verify.py` | ✅ **已补齐**（P7 前置，T4）：verify 纯只读四类漂移 + 报告；replay dry-run 出 SQL / `--apply` 单事务 + setval。回环实测 13/13 | D9 |
 | `ssl_support` 启动即打印"生效 CA + 是否降级" | 现在只在失败时告警一次，易被日志淹没 | §4.5「现在就该做的一件事」（约 10 行改动） |
-| 主密钥 DPAPI 化 + 去 `l_notepad` 路径 | 仍是 `~/.lugwit/l_notepad/.accounts_key` | §9 P4 增量 / D4 |
-| `/auth/auto` 收紧（不信任 XFF + 降权 + 开关） | 仍是 `auth_server.py:174-192` 的宽松实现 | §9 **P0**（最高优先） |
+| 主密钥 DPAPI 化 + 去 `l_notepad` 路径 | ✅ **已完成并轮转**（新路径 DPAPI 包裹；旧密钥已 `.bak`；无回退分支） | §9 P4 增量 / D4 |
+| l_notepad 的**死文件** `account_store.py`（client/server 各一份） | ✅ **已删除**（连同 auth 的 `account_service.py`）→ 「`accounts_key` 无引用」已签收 | §9 P4 |
+| `custom_fields` 里 3 个历史遗留密文（异机/旧密钥写入）现在解不开 | ✅ **已清理**（活表 `credentials`；复核 0 不可解密）；旧表快照里同类残值保留原样 | 数据清理项 |
+| `/auth/auto` 收紧（不信任 XFF + 降权 + 开关） | ✅ **已落地**（P0） | §9 P0 |
+| 本机消费方改用 `LUGWIT_AUTO_AUTH_ENABLED=1` 或 `LUGWIT_ACCESS_TOKEN` | **部分已改**：`l_agent_chat` 改为「必须配 `LUGWIT_USER`/`LUGWIT_PASSWORD` 走登录 + 路径按 `<user>/` 分区」（P6）；`lugwit_baidu_netdisk/web_server.py:_auto_local_token`、`l_tray/depot_bridge.py`、`l_notepad_server/depot_map.py` 仍按"回环即可拿 token"假设 | P6 收尾 |
+| netdisk depot **写侧**（submit/delete/move/revert/…）接 `depot.write` | ✅ **已接**（本轮；`submit_pending` 落库前逐路径判、取不到待提交列表即拒绝） | §9 P6 |
+| 仍调 `/auth/auto` 的次级调用方 | ✅ **已全清**：`ChatRoom/.../auth_facade.py`（改 `_auth_env_login`）、`l_notepad_client/account_favorites_widget.py`（不再自取 token）、`lugwit_baidu_netdisk/tests/bench_depot.py`（env/登录）；全仓 `auth/auto` 仅剩端点定义与注释 | §9 P6 |
+| access TTL 收短到 15 分钟 | **有意保留 30 天**（P5 SDK 未落地，收短会打断所有现存客户端） | P5 落地后随 SDK 一起收短（§7） |
+| `gate.py` 的 RS256 公钥缓存 | ✅ 通过 `lugwit_auth.client.verify_token`（读本机 jwks.json，缺失才联网） | §9 P2 |
+| legacy 消费方本地 HS 验签 | `ChatRoom/backend/app/main.py:192-194` 自建 `JwtService`（验的是自己的 `chatroom_token`，不受影响）；其余消费方走 HTTP `/auth/verify` 或 `client.verify_token` | 已确认无 RS256 破口 |

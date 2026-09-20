@@ -9,7 +9,7 @@
 | 包路径 | `wuwo/packages/wuwo_gui/1.0.0` |
 | 依赖 | `python-3.12+<3.13` / `pyside6` |
 | 启动 | `wuwor wuwo_gui -- wuwo_gui` |
-| 托盘入口 | `l_tray` 工具网格「wuwo 管理界面」（`use_rez` + `.solo`，改完需重启托盘） |
+| 托盘入口 | `l_tray` 工具网格「wuwo 管理界面」（`use_rez` + `.soloignore`，改完需重启托盘；重复点不再杀旧、也不自动前置） |
 | 自动展开 | **不参与**（家族目录带 `.wuwo_no_auto`，见 §6） |
 | 页签 | 包说明文档 / 包管理 / 环境 / 货架 / 核心包 / 解释器维护 / 配置（+ 条件出现的 AYON） |
 
@@ -124,13 +124,17 @@ pywin32、qtpy…）视为污染物卸载 —— 业务依赖应由货架提供�
 
 ```yaml
 - name: wuwo 管理界面
-  packages: [wuwo_gui, .solo]
+  packages: [wuwo_gui, .soloignore]
   icon: '{package}/assets/wuwo_gui.svg'
   use_rez: true
   run_args: [wuwo_gui]
 ```
 
-`.solo` 提供单实例（重复点会把已开窗口前置）。**托盘菜单只在启动时构建，改配置后需重启托盘。**
+**2026-09-20 起改用 `.soloignore`**（原 `.solo`）：wuwo 只观测、把 peer 注入 `L_SOLO_PEER_*`，
+**不杀旧实例**，接管与否交给包自己决定。注意 `wuwo_gui` 目前**没有**实现 `L_SOLO_IGNORE` 接管，
+所以重复点会**开第二个界面窗口**（不再自动前置旧窗口、也不再杀旧）。
+两种修饰符的差别见 `../solo_单实例守卫模式.md` §6。
+**托盘菜单只在启动时构建，改配置后需重启托盘。**
 
 ---
 

@@ -43,7 +43,8 @@ blob 按**库根隔离**：同一 md5 在不同库分别有实体和元数据行
 
 ## 3. 数据库表（落在 `chatroom` 库）
 
-`depot_store.py`，asyncpg 裸连接池（复刻 `account_service.py` 的 URL 处理）。
+`depot_store.py`，asyncpg 裸连接池（URL 处理与 `credential_service.py` 同款；
+旧的 `account_service.py` 已随 P4 泛化删除）。
 
 | 表 | 作用 | P4 对应 |
 |----|------|---------|
@@ -180,7 +181,28 @@ lock  unlock  locks  sync_plan  download
 | 2 | `l_tray/src/l_tray/depot_bridge.py` | 网页 → 托盘 19527 → 1028 |
 | 3 | `lugwit_netdisk_client`（本地桥） | 主窗口登录后 `bridge.setToken()`；另从持久化 WebEngine profile 的 cookie 抓 `lugwit_token` |
 
-token 获取顺序：env `LUGWIT_ACCESS_TOKEN` → `POST http://127.0.0.1:1027/api/v1/auth/auto`（缓存；401 时清缓存重试）。
+**2026-09-20 更新（P0/P6 落地后）**：
+- `/api/v1/auth/auto` **默认关闭**；netdisk 的 `_auto_local_token` 与回环兜底分支**已删** ——
+  登录态只认 cookie / `LUGWIT_ACCESS_TOKEN`；
+- 三处调用方改为 **env / 登录**：托盘走「托盘会话 token（浏览器授权或账号密码，refresh 存 DPAPI、可自动续期）」，
+  note server 用 `require_token()`（没有就直接报错，不再发匿名请求）；
+- 全仓已无 `/api/v1/auth/auto` 调用。
+- token 获取顺序（现状）：托盘会话 token → env `LUGWIT_ACCESS_TOKEN` → `LUGWIT_USER`/`LUGWIT_PASSWORD` 登录。
+
+**授权判定（P6）**：depot 的**读接口**（`download`/`list`/`history`）与**写接口**（`submit`/`submit_stream`/
+`delete`/`move`/`revert`/`checkout`/`edit_text`/`import`/`mark_*`/`*_pending`）都先过
+`gate.require_perm()`：管理员本地放行 → 「路径首段 = owner」快判 → 跨用户问 auth `/authz/check`
+→ auth 不可达只认自己的路径；越权 **403**；ACL 支持**目录继承**（库根授权覆盖子路径）。
+
+**灾备工具（T4 补齐）**：`tools/depot_manifest_verify.py`（清单 ↔ DB 四类漂移，只读）、
+`tools/depot_manifest_replay.py`（默认 dry-run 出 SQL，`--apply` 单事务重建
+`depot_changelist`/`depot_file_rev`/`depot_blob` + `setval`）。
+
+⚠️ **两条已知的既有数据问题**（2026-09-20 演练发现，未修）：
+1. `depot_blob` 缺 **71 条登记**（manifest 引用到的 (库, md5) 没有对应行）→ 读这些历史版本会落到兜底查找；
+2. `depot_blob.remote_path` 存的是 `/apps/Lugwit/version_depot/version_depot/blob/…`（**多一层 `version_depot`**），
+   而网盘真值是 `/apps/Lugwit/version_depot/blob/…` —— 实测 DB 那条 404、真值 200。
+
 
 **内容怎么取（浏览器不再直连 depot）**：知识库页归档（版本库）内容读取优先级
 **① 客户端本地桥 `window.lugwitBridge.depotDownload` → ② 托盘中转（`depot_download` 动作，经 19527）→
@@ -223,7 +245,9 @@ token 获取顺序：env `LUGWIT_ACCESS_TOKEN` → `POST http://127.0.0.1:1027/a
 - 跨源：执行机上的 `127.0.0.1:8080` / 生产域名等已在 ExecServer 的 CORS 白名单内
   （`DEFAULT_WEB_ORIGINS`，可用 `L_TRAY_EXEC_ORIGINS` 追加）；浏览器只能调 `web_actions`。
 - 托盘的 depot 基址：`L_TRAY_DEPOT_URL` > `L_DEPOT_SERVICE_URL` > `http://127.0.0.1:1028`；
-  token：env `LUGWIT_ACCESS_TOKEN` > `POST http://127.0.0.1:1027/api/v1/auth/auto`（401 换新重试）。
+  token（2026-09-20 起）：**托盘会话 token**（菜单「登录」→ 浏览器授权/账号密码，refresh 存 DPAPI 可自动续期）
+  > env `LUGWIT_ACCESS_TOKEN` > `LUGWIT_USER`/`LUGWIT_PASSWORD` 登录（401 换新重试）。
+  `/api/v1/auth/auto` 已默认关、不再是取 token 途径（见 `Rez_pkg/l_tray.md` §3）。
 
 **工作区按用户归属（2026-09-17 二次修正）**：页面把 cookie 里的 `lugwit_token` 随 `kwargs`
 一起传给托盘（三个动作都带 `token` 参数），托盘走 `_http(token_override=...)` **以该用户身份**

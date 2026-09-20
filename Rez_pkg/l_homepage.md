@@ -368,6 +368,67 @@ if (isNew) {
     进程内标志在"每次重启都是新进程"的架构下等于没有。
 18. `appendChild(fragment)` 会掏空 fragment：用 `frag.childNodes.length` 判"有没有内容"永远是 0
     （见「日志窗口」小节末尾）。
+19. **`_check_running()` 把 `.homepage.port`（端口 8090）当 PID → 主页永远起不来（2026-09-20）**：
+    - 现象：`wuwor l_homepage -- homepage_start`、托盘「一键启动Lugwit服务」、卡片 ↻ 重启全部"点了没反应"，
+      日志里只有一行 `[homepage] already running pid=8090`；nginx 8080 对 8090 全 502。
+    - 根因：`.homepage.port` 存的是**端口**（`start()` 写 `str(port)`），而 `_check_running()` 把它当 PID
+      交给 `_is_alive()`；**Windows 对 PID 低 2 位取整**——`OpenProcess(0x1000, pid=8090)` 实际打开的是
+      **8088**（本机为 Hyper-V `vmwp.exe`），`GetExitCodeProcess` 回 `STILL_ACTIVE` → 判"已在运行"
+      → `start()` 直接 `return 0`，**从不启动**。所以"时好时坏"取决于 8088 那个进程活不活。
+    - 实测（同一进程内 `QueryFullProcessImageNameW` 反查）：`8088/8089/8090/8091 → 全部解析到 8088`；
+      `67973/67974/67975 → 全部解析到自己(67972)`；`8092/91636/999999 → OPEN_FAIL`。
+    - 修法：判活**以"端口真的在监听"为准**（`_check_port()` + `_port_pid_map()` 取**真**监听 PID），
+      端口文件只当端口读，绝不当 PID。
+    - 教训：**端口与 PID 同为整数，跨语义复用必炸**；"已在运行"的判据必须落在外部可观测事实
+      （端口可连通）上，而不是某个文件里的一串数字。
+    - 排查口诀：**8090 无监听 + 日志有 `already running pid=<端口号>` = 这条**；
+      `curl -s -o nul -w "%{http_code}" http://127.0.0.1:8090/healthz` 返回 `000` 可先确认没起。
+20. **一键启动"静默失败"：`DEVNULL` 吞掉一切输出（2026-09-20）**：
+    `start_lugwit_stack.py` 的 `_launch()` 原先把三个服务的 stdout/stderr 全丢 `DEVNULL`，而托盘以
+    `pythonw` 隐藏窗口运行 → 上面第 19 条的失败现场**零日志、零提示**。修法：输出落
+    `<wowo_log_dir>/l_tray/start_<服务>_<日期>.log`，启动后探活（`READY_TIMEOUT=60s`）并汇报，
+    **未就绪就弹 MessageBox**（列出失败服务 + 各自日志路径；成功不弹）。
+    - **坑中坑：`creationflags` 不能用 `DETACHED_PROCESS(0x8)`**。无控制台时，更深一层的 python
+      （`wuwo_rez`→`rez`→服务）会绕开我们给的 stdout/stderr 句柄，日志只剩 `.bat` 自己的 echo
+      —— 实测 **136B vs 4370B**。改用 `CREATE_NO_WINDOW(0x08000000) | CREATE_NEW_PROCESS_GROUP`
+      （同样与启动器脱钩，日志完整）。
+    - 别急着判"没日志"：子链要 **2~4s** 才开始写。
+    - 也**不要改成 cmd 级 `>> log 2>&1`**：那串要穿过 cmd 的引号剥离规则，多带一个引号就静默不执行
+      （连文件都不建）。
+21. **开机后没人拉主页** → 托盘「启动管理」内置项 `start_lugwit_stack`
+    （`l_tray/src/l_tray/config/startup_builtin.json`，默认 `enabled: true`，
+    `action_name: l_homepage` 用于"主页已在跑就跳过"）：命令 `pythonw "%L_TRAY_ROOT%\src\l_tray\tools\start_lugwit_stack.py" --no-prompt`。
+    教训：**自愈链路必须有一个"随登录启动"的入口**——guard 再强，也只有主页（或托盘）先起来才有意义。
+
+22. **卡片启动"假成功"：主页实例丧失 spawn 能力（`0xC0000142`，2026-09-20）**：
+    - 现象：`POST /api/v1/services/<卡>/start` 回 `ok:true`，但**进程不产生、该卡日志一个字都不增**；
+      常驻自拉的记录是 `启动进程已退出(退出码 3221225794)` = `0xC0000142` = **STATUS_DLL_INIT_FAILED**
+      （有符号写法 `-1073741502`）；`POST /api/v1/nginx/reload`（同一条 spawn 路径）也 500 + **输出为空**
+      —— `.bat` 连自己的横幅都没打印，说明子进程在 loader 阶段就死了；而同一时刻 `netstat`
+      （`_port_pid_map` 走 `CREATE_NO_WINDOW`）**正常**，7 张在跑的卡都能取到 pid。
+    - 判定：这是**实例级**失能——那个主页进程（pid 58256）已无法 spawn 控制台子进程。热重载重启出
+      新实例（85100）后，5 项最小对照（`cmd /c echo`、`netstat`、`wuwor.bat`，分别带/不带
+      `CREATE_NEW_PROCESS_GROUP`）**全部 rc=0 且输出正常** → **重启主页即恢复**。
+    - 诱因：本机当时 **1100+ 进程**（`cmd` 228 / `conhost` 143 / `node` 211），大头是 IDE-MCP 的 npx 链
+      （`@playwright/mcp`、`firebase-tools@…`、`@modelcontextprotocol/server-filesystem`，共 210 个
+      `cmd→node` + 105 个 `node→cmd` + 103 个 `IDE→cmd`）。session 控制台资源被堆满时，新的控制台
+      子进程会在 loader 阶段失败，小工具反而能活。根因不在 l_homepage，但**它一失能就是"所有卡片的
+      启停/重启/常驻全部失效"**。
+    - 已排除：控制台缺失（造真·无控制台父进程 `DETACHED_PROCESS` / `CREATE_NO_WINDOW` 复现不出）、
+      缺 `SystemRoot` / `COMSPEC`、坏 cwd、主页自身资源（1364 句柄 / 68MB，正常）。
+    - 顺手修掉的三处隐患（本次排查副产品）：
+      a) `_wuwor_bat()` 曾返回**相对路径** `.\wuwor.BAT`（PATH 里有 `.` 时 `shutil.which` 就这么给），
+         全靠"主页 cwd 恰好在 wuwo 目录"才成立 → 改绝对路径（`os.path.abspath`）+ `WUWO_DIR` 兜底；
+      b) 手动启停 `wait_ready=0`，"进程立刻死"也回 `ok:true`（前端只能显示成功）→ 补
+         `_wait_instant_exit()`（`MANUAL_START_GRACE=4s`）：只判"子进程已退出且端口没起来"，
+         并把日志尾部一并返回，无输出时明说"进程在加载阶段就死了"；慢启动照旧放行；
+      c) 固定 `WATCHDOG_WAIT_READY=20s` 会把慢启动判成失败（实测 l_model_hub 冷启动 **47s**）→
+         `_ready_timeout_for()` 按该卡自身历史最慢成功耗时 ×1.5 自适应（夹在 20~120s，缓存 60s），
+         tick 记录里带 `ready_timeout` 便于回看。
+    - 排查口诀：**start 回 `ok:true` 但日志零新增 + 常驻记录出现 `0xC0000142` → 先数机器进程
+      （>1000 就该警惕），再在主页里跑最小 spawn 对照；重启主页立即恢复，根治要清掉泄漏的 MCP 进程。**
+      清孤儿进程要按"父进程是否还活着"判定（`psutil` 比对 `ppid` + 父子创建时间，防 PID 复用），
+      只杀孤儿，别碰活父进程下的（那多半是正在用的工具链）。
 
 ## 验证清单（可复用）
 
@@ -395,9 +456,17 @@ if (isNew) {
    连续 `refresh()` 后 **DOM 子节点数只增不重建**（不会每次都换一批）、搜索过滤后
    **有匹配时不得出现"（无匹配行）"**、无匹配时才出现。
 11. **重启并发/熔断**（`l_app_ready.hotreload_service`）：离线就能测——
-   把锁文件写成"别的 pid"→ `spawn_self_restart()` 必须返回 False；连记 4 次 `_note_restart()`
-   → `breaker()['remaining'] > 0` 且此后 `spawn_self_restart()` 仍返回 False；`state()` 里能看到 `breaker`/`restart_lock`。
-   顺带离线断言模板产物：`data-fields='…'` 必须是单引号包裹、JSON 可解析、明细值里无 U+2xxx 以上的非 emoji 字形。
+    把锁文件写成"别的 pid"→ `spawn_self_restart()` 必须返回 False；连记 4 次 `_note_restart()`
+    → `breaker()['remaining'] > 0` 且此后 `spawn_self_restart()` 仍返回 False；`state()` 里能看到 `breaker`/`restart_lock`。
+    顺带离线断言模板产物：`data-fields='…'` 必须是单引号包裹、JSON 可解析、明细值里无 U+2xxx 以上的非 emoji 字形。
+12. **"起不来 / 重启没反应"三件套**（2026-09-20 实战，按顺序跑）：
+    ① `(Get-NetTCPConnection -LocalPort 8090 -State Listen).OwningProcess` → 没监听就是没起；
+    ② 看 `<runtime>/homepage.log` 尾部有无 `already running pid=<端口号>`（= 第 19 条）；
+    ③ 判活语义的离线自证：`_is_alive(8090)` 与 `_is_alive(8088)` 一起打——若两者表现一致，
+    就说明端口被当成 PID 用了（低 2 位取整）。
+    修完的回归：`start()` 能起、`POST /api/v1/homepage/restart` 后监听 PID 变化且 `.homepage.pid` 同步、
+    `/api/v1/watchdog/status` 的 `interval` 与页面文案一致（`POST /api/v1/homepage/blocks` 解出的
+    grid 片段里断言 `每 60 秒 检查一次`，中文比对放到 Python 里做，PowerShell 控制台编码会糊）。
 
 ## 未做 / 可选
 

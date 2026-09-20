@@ -277,12 +277,41 @@ LUGWIT_CA_FILE（环境变量）
 | 2. 接 `QWebEnginePage.certificateError` | 只管自家客户端内嵌页；外部浏览器无效 | 小 | ⚠️ 必须**按证书指纹白名单**放行，别写成无条件忽略（那是 MitM 敞口）。仓库先例：`ChatRoom/.../l_cgtw/maya_plugin/maya_plugin.py:427,522` |
 | 3. 上域名 + Let's Encrypt（`8443`，免备案） | 根治 | 买域名 | 已拍板方向（§4.3、`Nginx反向代理机制` §11.4） |
 
-**脚本 1 的实测记录（2026-09-19）**
+**脚本 1 的实测记录（2026-09-19，本机 A/B/A 验证）**
 
-- CA 文件查找顺序：`LUGWIT_CA_FILE` > `C:\certs\lugwit\ca.pem` > 本仓 `l_qframelesswindow/999.0/src/l_qframelesswindow/config/ca.pem`；本机三处里前两处都在，取到 `C:\certs\lugwit\ca.pem`。
-- 该证书可直接当根：`BasicConstraints(ca=True, path_length=0)` + `keyCertSign`（`tools/make_self_signed_cert.py:70-78`）。
-- 实测值：`Subject=O=Lugwit Internal, CN=121.196.144.88`、`NotAfter=2036-09-11`、`Thumbprint=831663D9907F224B0EA4AA01F746BD33FEB17314`；本机根库查询 `MISSING`（尚未安装）。
-- ⚠️ **踩坑（写进脚本注释了）**：`certutil -dump` 对 **PEM 文件不输出** `Subject` / `Cert Hash(sha1)` 行（只有先转 DER 才给），所以脚本改用 PowerShell 的 `X509Certificate2` 读 PEM；且**不要**用临时文件 + `WriteAllLines` 传数组（实测 4 行被并成 1 行），改为"一次取一个值"。
+**✅ 结论：装根库有效，且「用户库」就够 —— 不需要 `/all`、不需要管理员/UAC。**
+
+| 阶段 | 动作 | 结果 |
+|---|---|---|
+| A（基线） | Chromium（Playwright，未忽略证书错）访问 `https://121.196.144.88/nginx-health` | `net::ERR_CERT_AUTHORITY_INVALID` |
+| B（装用户库） | `certutil -addstore -user -f Root <ca.pem>` | `/baidu/` **200**、`/api/v1/health` **200** |
+| A′（撤销） | PowerShell `Remove-Item` 删除 | `ERR_CERT_AUTHORITY_INVALID` **复现** |
+
+据此脚本已改为**默认装 `CurrentUser` 库**（免 UAC），`/all` 才装机器库。
+
+**实测发现的两个真实坑（都已写进脚本）**
+
+1. **库里早有旧指纹残留**：`Cert:\CurrentUser\Root` 与 `Cert:\LocalMachine\Root` 里都存在
+   `O=Lugwit Internal, CN=121.196.144.88`，但指纹是 **`478768654210E7F20DF95BC30E4BEBBAA4FF2A00`（旧）**，
+   而服务器**现在出示的是 `831663D9907F224B0EA4AA01F746BD33FEB17314`**（等于包内 `ca.pem`）。
+   → 这正是 §11.4 警告过的"重签未同步"，也是 `ssl_support` 注释里那句"三者指纹互不匹配"的来源。
+   这种状态下"看着装了却仍不信任"。**脚本装前会列出同 Subject 不同指纹的条目**并提示清理。
+2. **卸载不能用 `certutil -delstore`**：删根库时它弹确认框，非交互调用直接
+   `ERROR_CANCELLED(1223)`，且**证书仍在**（实测：删完再查指纹还在）。脚本改用
+   PowerShell `Remove-Item` 静默删除（实测输出 `REMOVED`、复查 `after=False`）。
+
+**写 .bat 本身的两个坑（踩过，务必照着写）**
+
+| 坑 | 现象 | 处置 |
+|---|---|---|
+| **文件编码** | 存成 UTF-8（无 BOM）时 cmd 按 GBK 解析 → 中文字节**吃掉后面的 ASCII**（`usebackq` 被啃成 `ebackq`、`echo` 成 `ho`），脚本整体崩 | **用 GBK/ANSI 保存**；不加 `chcp 65001`（会让 GBK 输出变乱码） |
+| **注释/输出里的 `>`** | `rem/echo` 行出现大于号时 cmd **仍按重定向处理**（`rem ... -> 装后...` 触发重定向），后续行错位成命令 | rem/echo 里**不写重定向符号**，用 `→` 或文字表述 |
+| 证书信息读取 | `certutil -dump` 对 **PEM 不输出** `Subject` / `Cert Hash(sha1)` 行（只有转 DER 才给）；临时文件 + `WriteAllLines` 传数组实测把 **4 行并成 1 行** | 改用 PowerShell `X509Certificate2` 读 PEM，**一次取一个值** |
+
+**验收口径**：用 `https://121.196.144.88/baidu/` 或 `/api/v1/health`。
+⚠️ **别用 `/nginx-health`**：该端点响应非 HTML，浏览器会当下载处理（`net::ERR_ABORTED`），与证书无关，容易误判。
+
+**待办**：QtWebEngine（`l_notepad_client` / `lugwit_netdisk_client`）未单独验（与 Chromium 同源、同走系统库，预期一致）；
 
 **⚠️ 装根证书的安全须知（必须一起讲清）**
 

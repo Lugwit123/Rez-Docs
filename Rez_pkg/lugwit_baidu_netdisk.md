@@ -84,8 +84,11 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 
 - 页面端点未登录 → 302 跳 `/login?next=原路径`
 - API 端点未登录 → 401 `{"detail": "未登录 lugwit_auth"}`
-- **本机请求**（`127.0.0.1` / `::1`）会自动去 `lugwit_auth` 的
-  `/api/v1/auth/auto` 换一个 token，所以本机脚本一般不用手动带 token
+- **「本机免登录」已不再存在**（2026-09-20）：`web_server._auto_local_token` 与
+  `_current_user` / `_page_user` 里的回环兜底分支**已删除**；登录态只认
+  cookie `lugwit_token` 或 env `LUGWIT_ACCESS_TOKEN`。
+  原因：`POST /api/v1/auth/auto` 按 P0 **默认关闭**（需 `LUGWIT_AUTO_AUTH_ENABLED=1`
+  且只认"peer 回环 + 无转发头"，生产 nginx 前置下公网请求会被 XFF 挡住）。
 
 > **2026-09-17 实测：本机自动授权静默失败。** `web_server._auto_local_token` → `POST {auth}/api/v1/auth/auto`
 > 在本机**实测静默失败**（访问日志只有 401、无任何异常记录）。因此**三处调用方改为自带凭据**，
@@ -97,7 +100,25 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 > | 2 | `l_tray/src/l_tray/depot_bridge.py` | 网页 → 托盘 19527 → 1028 |
 > | 3 | `lugwit_netdisk_client`（本地桥） | 主窗口登录后 `bridge.setToken()`；另从持久化 WebEngine profile 的 cookie 抓 `lugwit_token` |
 >
-> token 获取顺序：env `LUGWIT_ACCESS_TOKEN` → `POST http://127.0.0.1:1027/api/v1/auth/auto`（缓存；401 时清缓存重试）。
+> **2026-09-20 更新**：三处的取 token 方式已全部改成 **env / 登录**，全仓再无 `/api/v1/auth/auto` 调用：
+> `l_notepad_server/depot_map.py` 用 `require_token()`（env 没有就抛错，不再发匿名请求）；
+> `l_tray/depot_bridge.py` 优先 **托盘会话 token**（浏览器授权/账号密码登录，refresh 存 DPAPI、可自动续期），
+> 其次 env，再次 `LUGWIT_USER`/`LUGWIT_PASSWORD` 登录。详见 `l_tray.md` §3。
+>
+> token 获取顺序（现状）：托盘会话 token → env `LUGWIT_ACCESS_TOKEN` → 账号密码登录。
+
+### 授权判定（P6：不再「登录即可读任意路径」）
+
+2026-09-20 起，depot 的**读接口**（`/api/v1/depot/download`、`/list`、`/history`）与**写接口**
+（`submit`、`submit_stream`、`delete`、`move`、`revert`、`checkout`、`edit_text`、`import`、
+`mark_*`、`revert_pending`、`submit_pending`）在取数据/落库**之前**都过 `gate.require_perm()`：
+
+- 判定链：管理员/系统角色本地放行 → 「路径首段 = owner」本机快判 → 跨用户问 auth
+  `/authz/check` → auth 不可达时**只认自己的路径**（跨用户一律拒）；
+- 越权返回 **403**（不是 404/200 混淆）；`submit_pending` 取不到待提交列表时**拒绝落库**（fail-closed）；
+- ACL 支持**目录继承**：在库根发一条授权即可覆盖 `<库>/<子目录>/…`（`authz_service._resource_candidates`）；
+- auth 自己的备份任务用 `typ=service` 令牌 + 库根授权（`/l_auth_backup`）通过判定。
+
 
 登录名就是 depot 里的 `owner`（提交人、锁的归属、have 表的主键之一）。
 
@@ -133,7 +154,7 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 ### 3.3 版本元数据库
 
 `depot_store.py` 用 asyncpg 连 `chatroom` 库（URL 处理复刻
-`lugwit_auth` 的 `account_service.py`）。表**首次连接时自动建**，
+`lugwit_auth` 的 `credential_service.py`）。表**首次连接时自动建**，
 老库升级走 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，不用手动迁移。
 
 `GET /api/depot/status` 里 `db: true` 就是通了。`false` 时所有 depot 接口返回
@@ -624,7 +645,8 @@ Postgres 连不上。检查 `chatroom` 库连接串（和 `lugwit_auth` 用同�
 非本机请求必须带 cookie `lugwit_token` 或环境变量 `LUGWIT_ACCESS_TOKEN`。
 本机请求会自动换 token —— **但本机自动授权 2026-09-17 实测静默失败**（见 §2.3），
 所以三处调用方（note server / 托盘 `depot_bridge` / 客户端本地桥）改为**自带凭据 + 401 换新 token 重试一次**；
-若仍 401，先查调用方 token 来源（env / `auth/auto`），再看 `lugwit_auth` 是否起来。
+若仍 401，先查调用方 token 来源（托盘会话 token / env `LUGWIT_ACCESS_TOKEN` / 账号密码登录 ——
+`/api/v1/auth/auto` 已默认关、相关调用已全清），再看 `lugwit_auth` 是否起来。
 
 **列表能通、下载 500 / 经 nginx 502（内容取不到）**
 depot **元数据在 PostgreSQL**（`/api/depot/list`、`/api/kb/{kb}/depot/list` 离线可用、返回 200），

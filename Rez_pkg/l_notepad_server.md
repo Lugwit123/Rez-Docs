@@ -92,11 +92,17 @@ def _resolve_data_root():
 ├── external_files.json      外部文件状态
 ├── note_order.json          笔记手动排序
 ├── notepad.sqlite3          服务端笔记库（笔记归属/共享等元数据）
-├── account_favorites.json   账号收藏
-├── .accounts_key            账号加密密钥
+├── account_favorites.json   账号收藏（本地缓存；云端走 auth）
 ├── auth_token.json          登录令牌
 └── server_config.json       服务器地址配置（标题栏「服务器设置」写出）
 ```
+
+> **2026-09-20 变更**：账号/凭据的加密密钥**已不在本目录**——
+> 主密钥归位到 `~/.lugwit/lugwit_auth/master.key`（Windows 下 DPAPI 包裹；旧文件
+> `~/.lugwit/l_notepad/.accounts_key` 已轮转并改名 `.bak`），且账号数据早已由
+> `lugwit_auth` 统一托管（表从 `l_notepad_accounts` 泛化为 `credentials`/`favorites`，
+> 端点 `/accounts*` 仍在、内部指向新表）。
+> 详见 `../lugwit_auth统一用户授权服务设计.md` §9 P4。
 
 `notepad.sqlite3` 记录**归属**（owner）与**共享**（public）等元数据，笔记正文以文件形式存于
 `notepad_list/`。旧 `notepad.sqlite3` 若为 0B 属正常（拆包前的旧版可能用文件存储、无库），归属表由启动迁移补齐。
@@ -240,6 +246,26 @@ for _p in _migrated:
 工作区文档「⬆ 提交到百度云」调用 `lugwit_baidu_netdisk` 的 `/baidu/api/depot/submit_stream`。
 Depot 支持多存储模式（blob / 目录镜像），按逻辑根登记，详见
 《Rez_pkg/lugwit_baidu_netdisk.md》第 13 节。222
+
+#### 7.3.1 depot 登录态（服务端，2026-09-20）
+
+depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底已按 P0 关闭，
+所以笔记服务访问 depot 必须自带登录态，`depot_map.require_token()` 按序取：
+
+1. 环境变量 `LUGWIT_ACCESS_TOKEN`（l_scheduler 登录后注入）；
+2. 环境变量 `LUGWIT_USER` + `LUGWIT_PASSWORD`；
+3. 机器本地凭据文件 `~/.lugwit/l_notepad_server/depot_auth.json`
+   （不入库、不随包推送；内容 `{"lugwit_user": "账号", "lugwit_password": "密码"}`）。
+
+都没有 → 知识库页「索引来源」处显示 `DepotError: depot 未配置登录态…`。
+登录 token 有缓存，401 时自动换新重试；**补填凭据文件后不用重启服务**，
+刷新知识库页面重新触发索引即可。
+
+**管理员网页登录自动配置（2026-09-20）**：`role ∈ {admin, system}` 的账号在
+网页登录成功且服务进程尚无 depot 登录态时，服务端自动把本次登录的账号密码
+写成上述凭据文件（0600，不入库不推送）——即「管理员登录一次，depot 索引即可用」。
+账号密码后来改了 → 旧凭据登录失败 → 下次管理员登录自动重播覆盖。
+`LUGWIT_DEPOT_AUTO_SEED=0` 可关闭该行为。
 
 ### 7.4 笔记云镜像（已改为走 depot 库）
 

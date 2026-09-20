@@ -126,6 +126,26 @@ start_orphan_watch()               # worker 孤儿自毁看门狗（仅 Windows�
 
 按端口查监听者用 `l_app_ready.port_listener_pids(port)`（netstat 实现，与服务侧自重启共用）。
 
+### 6.4 托盘启动项已切到 `.soloignore`（2026-09-20）
+
+托盘「启动管理」与「小工具网格」里的启动项**已从 `.solo` 改为 `.soloignore`**，涉及：
+`config/startup_builtin.json`（5 条：l_notepad_client / l_scheduler / l_WChat / l_fastapi_guard /
+l_repo_sync_gui）、`config/smallProgramList.yaml`（4 条：Hermes WebUI / l_notepad_client /
+l_folder_favorites / wuwo 管理界面）、`Tray.py` 内联 `packages=[...]`（4 处）、
+用户配置 `~/.lugwit/l_tray/auto_start.json`。
+
+行为差异（点第二次启动时）：
+
+| 参数 | 行为 |
+|---|---|
+| `.solo` | 守卫交互确认（无 stdin 即默认）→ **杀旧实例进程树**后继续启动 |
+| `.soloignore` | 只观测并把 peer 注入 `L_SOLO_PEER_*`，**不杀旧**，是否接管由包自己决定（§6.3） |
+
+⚠️ **现状：只有 `l_WChat` 实现了 `L_SOLO_IGNORE` 接管**（`_solo_ignore_takeover()`）。其余被切的项
+（`l_notepad_client` / `l_scheduler` / `l_fastapi_guard` / `l_repo_sync_gui` / `l_hermes` /
+`l_folder_favorites` / `wuwo_gui`）**没有**该逻辑 → 重复点击会**起第二个实例**（纯 GUI 多开一般无害，
+但带端口的常驻服务需注意）。要恢复保护，就给这些包照 §6.3 补接管实现。
+
 ## 7. 相关文件
 | 文件 | 作用 |
 | --- | --- |
