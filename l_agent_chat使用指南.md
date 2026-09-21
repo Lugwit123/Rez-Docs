@@ -259,6 +259,33 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /api/browse_rez` | 多级浏览 rez 包仓库 |
 | `POST /api/translate` | AI / 免费翻译 |
 
+## 回归测试
+
+```bat
+wuwor l_agent_chat -- l_agent_chat_test              rem 跑 tests/ 全部用例，退出码非 0 即失败
+wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
+```
+
+覆盖范围：
+
+- **工作区规则 / OpenSpec 索引注入**：frontmatter 四字段、always·index·skip 分档、来源开关、
+  两条路径（直连问答 `_build_messages` 与 **planner 工具循环** `_planner_messages`）
+- **hooks**：matcher 语义、可阻断集合、决策合并（deny 只在可阻断生效 / ask 不覆盖 deny /
+  `hookEventName` 不符丢弃）、**真起子进程**走 stdin-stdout 的端到端、Claude Code 四层设置来源
+- **planner 工具循环**：请求形状、工具往返、HTTP 错误 fail-open
+- **端点级**（真起 uvicorn + 假 provider）：SSE 流式回复、工具调用往返、hook deny、
+  审批**放行 / 拒绝 / 超时**、`.codemakerignore` 拦读、工具失败也必须发事件
+
+设计要点：
+
+- 全部用标准库 `unittest`，**不引入新依赖**。环境里没有 `httpx`（`TestClient` 用不了），
+  所以端点级走**真 uvicorn 子进程 + `requests`**，顺带把 SSE 分帧、审批回传这些真 socket 行为一起测到
+- `tests/fake_llm.py` 是假的 OpenAI 兼容服务（含 SSE 分支）；provider 用
+  `L_MODEL_HUB_USER_JSON` 把 `deepseek` 的 `api_base` 重定向过去 → 结果确定、不花钱、不依赖外网
+- `tests/agent_server.py` 用 `AGENT_CHAT_WORKSPACE` 指向临时目录，**不碰本机的工作区 / 设置 / 会话**
+- 注意：一句用户输入会打两次模型（先 planner 判断要不要工具，再由最终答复走流式），
+  写假回复脚本时要留两条
+
 ## 配置项
 
 设置页写入的配置存于 `<工作区>/.l_agent_ws/settings.json`，重启后仍生效。

@@ -319,8 +319,18 @@ def _resolve_src_watch(use_env: bool) -> str:
 
 | 机制 | 位置 | 行为 |
 |---|---|---|
-| **并发锁** | `%TEMP%/lugwit_hotreload/<alias>.lock`（JSON：pid/at/trigger/pkg） | `spawn_self_restart()` 先查锁，被**别的 pid** 持有时直接跳过；执行进程 `restart_self()` 允许**父进程/自身**持锁（原实现只认自身 pid → 重启执行进程永远让位、**静默不重启**：lock 出现、breaker 计数涨、PID 不变），出口 `finally` 释放锁。TTL 30s（进程崩了也不会卡住后续重启） |
+| **并发锁** | `%TEMP%/lugwit_hotreload/<alias>.lock`（JSON：pid/at/trigger/pkg） | `spawn_self_restart()` 先查锁，被**别的 pid** 持有时直接跳过；执行进程 `restart_self()` 允许**父进程/自身**持锁（原实现只认自身 pid → 重启执行进程永远让位、**静默不重启**：lock 出现、breaker 计数涨、PID 不变）。**释放时机：等新实例监听端口后再释放**（见下），不是 Popen 后立刻放。TTL 30s（进程崩了也不会卡住后续重启） |
 | **熔断** | `<runtime>/restart_guard.json`（events / blocked_until / backoff） | 180s 窗口内重启 ≥4 次 → 封 60s，之后按次**翻倍**（上限 15min）。熔断期间 `spawn_self_restart` 返回 False 且**限频**打日志（30s 一条，不再用日志刷爆日志） |
+
+**锁的释放时机 = 新实例就绪（2026-09-21 修复）**：
+旧实现 `restart_self()` 在 `Popen` 拉起新实例后**立刻释放锁**，留下"锁已释放、端口未就绪"的空窗。
+主页 watchdog（60s 一轮，只在本轮开头查一次锁）/ 卡片动作若落在该空窗，会判定服务掉线并启动一个
+**竞争实例** → `restart_history.jsonl` 记 `旧进程未退出：端口 N 仍被 PID x 占用，本次start已取消`
+或 `taskkill 均失败`，本次重启被取消（慢服务如 `l_agent_chat` 启动 5~20s，最易中招）。
+现改为 `_wait_new_listener_then_release()`：等到出现**不在旧监听列表里的新监听 PID** 才释放；
+等待期间每 5s `guard.renew()` 续期，避免 `LOCK_TTL`(30s) 到期让锁失效；超时仍释放并限频告警，
+交回 watchdog / 用户接管（起不来时由主页记失败 → 卡片报警）。
+参数：`L_SRC_WATCH_READY_TIMEOUT`（默认 25s，`0` = 不等，退回旧行为）。
 
 对外：`restart_in_progress(alias, ttl)` 供外部动作避让；`state()` 带 `breaker`（recent/blocked_until/remaining）
 与 `restart_lock`，前端可提示"已熔断 / 正在重启"。

@@ -204,6 +204,52 @@ if (isNew) {
 | GET | `/api/v1/homepage/stamp` | 极轻量：`templates_stamp` + 驱动状态（SSE 的兜底轮询） |
 | GET | `/api/v1/homepage/events` | SSE：推 `{"kind":"frontend"}`（前端文件改动）+ 15s 心跳 |
 | POST | `/api/v1/homepage/restart` | 重启主页自身（独立进程） |
+| GET | `/homepage/down?from=<原始URI>` | 服务未启动兜底页（由 nginx `error_page` 内部重定向，见下节） |
+| GET | `/docs` | 主页 FastAPI Swagger（`docs_url` 默认；经 nginx 精确匹配 `location = /docs` 反代到 8090，见下节） |
+
+## 服务未启动兜底页（nginx error_page 502/504）
+
+**问题**：卡片是普通链接（`href = base_url + s.url`），点击后浏览器直接请求 nginx，由 `routes.conf`
+的 `location /note/` 等反代到目标端口 —— **主页后端不在访问链路上**。服务没起来时 nginx 自产 502，
+用户只看到裸错误页，也不知道该点哪张卡启动。
+
+**方案**（改动只在 nginx 兜底层，不动路由分工）：
+
+- `conf/routes.conf` 顶部：`error_page 502 504 = @svc_down;` + `location @svc_down`。
+  上游**连不上**（进程没起）时 nginx 自产 502/504 → 内部重定向到 `@svc_down` →
+  `proxy_pass http://lugwit_homepage_backend/homepage/down?from=$request_uri`。
+- **只兜底「连不上」**：nginx 默认 `proxy_intercept_errors off`，上游自己返回的 5xx 仍原样透传，
+  不改变既有语义。
+- **排除主页自身**：`$request_uri` 命中 `^/($|homepage|svc-icon|api|docs|__dev__|favicon|login|nginx-health)`
+  时 `return 502`，保持原错误语义，也避免自指循环。
+- **内部重定向不改浏览器地址栏**：地址栏仍是原始服务 URL（如 `/note/web`），所以兜底页里 API 用绝对
+  路径、跳回用 `from`。
+- 主页端 `portal_down()`（`GET /homepage/down`）：
+  - `match_card_for_path(path)` 先按卡片 `url` 前缀**最长匹配**；命中的是 link 卡（如 `/note/admin/notes`）
+    时退化到「同路由首段的唯一 service 卡」（link 卡没进程可启动，真正要拉起的是 `/note/web`）。
+  - 探测到该卡**已经 up**（watchdog 刚拉起）→ 直接 302 回 `from`。
+  - 否则渲染 `templates/down.html`：卡片名/描述/端口/启动命令 + 「▶ 启动服务」「↻ 重试」「← 返回主页」。
+    启动调 `POST /api/v1/services/{name}/start`，成功后每 1.5s 轮询 `/api/v1/services/status`，
+    up 后跳回 `from`；无匹配卡片时只提示、不显示启动按钮。
+- 生效：改 `routes.conf` 后 `wuwor l_nginx -- nginx_reload`（reload 不中断）；主页无需重启即含新路由。
+
+**验证**（端到端，实测通过）：停一个服务 → `curl http://127.0.0.1:8080/<路由>/` 应返回 200 的兜底页
+（含 `startService` 与卡片名）→ 点「▶ 启动」或 `POST /api/v1/services/<卡名>/start` → 端口 up 后
+再访问原地址得到真实服务页面。另测 `/homepage` 仍是 302 登录跳转（未被兜底）。
+
+## API 文档按钮与 /docs 路由归属
+
+顶部「API 文档」按钮 `href="/docs"`（`home.html`）应指向**主页 FastAPI 的 Swagger**，
+但 `/docs` 原本被 nginx 静态文档站占用（`location = /docs` → 302 → `/docs/`），
+点开的是 md 文档站而不是 API 文档。
+
+- `conf/routes.conf`：`location = /docs` 改为 `proxy_pass http://lugwit_homepage_backend/docs;`
+  （精确匹配，优先于前缀 `location /docs/`）；静态文档站保留在**带斜杠**的 `/docs/`。
+- Swagger 页面内部请求 `/openapi.json`，经 `location /` 落到主页，无需额外配置。
+- 注意：FastAPI 默认 Swagger UI 从 `cdn.jsdelivr.net` 加载 JS/CSS，**离线/受限网络**下页面会空白；
+  要离线可用需把 swagger-ui 静态资源本地化（改 `docs_url` 或用自定义 docs HTML）。
+- 验证：`curl http://127.0.0.1:8080/docs` → 200 Swagger HTML；`/openapi.json` → 200 JSON；
+  `/docs/` 仍是静态文档站。
 
 ## 已删除的内置卡：查看 + 恢复
 
