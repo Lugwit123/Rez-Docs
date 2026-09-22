@@ -336,18 +336,327 @@ $ python tools/migrate_ai_chats.py --apply
 | `logs` | 420 个文件（413 local / 4 cloud / 3 synced），**不含任何 `ai_chats/*`** |
 | `chats` | 正是迁移过来的 2 份（`ai_chats/3a0cc23d….json`、`ai_chats/c0fe9847….json`），均 `local`（云上还没有）；`dir = D:\Temp\Log\ai_chats` |
 
-### 阶段 4 起（待做）
+### 阶段 4 已完成（2026-09-21）
 
-| 阶段 | 内容 | 验收 |
+- `depot_logs.mark_synced()`：调 `POST /api/depot/sync_done`（item 键名 **`depot_path`**）——
+  「云 → 本地」那一侧的收尾（提交由 `submit_stream` 隐式盖章，不用补）。
+- 新模块 `backend/chat_sync.py`：`push(root, lib, rels=None)` / `pull(...)`，
+  只认 `ai_chats/*.json`（`_accept`，挡掉任意路径）；拉取先备份 `.bak` 再写、写完盖章。
+- 端点：`POST /api/ai/chat/push` / `POST /api/ai/chat/pull`（body `{root, rels?}`），
+  写完调 `workspace_status.invalidate()`（与既有写操作一致）。
+- **策略**：不点名 `rels` 时**提交只推「📄 仅本地」、拉取只拉「☁ 仅云端」**；
+  「✎ 已修改」必须点名才动（不替用户选边）；库端不可达**一个都不动**并把原因带回。
+- 测试：`backend/tests/test_chat_sync.py`（10 例，depot 端全打桩）。
+
+**实测**
+
+| 步骤 | 结果 |
+|------|------|
+| `POST /api/ai/chat/push {root:"l_log"}` | `pushed` 2 份，`failed` 空 |
+| `list_files(..., '/l_log', exts={'.json'})` | `['ai_chats/3a0cc23d….json', 'ai_chats/c0fe9847….json']`，大小 537 / 24112 |
+| 把本地那份挪走 → `POST pull` | `pulled` 1 份；回来后 **sha16 = `EF8BCC9C8F84D73F`**（与迁移前一致）、size 24112；`error` 空（说明盖章成功） |
+| `GET /api/workspace-status?root=l_log` | `chats: synced#r1` ×2；`logs` 那组不受影响 |
+
+**踩到的两点**
+
+1. **状态缓存会挡住决策**：`workspace_status` 有 30s TTL，`push`/`pull` 直接读它会拿旧结论
+   （实测：手动挪走文件后它没看见 → 什么都没拉）。现在 `chat_sync.chats_status()` 先
+   `invalidate` —— 一次显式动作多付一次库端列目录，值得。UI 每次聊完都会写会话文件，
+   这个坑不修的话「聊完立刻提交」会漏。
+2. **推过一次后再改 = 「✎ 已修改」**，批量**故意**不推（不替用户选边）。
+   所以界面的「聊完立刻提交」**不能走批量**，要**点名推它自己那一条**
+   （`push(rels=[rel])`）。批量 `☁ 提交` 的语义只是「补齐 / 一次性对齐」。
+
+### 阶段 5 已完成（2026-09-21）
+
+- 新模块 `backend/depot_ledger.py`：`<用户目录>/.lugwit/l_log/ai_ledger.json`
+  （`L_LOG_AI_LEDGER` 可覆盖），结构 `{<根>: {<rel>: <sha256>}}` ——
+  **只记内容指纹，不记 rev**（rev 那半归服务端）。
+- `depot_logs.have(local_root, lib)`：`GET /api/depot/workspace/{id}/have` → `{rel: rev}`；
+  取不到返回空 → 退化为比内容，**不会误判**。
+- `workspace_status._chats_status()`：会话单独一套判定（日志那组仍是 size + 可选 deep，
+  因为几百篇不能逐篇下载）：
+
+  | 情形 | 结论 |
+  |------|------|
+  | 只有本地 / 只有云端 | `📄 仅本地` / `☁ 仅云端` |
+  | 都有，台账指纹 == 本地 且 `have` rev == head rev | `✓ 已同步`（**不下载**） |
+  | 都有，指纹不符（本地动过）或 rev 不符（云端动过） | `✎ 已修改`（**不下载**） |
+  | 都有，**没有台账** | 下载比一次 → 一致则 `✓` 并补台账，否则 `✎` |
+  | 都有，内容取不到（`download` 404） | `⚠ 云端内容缺失`（可提交重传、不可拉取） |
+
+  `deep=1` 无视台账逐条比内容（排查用）。
+- `chat_sync`：推/拉成功后**记台账**；批量提交把 `broken` 一并处理（重传可能把空壳补上）。
+- 测试：`test_workspace_status_scopes.py` +6（共 13）、`test_chat_sync.py`（10）。
+  **测试必须隔离台账**（`L_LOG_AI_LEDGER` 指临时文件），否则会写用户真实台账。
+
+**实测**
+
+| 检查 | 结果 |
+|------|------|
+| `depot_logs.have('D:/Temp/Log','/l_log')` | 两份会话都在账上（rev 1）→ 阶段 4 的盖章确实进了服务端 |
+| 删掉台账 → 调状态 | **4069ms**（没台账 → 下载两份比较 → 一致 → 记台账） |
+| 紧接着再调 | **15ms**（台账命中，**不下载**）→ **270×**，这就是「✓ 且不下载」的直接证据 |
+| 台账内容 | `4ea066a5…` / `ef8bcc9c…`，与迁移前的文件哈希一致 |
+| 期间面板又存了一份新会话（logId 已是归一化的 `@l_log\…`） | 状态报「📄 仅本地 1」；`POST /api/ai/chat/push` **只推了它** → 三份全部 `synced#r1`（「新会话 → 提交」这条活路径也验过了） |
+
+### 服务器侧看本机对话（阶段 7 的前两块，已做 2026-09-21）
+
+目标：本机产生的对话上云后，在 `https://121.196.144.88/log/?log=@l_log\…` 上也能看到同一份历史。
+
+**前提（已确认）**：会话 key 跨机器**可复现** —— `key = type|logId|title`，其中
+`title` 由日志内容派生（实测 `完整日志: @l_log\…（已截断）`），而日志本身就在库里，
+两端内容一致 → 算出同一把 key。
+
+| 已做 | 位置 |
+|------|------|
+| **保存即推**：`/api/ai/chat/save` 存成功后 `chat_sync.push_async(key)` | `app.py` + `chat_sync` |
+| **按需读云**：本地没有会话文件时，`_read_chat_data` 算出库内 rel 去库里读 | `ai_chat_store._cloud_chat_data` |
+| `chat_info` 多出 `cloud_rel`（本地没有时也能看出库内位置） | `ai_chat_store` |
+| 测试 | `tests/test_chat_cloud_read.py`（7 例） |
+
+`push_async` 走**点名单条**而不是批量 —— 推过一次后再改就是「✎ 已修改」，批量故意不碰
+（不替用户选边），而「聊完立刻上云」必须能推；线程里跑，网络慢不阻塞面板保存。
+
+**实测**（本机模拟服务器的处境）：把 `ai_chats/c0fe9847….json` 挪走（本地没有）
+→ `GET /api/ai/chat/load?key=<真实 key>` 仍返回 **sessions=3**（内容来自库里）→ 恢复本地文件。
+
+**部署与服务器前置条件**
+
+1. **部署代码**：用 `l_repo_sync_gui` 的「**推送部署（不走 git）**」——
+   勾上 `l_log` → 推导文件集 → 预览确认 → 上传到远端 `l_script_editor(121.196.144.88:8764)`
+   → **sha256 全量校验** → 按映射表重启远端服务。
+   （`l_repo_sync_gui/999.0/src/l_repo_sync_gui/deploy_channel.py` 的两条铁律：
+   一律 base64 + `is_binary=True` 上传；校验不过**不得**触发重启。）
+2. **服务器要登记同名根**：名称 `l_log`、库 `/l_log`、`local_root` 指向它自己的日志目录 ——
+   否则 `chat_root(key)` 解析不出库内路径，按需读云无从下手。
+   （可以先在服务器上 `GET /api/log-roots` 看有没有；没有就在设置页加额外根。）
+3. 服务器的 `L_LOG_DEPOT_URL`（默认 `http://127.0.0.1:1028`）要能连到 depot ——
+   服务端与 depot 同机时默认就对。
+
+**身份必须按 logId，不能按整把 key（已改，2026-09-21）**
+
+`title` 是前端按**日志全文长度**算的（`tabs.js:516`：`完整日志: <logId>` + 超长时的
+`（已截断）`；**取不到全文**时会退成 `当前标签页可见区: <logId>`）。也就是说同一个日志在不同
+处境下 title 可能不同 → 身份跟着变 → **别的机器就打不开同一份对话**。而入口 URL 只带 `logId`
+（`https://…/log/?log=@l_log\…`），所以：
+
+- `ai_chat_store._chat_identity(key)` = `normalize_log_id(logId)`（归一化后）；没有 logId 才退回整把 key。
+- `chat_name(key) = sha1(身份)[:16] + ".json"`；库里路径 = `ai_chats/<该名字>`。
+- `_same_chat()` 也按身份比（不再要求 title 一致）。
+- **读取兜底**：正式落点 → 本根旧命名 → 旧全局目录（旧命名 / 新命名）→ 库里。
+
+**一次性修复工具** `tools/fix_chat_identity.py`（默认干跑，`--apply` 真改）：
+
+| 动作 | 说明 |
+|------|------|
+| 改名 | 老命名（按整把 key）→ 新命名（按 logId），推新名、删库里旧名 |
+| **合并** | 同一份日志的两份文件（历史上 `LogList\…` 与归一的 `@l_log\…` 两种写法）→ 会话按 id 去重合并 |
+| 源文件 | 改名为 `<原名>.merged` **留着**，不静默删 |
+
+实测（`--apply`）：`改名 1，合并 1，推送 2，删库旧名 3`。合并那份 **4 份会话**（3+1）。
+
+**实测（完整服务器模拟）**：把 `ai_chats/*.json` 全挪走（`local_json_left=0`）→
+`GET /api/ai/chat/load?key=trace_log|@l_log\…|当前标签页可见区: @l_log\…`
+（**假 title**，正是服务器取不到全文时的写法）→ **`from_cloud=True sessions=4`** ✓
+
+**测试**：`test_chat_sync.py`（13，含 `RepairIdentityTest` 改名/合并/已对）、
+`test_chat_cloud_read.py`（7）、`test_workspace_status_scopes.py`（13）、
+`test_ai_chat_store.py`（11）—— 共 **44 例**。
+
+### 阶段 6 已完成（2026-09-22）
+
+- l_agent_chat：`POST /api/chat` 的请求体加 **`persist`**（默认 `true`，保持它自己界面的行为不变）；
+  为 `false` 时跳过 `_persist_chat(...)`。别的应用把 `/api/chat` 当**无状态**接口用时，
+  那一轮不再落成 l_agent_chat 的会话。
+- l_log：`agent_proxy` 转发时带 `"persist": False` —— 这一轮由 l_log 自己存
+  （`ai_chat_store`）并上云（`ai_chats/`），不再有第二个身份。
+- 测试：`test_agent_endpoint.ChatPersistFlagTest`（2 例）。**注意竞态**：`_persist_chat`
+  在回复发完之后才跑，SSE 流结束 ≠ 落盘完成 → 断言要轮询等（已按此写，连跑 3 次稳定）。
+
+### 阶段 7 已完成（2026-09-22）
+
+**后端**
+
+| 项 | 位置 |
+|----|------|
+| `drop` 后收尾：文件还在 → 推新版本；清空了 → **删云端那份** + 清台账 | `chat_sync.after_drop` |
+| `save` 后自动推这一条（后台线程） | `chat_sync.push_async`（阶段 7 前已做） |
+| 单条状态 / 历史 / 回滚 | `GET /api/ai/chat/status`、`GET /api/ai/chat/history`、`POST /api/ai/chat/revert` |
+| 锁归属进状态（两组都带 `locked_by`） | `depot_logs._list_once` → `workspace_status` |
+| 历史版本 / 回滚 | `depot_logs.history()`（键名实测是 **`revisions`**）、`depot_logs.revert()` |
+
+**界面**（`static/js/ai-assistant.js` 的面板 + `ai-agent-client.js`）
+
+- 面板底部一行**云状态**：`☁/📄/✎/✓/⚠` + `#rev` + `🔒 用户`；
+- 按钮：`⤴ 提交这条` / `⤵ 拉取这条` / `🔄 状态` / `🕘 版本`（列出历史版本选一个回滚）/
+  `⤴⤴ 全部提交` / `⤵⤵ 全部拉取`；
+- 绑定只做一次（面板反复切换上下文，别叠监听）。
+
+**实测**
+
+| 检查 | 结果 |
+|------|------|
+| `save` → 10s 后状态 | `cloud_rel=ai_chats/db239211….json`，**`synced`**（没手动推 → 保存即推生效） |
+| `drop` → 12s 后 | 云端那条**消失**（`rel_present=False`）、本地文件也没了 → 不留「仅云端」孤儿 |
+| `revert` 到当前 head | `ok=true`，状态 rev 1→2、仍 `synced`（零流量指向旧 blob） |
+| `history` | 返回 `revisions`（rev/action/size/created_at/owner） |
+
+### 部署到服务器（2026-09-22）
+
+用 `l_repo_sync_gui` 的部署通道（`DeployChannel`：base64 二进制上传 → sha256 全量校验 → 按映射表重启）。
+
+- **只推本次改动的文件**，不用「全量树」：`l_log` 不是 git 目录 → 会走全量，而它的
+  `backend/logs_cache/` 有 **865MB**（解析缓存）根本推不动。推的是 16 个文件
+  （`backend/{ai_chat_store,chat_sync,depot_ledger,depot_logs,workspace_status,log_roots,agent_proxy,app}.py`、
+  `static/js/ai-{agent-client,assistant}.js`、`tools/{migrate_ai_chats,fix_chat_identity}.py`、4 个测试）
+  + `l_agent_chat` 2 个文件（`src/l_agent_chat/app.py`、`tests/test_agent_endpoint.py`）。
+- **校验**：两边都 `verify_bad={}`（逐文件 sha256 一致）→ 才允许重启。
+- **重启**：`l_log` ✓（kill 17228 → 端口 8003 恢复）；`l_agent_chat` **端口 1250 上没有监听**
+  （`killed=[]`）→ 没重启对象，文件已就位、下次启动即生效。
+  ⚠ `restart_remote_service` 的 `wuwo_dir` 必须传 `<远端根>/../wuwo`，传空会 `Popen(cwd="")` 直接抛。
+
+**服务器侧实测（这就是目标 URL 那条路）**
+
+```bat
+curl -k "https://121.196.144.88/log/api/ai/chat/load?key=trace_log%7C%40l_log%5Clocal_update_logger%5Cupdate_logger_trace%7Cx"
+→ 200  chat=True  sessions=4  history=2  sid=s1790007562839
+```
+
+- `key` 里的 title 是**假值 `x`** —— 只靠 logId 就定位到了（身份按 logId 的收益）。
+- 服务器的额外根**本来就登记好了**：`{"name":"l_log","path":"D:\\Temp\\Log","kind":"extra","library":"/l_log"}`。
+- 服务器上的 JS 已确认是新版（`ai-assistant.js` 含 `aiSyncBar`/`paintSyncBar`；
+  `ai-agent-client.js` 含 `SYNC_MARK`）→ 打开
+  `https://121.196.144.88/log/?log=%40l_log%5Clocal_update_logger%5Cupdate_logger_trace` 就会显示这份历史。
+- 我这边的浏览器工具被**自签证书**挡住（改不了它的启动参数），所以页面级点击没做；
+  数据面（API）与资源面（部署的 JS）都已逐项核过。
+
+
+
+### 阶段 8：收尾（本次已完成的部分）
+
+| 阶段 | 内容 | 状态 |
 |------|------|------|
-| 1 | ✔ 已完成（见上） | — |
-| 2 | ✔ 已完成（见上） | — |
-| 3 | ✔ 已完成（见上） | — |
-| 4 | 会话 scope 的提交 / 拉取（拉取后调 `sync_done` 盖章） | 提交后 `list?dir=/l_log/ai_chats` 能看到 `<hash>.json`；拉回内容一致 |
-| 5 | 台账**只记指纹** `{rel: sha}`；rev 用服务端 `have` / `sync_plan`；补 `UNKNOWN` / `BROKEN` 两个态 | 本地改一份会话 → ✎；只改云端 → ✎；两边没动 → ✓ 且**不下载**；blob 缺失 → ⚠ |
-| 6 | l_agent_chat 的 `persist` 开关 + `agent_proxy` 传 `false` | 在 l_log 面板问一轮 → `/l_agent_chat` 的会话数**不增加**；l_log 的会话文件更新 |
-| 7 | 界面：四态徽标 + 变更单/锁展示 + 批量（SSE 进度）+ 逐条 ⬆⬇ / 🔒检出 / 🕘历史；`drop` 清空时删云端 | 逐条点过；`drop` 后云端那份消失、状态不再挂「仅云端」；回滚到旧版成功 |
-| 8 | 文档 + `README.md` 索引登记 | — |
+| 1 | 会话落 `<根>/ai_chats/` | ✔ |
+| 2 | 迁移旧位置（含合并同名日志） | ✔ |
+| 3 | 日志 / 会话两组状态 | ✔ |
+| 4 | 会话 scope 的提交 / 拉取 + 盖章 | ✔ |
+| 5 | 台账指纹 + `have` rev + `UNKNOWN`/`BROKEN` | ✔ |
+| 6 | `persist` 开关（停掉 agent 侧重复） | ✔ |
+| 7 | 界面（徽标 / 逐条 / 批量 / 历史回滚 / drop 删云端） | ✔ |
+| 8 | 部署到服务器 + 文档 | ✔（本文即文档） |
+
+### 修一个「服务器看不到对话」的 bug（2026-09-22）
+
+**症状**：`http://127.0.0.1:8080/log/?log=…` 能看到对话，`https://121.196.144.88/log/?log=…` 看不到。
+
+**根因不在数据面**（服务器 API 用**页面实际那把 key** 验过：`chat=True sessions=4`），在**前端渲染**：
+
+```js
+// switchContext 的恢复分支（改前）
+if (resultDiv && resultDiv.style.display !== 'none') self.renderConversation();
+```
+
+`#ai-result` 初始是 `display:none`。**新开的页面/新机器**上它还是隐藏的 → 数据取回来了、
+`this.history` 也装好了，但**不画** → 看起来「没有对话」。本机能看见是因为那边结果区早就被
+用成可见了。
+
+**修法**：两条恢复分支（localStorage 与后端）都改走现成的 `_applySession(data)` ——
+它会 `display='flex'` + `renderConversation()` + `paintHistoryBtn()`（与「切历史会话」同一条路）。
+
+**顺带**：模板里 JS 引用带缓存版本号（`ai-agent-client.js?v=`、`ai-assistant.js?v=`），
+**改了 JS 必须一起 bump**，否则浏览器拿旧文件。本次 bump 到 `?v=12` / `?v=38`
+（`templates/app.html.j2` 与 `templates/ai_window.html` 两处）。
+
+**验证**：本机全新页面点「🤖 问AI」→ `#ai-result` 变为 `flex`、渲染出 2 条消息（内容正确）；
+服务器已推送 4 个文件（2 JS + 2 模板）且 `verify=ok`，页面 HTML 已带 `?v=12`/`?v=38`、
+`ai-assistant.js` 含 `_applySession(restored)`（静态与模板按请求读，无需重启）。
+
+### 历史弹窗显示「上传日期」（2026-09-22）
+
+需求：历史会话列表里要能看出**这份对话什么时候传上去的**；没传的就明确说**仅在本地**。
+
+- **后端**：`/api/ai/chat/status` 的 item 补 `uploaded_rev` / `uploaded_at` / `uploaded_by`
+  （取自库里 head 那一版 —— 会话是**整文件**同步，所以这个时间属于该日志下的整条会话）。
+  → `chat_sync.status_of()`。
+- **界面**：
+  - 面板状态行：`✓ 已同步 #r2 · 上传于 09-22 00:53`；
+  - 「🕘 历史」弹窗**顶上多一行**：`☁ 云端：#r2 · 上传于 …` / `还没有上传过（仅在本地）` /
+    `#r1 · 上次上传 … —— 本地有更新（未上传）` / `库里那份内容缺失（⚠）` / `该日志不随版本库上云（仅在本地）`；
+  - 每份会话行 = **本地保存时间 · N 轮**，若该份的保存时间**晚于**云端最后上传时间则补 `· 未上传`；
+    弹窗底部写明「时间是本地保存时间」。
+- 踩坑：`open(cloud)` 那个箭头函数**忘了把 cloud 传下去**（`openHistory(...)` 仍只给 4 个参数）
+  → 弹窗顶上永远显示「不上云」。定位办法：在页面里 monkeypatch `openHistory` 记录实参（`cloud: null` 即露馅）。
+- 又一次提醒：改了 JS 必须 bump 模板里的 `?v=`（本次 `ai-agent-client.js?v=14`、`ai-assistant.js?v=40`）。
+
+**验证**：本机面板状态行 `已同步 #r2 · 上传于 09-22 00:53`；历史弹窗 `☁ 云端：#r2 · 上传于 09-22 00:53`，
+4 份会话各带本地时间；服务器已推送 5 个文件（`chat_sync.py` + 2 JS + 2 模板）、
+`verify_bad={}`、`l_log` 重启成功（kill 6512 → up），
+`load=200 chat=True sessions=4`、`status.uploaded_at=2026-09-21T16:53:02Z`、页面已是 `?v=40`。
+
+### 5.9 命名规则（两个层级）
+
+**文件层级**：一份日志 = 一个文件。
+
+| 位置 | 名字 |
+|------|------|
+| 本地 | `<绑了库的额外根>/ai_chats/<sha1(身份)[:16]>.json` |
+| 云端 | `<库>/ai_chats/<同一个名字>`（如 `/l_log/ai_chats/5418973f5e3dc0eb.json`） |
+| 身份 | `normalize_log_id(logId)` —— **不含 `title`**（换浏览器/换机器/取不到日志全文都能对上） |
+
+**会话层级**：同一份日志的对话按会话分开存，**最多 `MAX_SESSIONS = 10` 份**（新的在前）。
+
+| 项 | 规则 |
+|----|------|
+| `id` | `s<毫秒时间戳>`（如 `s1790007562839`），提问时生成；切换/删除都按它 |
+| **显示名** | 该会话**首条用户提问**的前 28 字（`PREVIEW_CHARS`；空白压成单空格，超长加 `…`）；没有提问则为空 |
+| 列表展示 | `名字（本地保存时间 · N 轮[ · 未上传]）`；没名字时只显示括号里那段 |
+| 排序 | `savedAt` 倒序 |
+| 归属 | 整条会话（该文件）一起同步 —— 云端只有「整文件的上传时间」，无法精确到单份 |
+
+**已知局限**：首问相同 → 名字相同（实测 4 份测试会话首问都是「你好」，列表里就看得出来），
+这时靠时间 / 轮数区分。要更强的识别可以加「用户重命名」或补「最后一条提问」—— 目前的取舍是
+**不新增可写字段**（避免又多一处同步状态）。
+
+### 手机端面板布局优化（2026-09-22）
+
+症状：手机上面板头部被挤成一团 —— 「AI 回答:」竖排折行、`🕘 历史(4)` / `🆕 新对话` 各自折成两行。
+
+根因（都是 CSS）：
+
+1. `.ai-result-header` 是 `display:flex` 且**不换行**，窄屏上标题与操作行互相挤；
+2. `.ai-copy-btn` 没 `white-space:nowrap` → 按钮文字在窄容器里折行；
+3. 操作行与状态行原本用**内联** `style="display:flex"` 写死 → media query 覆盖不掉；
+4. `.ai-panel` 的 `min-width: 400px` 在 390px 手机上**直接横向溢出**。
+
+改法：
+
+- 内联样式挪成 class（`.ai-result-actions` / `.ai-store-path`），并在 `.ai-copy-btn` 上
+  `white-space: nowrap; flex: 0 0 auto`；
+- 加 `@media (max-width: 560px)`：面板 `96vw / 82vh / min-width:0`；头部竖排（标题一行、操作两列网格）；
+  同步按钮区两列；存档路径独占一行；
+- 同步状态行与它的 6 个按钮**成组**放在一起（原先按钮被 `flex:1` 的内容顶到面板底部，看着不相关）。
+
+踩坑：`.ai-store-path { flex-basis: 100% }` 写在 media query 里会**落到 `#ai-result` 的列向容器上**
+（那行状态行是它的直接子元素）→ `flex-basis:100%` 变成「高度 100%」，把状态行撑成 **141px**。
+必须限定成 `.ai-result-actions > .ai-store-path`（只在横向操作区里生效）。
+另一坑：这段 CSS 在 JS **模板字符串**里，注释中**不能出现反引号**（会截断模板 → 语法错误）。
+
+实测（390×844 视口）：面板 371px 宽、无横向溢出；按钮 160×26（一行两个、不再折行）；
+头部 143px（标题/路径/4 按钮）；状态行 16px 高；同步 6 按钮 90px（三行两列）；对话正常渲染。
+已推送 4 个文件（2 JS + 2 模板，`verify_bad={}`，静态无需重启），服务器页面已是 `?v=18` / `?v=44`。
+
+### 仍待处理（诚实的剩余）
+
+- [ ] **`l_agent_chat` 远端服务没在 1250 上听**：文件已推送并校验过，但服务器上没找到监听进程，
+  所以没重启 —— 它的 `persist` 支持要等下次启动才生效（在那之前，服务器侧的重复落盘仍在）。
+- [ ] **浏览器端到端点击**：我这边的浏览器工具被服务器自签证书挡住（改不了启动参数），
+  只做到「API 返回 4 份会话 + 部署的 JS 含新 UI」两级验证；点一遍页面请你在浏览器里过一下。
+- [ ] **批量用的是非流式端点**（`push`/`pull` 一次返回结果），没做 SSE 逐条进度 ——
+  会话通常只有几条，收益不大；要的话照 l_agent_chat 的 `push_stream` 抄一份即可。
+- [ ] **`reconcile` / `import` / `mark_move` 仍未接**（见 §4.1 说明：当前用途用不到）。
+- [ ] **`ai_chats/` 里可能有 `.merged` 残留**：一次性修复工具会把源文件留成 `<名>.json.merged`
+  （不静默删）。确认不再需要后可以手工清掉（它们不在同步范围内：扩展名是 `.merged`）。
 
 ## 7. 验证清单
 

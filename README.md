@@ -31,12 +31,13 @@
 | [l_homepage.md](Rez_pkg/l_homepage.md) | 主页 `/homepage/deps` 依赖拓扑页开发笔记:连线特效、拖拽建边、右键启停、卡片编辑 |
 | [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | **使用手册**：Depot 与网盘页面、接口、操作语义；实现模型与计划分别链接主文档/计划台账 |
 | [lugwit_baidu_netdisk.md §14](Rez_pkg/lugwit_baidu_netdisk.md) | **客户端直传 / 安卓壳**：`POST /api/upload/prepare|finish`、原生 HTTP 通道、登录 + HTTPS 闸门 |
+| [lugwit_baidu_netdisk.md §16](Rez_pkg/lugwit_baidu_netdisk.md) | **blob 去重必须先验存**：登记行还在、网盘文件没了 → 提交只涨 rev 不写 blob，重传永远修不好（2026-09-22 修复） |
 
 ## 三、工具使用指南
 
 | 文档 | 一句话摘要 |
 |------|-----------|
-| [l_agent_chat使用指南.md](l_agent_chat使用指南.md) | 本地 AI 编码 Agent 聊天服务:FastAPI Web UI + SSE 流式对话,OpenAI 兼容接口(默认 DeepSeek) |
+| [l_agent_chat使用指南.md](l_agent_chat使用指南.md) | 本地 AI 编码 Agent 聊天服务:FastAPI Web UI + SSE 流式对话,OpenAI 兼容接口(默认 DeepSeek)；含**输入框 `/` 命令与 `@` 文件补全**（两版 UI 同源，附新版实现三坑） |
 | [l_agent_tool使用指南.md](l_agent_tool使用指南.md) | Agent 工具库:默认工具集(文件/Git/HTTP/远程执行等)与自定义注册,供脚本编辑器等复用 |
 
 ## 四、架构与设计
@@ -52,7 +53,7 @@
 | [宝妈笔记App架构与发布.md](宝妈笔记App架构与发布.md) | App 架构/发布历史记录；其中 HTTP、cleartext、`--reload` 内容需核实，按现行链接执行 |
 | [ComfyUI调试经验.md](ComfyUI调试经验.md) | ComfyUI 前端调试案例集:节点 flag 图标不显示等 DOM/CSS 排查过程与修复 |
 | [CodeMaker能力清单与移植评估.md](CodeMaker能力清单与移植评估.md) | **外部组件调研 + 移植候选**：从 `codemaker-26.9.4` 捆绑 Agent 挖出的治理层行为（规则注入/ignore/hooks/MCP/spec 解析）与 `l_agent_chat` 的差距对照；**非现状、非已批准计划** |
-| [l_agent_chat会话存云与工作区.md](l_agent_chat会话存云与工作区.md) | **未完成改造的交接文档**：会话改为云为真源（P4 式 depot ↔ workspace）、不一致用状态显示；已完成部分 + 确切下一步 + 服务端 P4 API 全表 |
+| [l_agent_chat会话存云与工作区.md](l_agent_chat会话存云与工作区.md) | **未完成改造的交接文档**：会话改为云为真源（P4 式 depot ↔ workspace）、不一致用状态显示；已完成部分 + 确切下一步 + 服务端 P4 API 全表；**§13 云端会话在侧栏可见 + 按需拉取（已实现）**、**§14 `⚠ 云端内容缺失` 重传修不好的服务端去重缺陷（已修）** |
 | [l_log会话上云计划.md](l_log会话上云计划.md) | **计划文档（未实施）**：l_log 的 AI 会话如何上云 —— 落点 `<根>/ai_chats/` → 库 `/l_log`；照抄 l_agent_chat 会话存储的 7 条硬事实；分 8 步实施与验收 |
 
 ---
@@ -62,3 +63,6 @@
 - 包使用文档放 `Rez_pkg/` 子目录,文件名与包名一致;机制/架构类放根目录。
 - 文档内引用代码位置以**函数名**为准(行号会漂移),并注明"行号截至日期"。
 - 新增文档后请在本索引对应分组补一行。
+- **OpenSpec change 落地后**（`openspec/changes/archive/`），把「怎么实现的 / 为什么这么选」
+  合并进本目录对应主文档的新小节（如 `§13`），并在本节登记该文档；`openspec/specs/` 只放
+  需求契约（SHALL + 场景），不写实现细节 —— 两边别互相复制整段。

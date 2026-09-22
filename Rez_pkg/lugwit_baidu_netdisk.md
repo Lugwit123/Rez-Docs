@@ -955,5 +955,40 @@ PC 客户端（PySide6 + QWebEngineView）本次新增：
 页面里 `window.lugwitBridge` 存在时优先走本地桥（如知识库页归档内容读取，见《Rez_pkg/l_notepad_server.md》§7.1），
 浏览器里该对象不存在则降级到托盘中转 / `/baidu/api/depot/download` 直连。桥内自动带 lugwit 登录态。
 
+## 16. blob 去重必须先验存（2026-09-22 修复）
+
+**症状**：客户端提交某个文件，`/api/depot/submit_stream` 返回成功、`rev` 也涨了，
+但 `/api/depot/download` 仍 404（`blob 不存在: md5=… 目录不存在: …/blob/<xx> errno=-9`），
+文件永远取不回来 —— 而且**反复重传都修不好**。
+
+**原因**：`depot_service.submit_files()`（blob 模式）的去重判据只看**数据库登记行**：
+
+```
+known = await store.blob_get(md5, root)      # 有行就跳过上传
+if known is None: 才 ensure_blob(...)
+```
+
+而 `store.submit()` 写 rev 是无条件的。于是当 `depot_blob` 里那行 `remote_path` 指向
+**已经不在网盘上的路径**（早期 `.depot/blob/<md5[:2]>/<md5>` 全局池迁移遗留、或文件被外部清理），
+提交就变成「写元数据、不写 blob」→ 下载 404 → 客户端判 `⚠ 云端内容缺失` → 重传又命中同一行，
+死循环。
+
+**修复**：给去重加一道**验存**。
+
+- `depot_service.blob_row_alive(store, at, apps, md5, library, cache)`：`blob_get` 命中后再
+  `_remote_file_exists(登记的 remote_path)`；不存在则打印「blob 登记失效（网盘无此文件），
+  本次改为重传」并返回 False，调用方走真正的 `ensure_blob()` 上传 + `blob_put()` 覆写
+  `remote_path`（表上是 `ON CONFLICT (lib_root, md5) DO UPDATE`，所以会自愈，不需要手改库）。
+- `submit_files()` 与 `mark_add()` 两处同款去重都改了。
+- `_remote_file_exists()` 增可选 `cache`（`{父目录: 文件名集合}`）：md5 前两位相同的 blob
+  共用 `blob/<md5[:2]>/`，一次提交里不缓存就会为每条重复列举一次网盘目录。
+- 代价：去重命中时多一次（每个父目录一次）目录列举 —— 提交本来就只推变化项，可接受。
+
+**运维提醒**：看到「rev 在涨、下载一直 404」，先怀疑「`depot_blob` 登记行 vs 网盘实际文件」
+不一致，别再让用户反复点重传。排查用 `/api/depot/list` 看 `blob_md5` 与登记的 `remote_path`
+是否真的存在于网盘。
+
+**关联**：客户端状态口径与现场记录见《l_agent_chat会话存云与工作区.md》§14。
+
 
 

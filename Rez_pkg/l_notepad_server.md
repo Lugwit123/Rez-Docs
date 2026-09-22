@@ -102,7 +102,11 @@ def _resolve_data_root():
 > `~/.lugwit/l_notepad/.accounts_key` 已轮转并改名 `.bak`），且账号数据早已由
 > `lugwit_auth` 统一托管（表从 `l_notepad_accounts` 泛化为 `credentials`/`favorites`，
 > 端点 `/accounts*` 仍在、内部指向新表）。
-> 详见 `../lugwit_auth统一用户授权服务设计.md` §9 P4。
+>
+> **2026-09-22 变更（信封加密）**：`credentials` 升级为**每行 DEK + KEK 包 DEK**
+> （新列 `dek_wrapped`/`kek_id`）；主密钥只作 KEK。生产曾因「生产 KEK ≠ 加密数据的 KEK
+> + dev 与生产共用同一 PG」导致 `/accounts` 503，已修复（KEK 对齐 + 迁移 + 升级信封）。
+> 详见 `../lugwit_auth统一用户授权服务设计.md` §9 P4 / **P4.5**。
 
 `notepad.sqlite3` 记录**归属**（owner）与**共享**（public）等元数据，笔记正文以文件形式存于
 `notepad_list/`。旧 `notepad.sqlite3` 若为 0B 属正常（拆包前的旧版可能用文件存储、无库），归属表由启动迁移补齐。

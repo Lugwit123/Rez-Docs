@@ -190,7 +190,11 @@ if (isNew) {
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/v1/services/status` | 卡片状态 + `last_restart` + `templates_stamp` + `src_watch` |
+| GET | `/api/v1/services/deps` | 全部卡片作为依赖图 `nodes`（deps 页与新建预设下拉的数据源） |
 | GET | `/api/v1/services/history` | 重启历史（`name` 可过滤，`limit` 默认 60） |
+| POST | `/api/v1/services` | 新建卡片（入参 `_SvcIn`，同名 → 409） |
+| PUT | `/api/v1/services/{name}` | 编辑卡片（URL 名须与 body 名一致） |
+| DELETE | `/api/v1/services/{name}` | 删除卡片（内置卡只记墓碑，可恢复） |
 | POST | `/api/v1/services/promote-builtin?name=` | 覆盖为系统设置（写回包内默认卡） |
 | GET | `/api/v1/services/deleted` | 已删除的内置卡（墓碑记录），面板数据源 |
 | POST | `/api/v1/services/restore-builtin?name=` | 恢复被删的内置卡（清墓碑，回原位） |
@@ -198,14 +202,20 @@ if (isNew) {
 | POST | `/api/v1/services/{name}/{op}` | start/stop/restart/reload/hotstart |
 | POST | `/api/v1/services/restart-all` | 按拓扑顺序重启（一段式，避开 `{name}/{op}`） |
 | POST | `/api/v1/services/deps/layout` | 依赖图布局（注册顺序在 `{name}/{op}` 之前） |
-| GET | `/api/v1/services/{name}/log` | 卡片后台日志 |
+| GET | `/api/v1/services/{name}/log` | 卡片后台日志（支持 `offset` 增量） |
+| GET | `/api/v1/watchdog/status` | 常驻守护状态：`running/interval/wait_ready/log_file/auto_start_services/last_check` |
+| POST | `/api/v1/watchdog/check` | 立即手动触发一轮守护检查（后台线程，不阻塞） |
+| POST | `/api/v1/nginx/reload` | 重载 nginx 反代（`wuwor l_nginx -- nginx_reload`，同步回传结果） |
 | GET/POST | `/__dev__/src_watch` | 源码热加载开关 |
 | POST | `/api/v1/homepage/blocks` | 局部刷新片段（块哈希 diff） |
 | GET | `/api/v1/homepage/stamp` | 极轻量：`templates_stamp` + 驱动状态（SSE 的兜底轮询） |
 | GET | `/api/v1/homepage/events` | SSE：推 `{"kind":"frontend"}`（前端文件改动）+ 15s 心跳 |
 | POST | `/api/v1/homepage/restart` | 重启主页自身（独立进程） |
 | GET | `/homepage/down?from=<原始URI>` | 服务未启动兜底页（由 nginx `error_page` 内部重定向，见下节） |
+| POST | `/homepage/login` / `/homepage/logout` | 登录 / 登出（写 httponly cookie） |
 | GET | `/docs` | 主页 FastAPI Swagger（`docs_url` 默认；经 nginx 精确匹配 `location = /docs` 反代到 8090，见下节） |
+
+> 基础设施路由（不经 nginx `/api` 反代，供主页自身与 nginx 健康检查用）：`GET /`（门户首页）、`GET /homepage`、`GET /homepage/deps`、`GET /homepage/login`、`GET /svc-icon/{key}`（卡片图标）、`GET /favicon.svg`、`GET /favicon.ico`、`GET /healthz`。
 
 ## 服务未启动兜底页（nginx error_page 502/504）
 

@@ -218,6 +218,39 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 
 会话文件存储于 `<工作区>/.l_agent_ws/sessions/session_<id>.json`。
 
+### 输入框命令（`/` 与 `@`）
+
+两版 UI 都有，命令表**同源** `web/src/slashCommands.js`（改一处两版都变）：
+
+| 命令 | 行为 |
+|------|------|
+| `/tools` | 打开工具选择器（列各工具服务发现的工具），选一个 → 填 `/tools <名称>` |
+| `/ls` | 打开**目录浏览面板**（可逐级下钻、★ 收藏）→ 选目录 → 填 `/ls <路径>` |
+| `/rez` | 同上，但从 **rez 包名**起（包 → 版本 → 子目录）→ 填 `/ls <路径>` |
+| `/read` `/ws` `/workspace` | 直接把命令名填进输入框，参数自己接着打 |
+
+- 触发：输入 `/` 弹命令菜单（↑↓ 选、Enter/Tab 确认、Esc 关闭）；输入 `@` 弹**文件补全**
+  （异步查后端、防抖），选中插入 `@相对路径 `。两者的**指令语义都在后端** ——
+  例如 `/ls` 由 `agent_tools.py` 解释，客户端只负责补全与插入，不做实现。
+- 新版 `#/new` 用的是 assistant-ui 自带的 `ComposerPrimitive.Unstable_TriggerPopover`
+  + `unstable_useSlashCommandAdapter` / `unstable_useLiveCompletionAdapter`
+  （见 `web/src/new/ComposerTriggers.jsx`）；旧版 `/classic` 是自研菜单（`CommandMenu.jsx`）。
+  浏览面板与工具选择器**两版复用同两个组件**（`components/BrowsePanel.jsx` / `ToolPicker.jsx`），
+  收藏目录也共用同一份 localStorage（`l_agent_chat.favs`）。
+- 匹配是**模糊子序列**：`/ls` 也会命中 `/tools`（`t-o-o-l-s` 含 `l`,`s`），与旧版行为一致 ——
+  想精确选就多打几个字符或用 ↑↓。
+
+**新版实现踩过的三个坑**（都在 `ComposerTriggers.jsx` 的注释里，别踩回去）：
+
+1. **TriggerItem 必须带 `type` 字段**：`{id, type, label}`。缺 `type` 时菜单能出来、鼠标点也能插入，
+   但 **Enter 只会把菜单关掉、不插入**。
+2. **必须自定义 `formatter`**：默认的 `unstable_defaultDirectiveFormatter` 插的是
+   `:command[/read]{name=read}` 这种 directive chip，**后端不认**。我们要的是纯文本
+   `/read ` 与 `@路径 `，所以 `serialize` 原样返回命令名/路径、`parse` 只当纯文本。
+3. **`/` 按钮不能用 `setText`**：库靠真实的输入/光标事件判定触发器，programmatic 改 text
+   只会在框里出现 `/`、菜单不开（且回车会把裸 `/` 当消息发出去）。要 `el.focus()` +
+   `document.execCommand("insertText", false, "/")`。
+
 ### 工具服务（含本机自动发现）
 
 工具调用发生在**聊天服务所在那台机器**上，与用户从哪台设备打开网页无关；服务清单存在
@@ -368,3 +401,7 @@ Windows 独占绑定防共享（治本）：
   （CRLF 文件仍 CRLF、LF 文件仍 LF），如遇到请确认是原文件本身混用了换行。
 - **启动报"端口仍不可用（僵尸 socket 或无权限）"**： zombie 持有者不在本用户
   进程树内（如系统服务占用），手动 `netstat -ano | findstr :1250` 排查或重启系统。
+- **反代子路径下页面跳错地方（如设置页「返回聊天」跳到 `/homepage`）**：模板里写了**绝对路径** `/…`。
+  页面挂在 `/agent_chat/` 下时 `/` 是 nginx 根（托盘主页），不是聊天页。正确做法是按前缀拼：
+  `react.html` 用注入的 `window.__API_BASE`；`settings.html` 用 `(location.pathname||'/').replace(/\/[^\/]*$/,'')`
+  剥掉最后一段当前缀（两者算法一致；直连 `:1250` 时前缀为空）。新增模板/按钮时别写 `href="/…"`。

@@ -92,7 +92,7 @@
 
 | 能力 | 现状 | 问题 |
 |---|---|---|
-| 第三方账号收藏 + 密码加密托管 | ✅（Fernet，密钥 `~/.lugwit/l_notepad/.accounts_key`）**注：2026-09-20 已迁移** —— 主密钥改为 `~/.lugwit/lugwit_auth/master.key`（DPAPI），旧文件 `.bak`，详见 §9 P4 | **表名/API 命名绑定 `l_notepad`**，其他包用不了 |
+| 第三方账号收藏 + 密码加密托管 | ✅（**信封加密**：每行 DEK + KEK 包 DEK）。演进：`~/.lugwit/l_notepad/.accounts_key`（单层）→ 2026-09-20 主密钥归位 `~/.lugwit/lugwit_auth/master.key`（DPAPI）→ **2026-09-22 升级为信封加密**，详见 §9 P4 / **P4.5** | **表名/API 命名绑定 `l_notepad`**，其他包用不了 |
 | 通用收藏（folder/cmd/url） | ✅ `fav-items` | 同上，命名绑死 |
 | 服务进程监督（start/stop/restart/reload） | ✅ | 与"授权"职责混在一起 |
 | 用户资料 | ✅ | 无头像/无扩展字段 |
@@ -696,6 +696,151 @@ prefs 往返/profile 越权 403/新旧端点互见同一份数据/owner 域边�
   **冻结快照**（只读、不再写入），数据核验无误后可择期删表；快照里有 3 个历史残值密文
   （异机/旧密钥写入，不可恢复）未清 —— 活表 `credentials` 里的同类残值已清理。
 
+### P4.5 — 信封加密与主密钥治理（2026-09-22）✅ 已实现并上线生产
+
+#### 事故：生产 `/api/v1/accounts` 503「凭据主密钥不可用」
+
+**现象**：生产认证服务（`121.196.144.88`）`GET /api/v1/accounts` 返回
+`503 {"detail":"凭据主密钥不可用，已拒绝解密/写入: 凭据解密失败: "}`；账号收藏在客户端拿不到。
+
+**根因（两个，叠加）**：
+1. **主密钥不匹配**：`credentials` 的密文是用**开发机** `~/.lugwit/lugwit_auth/master.key`
+   （指纹 `7ffa563119e0`）加密的，而生产 auth 用**它自己的** DPAPI `master.key`
+   （指纹 `b8213eb2cb64`）→ 解不开 → fail-closed 503。
+2. **dev / prod 共用同一个 PG**：本机开发实例 `lugwit_auth.auth_server`（`127.0.0.1:1027`）
+   的 `DEFAULT_DB_URL` 硬编码指向**生产库**（`config.py:37`），于是开发实例用本机密钥
+   把行写进了生产库；生产实例拿另一把密钥 → 读不了。**这是最该根治的一条。**
+
+**即时修复**：把生产 `master.key` 对齐为数据密钥（备份原文件后写 `RAW1\n<key>`），
+生产 auth 热重载（touch 源文件触发 `SrcWatchService`）后 503 消失、12 条账号恢复。
+
+#### 方案：从「单层 Fernet」升级为「信封加密（Envelope Encryption）」
+
+单层模型（旧）：`secret_enc = Fernet(master.key).encrypt(明文)`——主密钥直接加密业务数据，
+多实例必须各持同一把主密钥、轮转必须重加密全部业务密文。
+
+信封模型（新）：
+```
+每行随机 DEK（Fernet key）
+secret_enc    = Fernet(DEK).encrypt(明文)
+custom_fields = {k: Fernet(DEK).encrypt(v)}          # 每行共用一把 DEK
+dek_wrapped   = Fernet(KEK).encrypt(DEK)             # 只有 ~100 字节
+kek_id        = sha256(KEK)[:12]                     # 记是哪把 KEK 包的
+```
+- **KEK**（密钥加密密钥）= `secret_store` 的主密钥（env `LUGWIT_AUTH_MASTER_KEY` 或 `master.key`）；
+- **DEK**（数据加密密钥）= 每行一把，只在解包后驻内存；
+- 全系统需要共享的秘密从"整库加解密"缩小为**一把 KEK**；**轮转只重包 DEK**，业务密文零改动。
+
+**改动文件**（`lugwit_auth/999.0/src/lugwit_auth/`）：
+| 文件 | 内容 |
+|------|------|
+| `schema_upgrade.py` | `credentials` 增列 `dek_wrapped bytea`、`kek_id text`（幂等，启动自动补） |
+| `secret_store.py` | **KEK 密钥环**：`kek_id()`、`primary_kek()`、`load_keyring()`（env + `master.key` + `keys/*.key`）、`export_kek()`、`import_kek()` |
+| `credential_service.py` | 信封-only：`_encrypt_row()` 生成 DEK 并整行加密；`_row_dek(row)` 按 `kek_id` 解包 DEK；更新沿用本行 DEK；**无兼容回退**——未迁移行（`dek_wrapped IS NULL`）直接抛 `MasterKeyUnavailable`（fail-closed） |
+| `migrate_to_envelope.py`（新） | 单层→信封**一次性回填**：默认 dry-run，`--apply` 单事务 + 逐行回读校验 |
+| `rotate_master_key.py`（重写） | **只重包 DEK**（旧 KEK 解包 → 新 KEK 重包 → 更新 `dek_wrapped/kek_id`），dry-run/apply；切换窗口先把新 KEK 写进 `keys/<kek_id>.key` 兜底，成功后再写 `master.key` 并清理 |
+| `key_escrow.py`（新） | KEK 离线托管：`export` / `import`（明文只走离线介质/secret manager） |
+| `package.py` | 新增别名 `lugwit_auth_migrate_envelope`、`lugwit_auth_key_escrow` |
+
+> 旧的 `rotate_master_key.py` 还在操作早已废弃的 `l_notepad_accounts` 表（工具腐化），
+> 本次一并重写为 DEK 重包；`auth_backup.py` 用 `SELECT *` + bytea→base64，新列自动纳入，无需改。
+
+#### 上线步骤（本机 / 生产都要一致）
+
+```bat
+rem 0) 迁移前：确认本机能解开现有数据（当前主密钥即"数据密钥"）
+wuwor lugwit_auth -- lugwit_auth_migrate_envelope            rem dry-run：应报"待迁移 N 行"
+wuwor lugwit_auth -- lugwit_auth_migrate_envelope --apply    rem 单事务落库
+
+rem 1) 部署新的 credential_service/secret_store/schema_upgrade（服务会热重载）
+rem 2) 多实例共享同一把 KEK：env LUGWIT_AUTH_MASTER_KEY，或
+wuwor lugwit_auth -- lugwit_auth_key_escrow export D:\keys\lugwit_kek.txt   rem 本机导出
+wuwor lugwit_auth -- lugwit_auth_key_escrow import D:\keys\lugwit_kek.txt   rem 目标机导入
+
+rem 3) 以后轮转 KEK（秒级，只重包 DEK）：
+wuwor lugwit_auth -- lugwit_auth_rotate_master_key --apply
+```
+
+#### 实测（2026-09-22）
+
+- dry-run：`credentials 共 12 行，待迁移 12 行；KEK=7ffa563119e0`；
+- `--apply`：`已迁移 12 行（事务已提交）`；
+- 生产 `GET /api/v1/accounts` → **200，12 条**；`custom_fields`（`api_key`/`api_id`/`base_url`）解密正常；
+- 本机 auth 同库同 KEK → **200，12 条**；
+- 自测：信封往返、掩码、密钥环、轮转重包、旧数据解析、未迁移行 fail-closed —— 全绿。
+
+#### 安全边界与遗留
+
+- **客户端永远不需要 KEK**：客户端只带**用户 token** 调 `/accounts`，服务端解密后返回明文；
+  客户端本地缓存用 DPAPI（绑定当前用户+机器）。已核对客户端 bundle **不含** `master.key`/`LUGWIT_AUTH_MASTER_KEY`。
+- **KEK 份数**：`LUGWIT_AUTH_MASTER_KEY` 明文注入到 N 台机 = N 份。多实例的**目标形态**是
+  把 KEK 收进 **Vault / 云 KMS**（服务端用实例身份取用，KEK 不落盘、不进镜像/仓库），
+  信封化后需要共享的只剩这一把 KEK。
+- **dev / prod 必须隔离库**：给开发实例设 `LUGWIT_AUTH_DB_URL` 指向本机 PG，杜绝再互相污染。
+- **KEK 离线托管**：`lugwit_auth_key_escrow export` 存离线；现在只有本机 + 生产两份文件，
+  换机即丢是单点风险。
+- 本次修复中 KEK 曾**经 `8764` 明文 HTTP** 传到生产，建议尽快 `rotate_master_key --apply` 让旧值作废。
+- ⚠️ 本次改动是**无兼容**的：新代码对未迁移行直接拒绝。**代码上线必须与 `--apply` 迁移同步**，
+  否则服务会 fail-closed（这是刻意的）。
+
+### P4.6 — 密钥集中治理：lugwit_auth 单一持钥（2026-09-22）✅ 已实现并上线生产
+
+**目标**：把"密钥管理 + 加解密"全部收进 `lugwit_auth`，**其他包/库不持钥、不做加密**。
+只要密钥只存在于 auth 进程，"共库失配""每个库各自管密钥"这类问题就从根上消失。
+
+**四层能力**：
+
+1. **严格模式（消除事故机制）**：`secret_store.require_master_key()`，env
+   `LUGWIT_AUTH_REQUIRE_MASTER_KEY`，**默认开启**——主密钥缺失时**拒绝自动生成**
+   （旧行为会静默生成一把新密钥 → 多实例失配，正是 2026-09-22 的机制）。
+   仅首次全新部署可临时 `=0` 放行一次。
+2. **KEK 指纹自检**：`GET /api/v1/health` 增加 `kek` 字段
+   （`{available, kek_id, source, keyring_size}`，**不含密钥**）。多实例比对该 `kek_id`
+   即可发现失配。实测本机与生产均为 `7ffa563119e0`。
+3. **中心密钥存储**：`GET/PUT/DELETE /api/v1/secrets/{namespace}[/{key}]`。
+   `namespace` = 包的命名空间（映射 `credentials.scope`），秘密存在 auth 的库里，
+   其他包**零密钥、零加密逻辑**。列表不回值，单读才回明文。
+4. **crypto-as-a-service**：`POST /api/v1/crypto/wrap`（生成 DEK + KEK 包好，回一次性明文 DEK）
+   / `POST /api/v1/crypto/unwrap`（用 KEK 解回 DEK）。给"密文必须留在自己库里"的包：
+   本地用 DEK 加密、只存 `dek_wrapped`，**KEK 始终不出 auth**。
+
+**新增/改动**：
+| 文件 | 内容 |
+|------|------|
+| `secret_store.py` | `require_master_key()`（严格模式）、`kek_status()`（自检）；`load_master_key` 在严格模式下拒绝自动生成 |
+| `envelope.py`（新） | 全项目唯一的信封原语：`kek_fingerprint()` / `new_dek()` / `wrap_dek()` / `unwrap_dek()` / `new_wrapped_dek()` |
+| `credential_service.py` | 改用 `envelope.py` 的包/解原语（去掉重复实现） |
+| `auth_server.py` | `/health` 加 `kek`；新增 `/api/v1/secrets/*`、`/api/v1/crypto/wrap|unwrap` |
+
+**硬规则（防复发）**：除 `lugwit_auth` 外，全仓**禁止** `import lugwit_auth.secret_store`、
+禁止自造 Fernet/主密钥。共享秘密一律走 auth 的 HTTP（`/secrets` 或 `/crypto`）。
+唯一例外：**纯本机、per-user 的缓存**（如 `l_notepad_client` 的本地 DPAPI 文件）——那是另一信任域。
+
+**实测**：本机/生产 `/health` 均返回 `kek_id=7ffa563119e0`；`/crypto/wrap → unwrap` 往返一致；
+`/secrets/{ns}` 可读；严格模式单测（无 key 拒绝生成 / 显式放行才生成 / 有 key 正常读）全绿。
+
+#### 增量（2026-09-22 续）：可插拔 KEK 来源 + 协调轮转 + 托管 + 告警
+
+1. **KEK 可插拔来源（Vault/KMS 对接点）**：`load_master_key` 来源优先级扩展为
+   `LUGWIT_AUTH_MASTER_KEY`（env）> `LUGWIT_AUTH_MASTER_KEY_FILE`（Vault Agent / K8s secret 挂载）
+   > `LUGWIT_AUTH_MASTER_KEY_CMD`（执行命令取 stdout，如 `vault kv get -field=key ...`）
+   > 本机 `master.key`。**密钥仍不进 PG/Depot/镜像**。
+2. **协调轮转（多实例零停机）**：`lugwit_auth_rotate_master_key --new-key-file <f>` 支持用外部指定的
+   新 KEK；流程为「先把新 KEK 放进各实例密钥环（`keys/<kid>.key`）→ 单事务重包 DEK → 各实例切主密钥」，
+   窗口期内新旧都能解，**无停机**。
+   **已执行**：`7ffa563119e0 → f01d4dae9395`（12 行 DEK 重包；本机与生产均已切到新 KEK；
+   旧的明文传输密钥已退役）。
+3. **离线托管**：`lugwit_auth_key_escrow export` 已导出新 KEK（44 字节原始 Fernet key）供离线保管。
+4. **告警基础**：`GET /api/v1/health` 增加 `decrypt_failures`（进程内累计解密失败，KEK 失配/密文损坏会累加），
+   配合 `kek.kek_id` 供外部巡检/告警。
+5. **收敛"自造加密"**：全仓排查确认共享密钥加密**只在 `lugwit_auth`**；
+   删除了 `l_qframelesswindow/_auth_client/secret_store.py` 里**死代码** `load_master_key/store_master_key`
+   （客户端永不持 KEK）。`l_tray/depot_bridge.py` 的 DPAPI 属**纯本机 per-user** 例外（另一信任域）。
+
+**遗留**：① KEK 目前仍是「本机文件 + 可选 env/FILE/CMD」，尚未实际接入 Vault/KMS（对接点已就绪）；
+② 告警只到"可巡检"层面，主动告警（指纹不一致/`decrypt_failures>0` 推送）需外部系统；
+③ 离线 escrow 文件需人工转存到离线介质后删除本机副本。
+
 ### P5 — 统一登录窗口（2~3 天）✅ 已实现（服务端 PKCE + SDK + 三处 UI 收敛）
 
 **已完成：服务端授权码（PKCE）**
@@ -1126,6 +1271,12 @@ Postgres(chatroom) → lugwit_auth(1027) → lugwit_baidu_netdisk(1028) → 业�
 | `depot_manifest_replay.py`、`depot_manifest_verify.py` | ✅ **已补齐**（P7 前置，T4）：verify 纯只读四类漂移 + 报告；replay dry-run 出 SQL / `--apply` 单事务 + setval。回环实测 13/13 | D9 |
 | `ssl_support` 启动即打印"生效 CA + 是否降级" | 现在只在失败时告警一次，易被日志淹没 | §4.5「现在就该做的一件事」（约 10 行改动） |
 | 主密钥 DPAPI 化 + 去 `l_notepad` 路径 | ✅ **已完成并轮转**（新路径 DPAPI 包裹；旧密钥已 `.bak`；无回退分支） | §9 P4 增量 / D4 |
+| **信封加密（KEK 包 DEK）+ 密钥环 + 迁移/轮转/托管工具** | ✅ **已实现并上线生产**（2026-09-22；`credentials` 12 行已迁移；生产 `/accounts` 200） | §9 **P4.5** |
+| 生产主密钥与开发库耦合（dev auth 连生产 PG、各用不同 KEK → 503） | ✅ **已修复**：生产 KEK 对齐 + 升级信封；**根治仍需 dev 独立库**（`LUGWIT_AUTH_DB_URL`） | §9 **P4.5** / D4 |
+| KEK 集中托管（Vault/KMS）+ 离线 escrow + 轮转 | ⚠️ **待做**：现为 `master.key` 文件 + env 注入（多实例=多份）；`key_escrow` 已就绪 | §9 **P4.5** / D4 |
+| **密钥集中治理（严格模式 + 指纹自检 + `/secrets` + `/crypto`）** | ✅ **已实现并上线生产**（2026-09-22；本机/生产 `/health` 指纹一致 `7ffa563119e0`） | §9 **P4.6** |
+| 其他包"自造加密/自持密钥"逐个收敛到 auth | ⚠️ **待做**：约定"除 auth 外禁 Fernet/主密钥"，需全仓排查 | §9 **P4.6** |
+| "解密失败/KEK 指纹不一致"告警 | ❌ **未做**：现仅有 503 与 `/health` 指纹可供外部巡检 | §9 **P4.6** |
 | l_notepad 的**死文件** `account_store.py`（client/server 各一份） | ✅ **已删除**（连同 auth 的 `account_service.py`）→ 「`accounts_key` 无引用」已签收 | §9 P4 |
 | `custom_fields` 里 3 个历史遗留密文（异机/旧密钥写入）现在解不开 | ✅ **已清理**（活表 `credentials`；复核 0 不可解密）；旧表快照里同类残值保留原样 | 数据清理项 |
 | `/auth/auto` 收紧（不信任 XFF + 降权 + 开关） | ✅ **已落地**（P0） | §9 P0 |
