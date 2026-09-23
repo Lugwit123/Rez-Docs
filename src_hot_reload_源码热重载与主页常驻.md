@@ -407,3 +407,51 @@ def _resolve_src_watch(use_env: bool) -> str:
 - 改 `.html` → 刷新即变（`auto_reload`，不重启进程）。
 - 开关 on/off 切换正常，`auto_reload` 跟随；快速 on/off 无竞态。
 - `guard` 进程拉起并存活；主页被杀后由 guard 拉回（真实环境按 8090）。
+
+---
+
+## 常驻故障复盘与加固（2026-09-23）
+
+### 复盘：24 条失败全部来自 watchdog，src-watch 为 0
+按 `restart_history.jsonl`（`_restart_failure_stats`）按触发来源统计（截至 2026-09-23）：
+
+| 触发来源 | 累计 | 失败 | 故障率 |
+|---|---|---|---|
+| `src-watch`（源码热重载） | 145 | 0 | **0%** |
+| `user`（手动） | 66 | 0 | 0% |
+| `header`（顶部重启主页） | 10 | 0 | 0% |
+| `restart` | 8 | 0 | 0% |
+| `watchdog`（常驻守护） | 53 | **24** | **45.3%** |
+
+失败四类根因：① 服务源码语法错误（`l_agent_chat/attachments.py` 的 `IndentationError` → 退出码 1，7 次）；
+② `0xC0000142`（`STATUS_DLL_INIT_FAILED`）系统级 spawn 失败，集中在"Model Hub 连续 hotstart + 主页反复自重启"的进程创建风暴（7 次）；
+③ "旧进程未退出：端口仍被占用"（8 次，停旧/起新时序竞态 + reloader 抢端口；自愈）；
+④ `taskkill 均失败`（1 次）。**结论：热重载机制本身零失败，故障集中在 watchdog 拉起服务。**
+
+### 加固 4 点（`homepage_cli.py`）
+1. **启动前源码语法体检**：`_pkg_syntax_errors` / `_pkg_syntax_error`，在 `_svc_manage_impl` spawn 前
+   `compile()` 目标包 `src/<包>/*.py`（只扫直接模块、跳过 `test*.py`，避免随包 vendored 旧代码误伤），
+   命中即返回「源码语法错误，已跳过启动」——不再白等一个就绪超时才失败。结果按目录最新 mtime 缓存。
+   另有提交前全量 CLI：`wuwor l_homepage -- python -m l_homepage.homepage_cli syntax [包名...]`（递归、列出全部错误）。
+2. **端口释放递增重试**：`_ensure_port_released(port)` 在 `_wait_port_released` 之外最多 3 轮再杀再等
+   （`L_HOMEPAGE_PORT_RELEASE_ATTEMPTS` / `_WAIT`），减少"这轮误报、下轮自愈"的空转；多轮后仍占用照样返回 PID 取消启动。
+3. **spawn 失败重试 + 限并发**：`_is_spawn_failure` 识别致命 spawn 码（`3221225794`/`C0000142`/`-1073741502`），
+   命中后延时 `L_HOMEPAGE_SPAWN_RETRY_DELAY`（默认 1.5s）**重试一次**；`_spawn_gate`（`BoundedSemaphore`，
+   `L_HOMEPAGE_MAX_SPAWNS` 默认 2）把"拉起 + 等就绪"限并发，降低进程创建风暴。
+4. **退避真正生效**：`_WatchdogThread._next_wait()` 按 `_watchdog_fail[*].next_at` 最早到期时间唤醒，
+   否则固定 60s 轮询会吞掉 30/60s 档（且单次拉起 35–90s，退避几乎不起作用）。
+
+### 热重载日志采集修复
+`restart_self` 原用 `Popen(..., stdout=DEVNULL, stderr=DEVNULL)`，**热重载后的新实例不再写任何日志**，
+日志页面停在重启前。改为：按 `WUWO_LOG_PATH_TEMPLATE` 算出与主页同一归档文件
+（`{LPRINT_LOG_BASE_DIR}/{pkg}/{pkg}_{alias}_{YYYYMMDD}.log`）写回，并写一行 `=== 热重载重启 (trigger=…) @ 时间 ===`；
+同时 `PYTHONUNBUFFERED=1`/`PYTHONIOENCODING=utf-8`（stdout 重定向到文件时默认块缓冲 → 日志攒一大块才落盘，
+这是"刷新不及时"的直接原因）。主页托管启动（`_svc_spawn_env`）同样加这两个变量。
+
+### 诊断接口 / 页面
+- `GET /api/v1/watchdog/debug`（`_watchdog_debug_snapshot`）：线程/配置/外围 guard/各卡实时状态与退避/熔断/`watchdog.log` 尾部/重启历史/故障率。
+- `GET /api/v1/homepage/hotreload`（`_hotreload_debug_snapshot`）：主页热重载参数、全局重启锁、各服务 `src_watch`/熔断、最近改动文件、重启历史、故障率。
+- 页面 `/homepage/watchdog`、`/homepage/hotreload`（需门户登录；顶部「🐞 常驻诊断」「♻ 热更新诊断」按钮）。
+- 故障率 `_restart_failure_stats`：近 24h 当前 / 累计 / 按天走势 / **按触发来源** / 近 24h 分服务（含每服务的失败来源），
+  热更新页只画 `src-watch` 走势、常驻页只画 `watchdog` 走势，避免被对方拉高。
+- nginx：`/api/v1/watchdog/*` 需在 `routes.conf` 加比 `/api/v1/`（→ auth 1027）更具体的 location，否则被劫持 404。

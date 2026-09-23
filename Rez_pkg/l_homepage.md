@@ -530,3 +530,63 @@ if (isNew) {
 - htmx 最小引入（需往包内加 `static/htmx.min.js` + 静态路由）；
 - 把块基线哈希写进首屏 `data-blk-hash`（评估结论：**不必要**，服务端成本只是搬家，反而多 DOM 回写）；
 - 重启并发去重（watcher 与 guard 同时触发会各写一条历史记录）。
+
+## 诊断页：常驻守护 / 热更新（2026-09-23）
+
+两个只读诊断页，需门户登录，顶部工具栏各有一个按钮打开：
+
+- **`/homepage/watchdog`**（🐞 常驻诊断）← `GET /api/v1/watchdog/debug`（`_watchdog_debug_snapshot`）
+- **`/homepage/hotreload`**（♻ 热更新诊断）← `GET /api/v1/homepage/hotreload`（`_hotreload_debug_snapshot`）
+
+内容：概览（开关/线程/guard/熔断/重启锁）、配置、受保护服务实时状态、最近改动文件、重启历史；
+常驻页另有「立即检查」（`POST /api/v1/watchdog/check`）、热更新页有主页热重载开关（`POST /__dev__/src_watch`）。
+JSON 接口支持 `?pretty=false` 供机读、`?history=` 控制历史条数。
+
+**故障率区块**（`_restart_failure_stats`，数据源 `restart_history.jsonl`）：
+- 当前（近 24h）/ 累计；按天走势（纯内联 SVG 柱状图，无外部依赖）；
+- **按触发来源**表（`by_trigger`/`by_trigger_24h`）；
+- 近 24h 分服务表，含「故障来源」列（每服务的各触发来源次数/失败，失败来源标红）。
+
+口径要点：热更新页主卡片与走势图**只统计 `src-watch`**（`buckets_by_trigger`），常驻页只统计 `watchdog`，
+否则会把 watchdog 的失败算进"热更新故障率"里，看着很高其实是别的来源。
+
+**nginx**：`/api/v1/watchdog/*` 必须在 `routes.conf` 里加比 `location /api/v1/`（→ auth 1027）更具体的
+`location ~ ^/api/v1/watchdog(/|$)`，否则被 auth 劫持返回 404；`/api/v1/homepage/*` 已有代理，热更新接口放在其下即可。
+
+## 日志查看器增强：加载更早 + 历史日期（2026-09-23）
+
+`_log_viewer.html` + `services_log` / `services_logs`：
+
+- `GET /api/v1/services/{name}/logs`：列出该服务按日期归档的全部日志文件（`_log_file_choices`）。
+- `GET /api/v1/services/{name}/log` 新增参数：
+  - `file=xxx.log`：指定历史日期文件（`_resolve_svc_log`，只允许本服务目录下的匹配文件，防目录穿越）；
+  - `before=N`：向前翻页，返回第 N 字节之前一段（对齐整行），响应带 `start`；末尾模式响应也带 `start`。
+- UI 头部新增「日志文件」下拉（切换历史日期）与「⬆ 更早」（到文件头自动禁用变灰）；
+  「更早」把更早内容拼到顶部并**保持阅读位置**；保留行数上限 4000 → 8000；修了"整段被过滤时一直显示加载中"的占位 bug。
+- 日志及时性：托管启动（`_svc_spawn_env`）与热重载新实例都设 `PYTHONUNBUFFERED=1`，避免 stdout 块缓冲导致攒块才落盘。
+
+## 兜底页三态：未启动 / 正在启动 / 正在重启 / 正在热更新（2026-09-23）
+
+nginx `error_page 502 504 = @svc_down` → `GET /homepage/down?from=<原始URL>`。原先只有"未启动"，无法区分重启。
+
+两个"进行中"来源：
+- `_restarting_hint(card)`：读全局重启锁 `%TEMP%/lugwit_hotreload/<alias>.lock`（`restart_self` 从停旧持到新实例就绪）；
+  锁 TTL 30s、重启 ~35s，判定窗口放宽到 120s。
+- `_svc_op_hint(name)` / `_mark_svc_op`：主页侧启停/重启/热更新标记（`_svc_manage` 在 `start/restart/reload/hotstart` 打标，
+  含 watchdog 自动拉起），因为卡片按钮触发的操作**没有**热重载锁。
+
+`down.html` 按 `op`/`restart_trigger` 显示标题：`start`→服务正在启动；`reload`/`hotstart`/`trigger=src-watch`→
+**服务正在热更新**；其余→服务正在重启。三态都自动轮询，就绪后 302 回原地址；已 up 直接 302；无锁且掉线才显示「▶ 启动服务」。
+
+## 卡片新标签打开：改用 window.open（2026-09-23）
+
+卡片是 `<a class="cardMain" target="_blank">`（`newtab` 默认 true，`_grid.html`）。`target="_blank"` 的默认导航会让
+新标签先出现 `about:blank` 再跳转，未启动服务要等 nginx 502→兜底页更明显。改为在 `home.html` 捕获普通左键单击：
+`preventDefault()` 后 `window.open(绝对URL, '_blank', 'noopener')` 直接以目标 URL 开标签；中键/Ctrl/Cmd/Shift 点击不拦，
+卡片内按钮（如「♻ 常驻」）不触发跳转，非新标签卡片不受影响。
+
+## 启动前源码语法体检 CLI（2026-09-23）
+
+`wuwor l_homepage -- python -m l_homepage.homepage_cli syntax [包名...]`：
+不传包名体检所有常驻卡 `packages` 并集；全量递归 `src/**/*.py`，命中打印 `file:line: Error: msg` 并返回 1，适合提交前把关。
+运行时的启动前守卫则只扫直接模块并跳过测试文件（见主文档《常驻故障复盘与加固》第 1 点）。

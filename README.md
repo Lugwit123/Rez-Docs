@@ -1,6 +1,6 @@
 # Rez-Docs 文档索引
 
-`rez-package-source` 各 Rez 包与 wuwo 启动器的设计/使用/排错文档。本索引区分**现行主文档**、**计划台账**与**历史归档页**；历史页只作追溯，不能覆盖主文档。状态口径截至 2026-09-17。
+`rez-package-source` 各 Rez 包与 wuwo 启动器的设计/使用/排错文档。本索引区分**现行主文档**、**计划台账**与**历史归档页**；历史页只作追溯，不能覆盖主文档。状态口径截至 2026-09-23。
 
 ## 推荐阅读顺序
 
@@ -18,7 +18,7 @@
 | [Rez_pkg/变体哈希与wuwo的处理方法.md](Rez_pkg/变体哈希与wuwo的处理方法.md) | rez-pip 变体目录名含 Windows 非法字符导致"空壳包"的问题,以 reflex 为完整案例 + 排查手册 |
 | [solo_单实例守卫模式.md](solo_单实例守卫模式.md) | `.solo` 单实例守卫实现链路、双实例抢端口事故复盘、server 侧端口自检加固 |
 | [dev_mod_热更新机制_fa50f01f.md](dev_mod_热更新机制_fa50f01f.md) | **历史说明**：保留 `.dev_mod` → `L_DEV_MOD=1` 与 wuwo `ENV_MODIFIERS` 门控；现行热重载不再用 uvicorn `--reload` |
-| [src_hot_reload_源码热重载与主页常驻.md](src_hot_reload_源码热重载与主页常驻.md) | **现行主文档**：`SrcHotReload` / `L_SRC_WATCH`、服务重启、主页常驻；`l_notepad_server` 改 `.py` 须手动重启 |
+| [src_hot_reload_源码热重载与主页常驻.md](src_hot_reload_源码热重载与主页常驻.md) | **现行主文档**：`SrcHotReload` / `L_SRC_WATCH`、服务重启、主页常驻；`l_notepad_server` 改 `.py` 须手动重启。**2026-09-23 增补**：常驻故障复盘 + 4 点加固（源码体检/端口释放重试/spawn 重试+限并发/退避）、热重载日志采集修复、`watchdog`/`hotreload` 诊断接口 |
 
 ## 二、包使用文档(Rez_pkg/)
 
@@ -27,8 +27,9 @@
 | [l_script_editor.md](Rez_pkg/l_script_editor.md) | 脚本编辑器组件库:代码编辑/补全/会话管理 + 8764 HTTP 远程执行服务 + `/ui/*` Qt UI 自动化端点 + **端口固定 / 服务发现(`~/.Lugwit/run/<service>.json`) / IPC 命名管道** |
 | [服务发现与IPC.md](Rez_pkg/服务发现与IPC.md) | **本机怎么找到并调用服务**:发现文件格式与 CLI、命名管道(带端口+authkey)、当前端口分配表、页面走 TCP/脚本走 IPC 的双栈理由 |
 | [l_notepad_server.md](Rez_pkg/l_notepad_server.md) | L Notepad 服务端(8765):Web UI、REST API、多知识库(`/web/kb/{name}`),认证经 lugwit_auth |
+| [l_notepad_client.md](Rez_pkg/l_notepad_client.md) | **桌面客户端(排错向)**：启动方式(含 alias detach 坑)、日志位置、静默崩溃分层排查(Python 异常 vs Qt 原生崩溃)、事件查看器/WER dump 抓现场；**2026-09-23 修复**两处 Python 异常 + faulthandler 句柄 |
 | [l_notepad_搜索接口使用文档.md](Rez_pkg/l_notepad_搜索接口使用文档.md) | **搜索接口怎么用**:`/api/search` 与 `/api/kb/{kb}/search` 参数/返回字段/打分公式、查询语法(引号短语/多字 OR 召回)、`lex/hybrid/sem` 三模式、向量语义(模型切换/阈值/重嵌)、索引维护与权限模型、已知坑 |
-| [l_homepage.md](Rez_pkg/l_homepage.md) | 主页 `/homepage/deps` 依赖拓扑页开发笔记:连线特效、拖拽建边、右键启停、卡片编辑 |
+| [l_homepage.md](Rez_pkg/l_homepage.md) | 主页开发笔记：`/homepage/deps` 依赖拓扑、卡片/局部刷新、日志窗口。**2026-09-23 增补**：常驻/热更新诊断页、故障率（按触发来源）、日志查看器「加载更早 + 历史日期」、兜底页三态、卡片 `window.open`、语法体检 CLI |
 | [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | **使用手册**：Depot 与网盘页面、接口、操作语义；实现模型与计划分别链接主文档/计划台账 |
 | [lugwit_baidu_netdisk.md §14](Rez_pkg/lugwit_baidu_netdisk.md) | **客户端直传 / 安卓壳**：`POST /api/upload/prepare|finish`、原生 HTTP 通道、登录 + HTTPS 闸门 |
 | [lugwit_baidu_netdisk.md §16](Rez_pkg/lugwit_baidu_netdisk.md) | **blob 去重必须先验存**：登记行还在、网盘文件没了 → 提交只涨 rev 不写 blob，重传永远修不好（2026-09-22 修复） |
