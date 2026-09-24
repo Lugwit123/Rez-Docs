@@ -1,6 +1,6 @@
 # Rez-Docs 文档索引
 
-`rez-package-source` 各 Rez 包与 wuwo 启动器的设计/使用/排错文档。本索引区分**现行主文档**、**计划台账**与**历史归档页**；历史页只作追溯，不能覆盖主文档。状态口径截至 2026-09-23。
+`rez-package-source` 各 Rez 包与 wuwo 启动器的设计/使用/排错文档。本索引区分**现行主文档**、**计划台账**与**历史归档页**；历史页只作追溯，不能覆盖主文档。状态口径截至 2026-09-24。
 
 ## 推荐阅读顺序
 
@@ -29,7 +29,7 @@
 | [l_notepad_server.md](Rez_pkg/l_notepad_server.md) | L Notepad 服务端(8765):Web UI、REST API、多知识库(`/web/kb/{name}`),认证经 lugwit_auth |
 | [l_notepad_client.md](Rez_pkg/l_notepad_client.md) | **桌面客户端(排错向)**：启动方式(含 alias detach 坑)、日志位置、静默崩溃分层排查(Python 异常 vs Qt 原生崩溃)、事件查看器/WER dump 抓现场；**2026-09-23 修复**两处 Python 异常 + faulthandler 句柄 |
 | [l_notepad_搜索接口使用文档.md](Rez_pkg/l_notepad_搜索接口使用文档.md) | **搜索接口怎么用**:`/api/search` 与 `/api/kb/{kb}/search` 参数/返回字段/打分公式、查询语法(引号短语/多字 OR 召回)、`lex/hybrid/sem` 三模式、向量语义(模型切换/阈值/重嵌)、索引维护与权限模型、已知坑 |
-| [l_homepage.md](Rez_pkg/l_homepage.md) | 主页开发笔记：`/homepage/deps` 依赖拓扑、卡片/局部刷新、日志窗口。**2026-09-23 增补**：常驻/热更新诊断页、故障率（按触发来源）、日志查看器「加载更早 + 历史日期」、兜底页三态、卡片 `window.open`、语法体检 CLI |
+| [l_homepage.md](Rez_pkg/l_homepage.md) | 主页开发笔记：`/homepage/deps` 依赖拓扑、卡片/局部刷新、日志窗口。**2026-09-23 增补**：常驻/热更新诊断页、故障率（按触发来源）、日志查看器「加载更早 + 历史日期」、兜底页三态、卡片 `window.open`、语法体检 CLI。**2026-09-24 增补**：卡片 Git 同步按钮（⬇ 拉取 / ⬆ 推送，含冲突时强制拉取）、复制命令按钮移到「编辑」旁、热启动即打开日志窗口 |
 | [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | **使用手册**：Depot 与网盘页面、接口、操作语义；实现模型与计划分别链接主文档/计划台账 |
 | [lugwit_baidu_netdisk.md §14](Rez_pkg/lugwit_baidu_netdisk.md) | **客户端直传 / 安卓壳**：`POST /api/upload/prepare|finish`、原生 HTTP 通道、登录 + HTTPS 闸门 |
 | [lugwit_baidu_netdisk.md §16](Rez_pkg/lugwit_baidu_netdisk.md) | **blob 去重必须先验存**：登记行还在、网盘文件没了 → 提交只涨 rev 不写 blob，重传永远修不好（2026-09-22 修复） |
@@ -38,7 +38,7 @@
 
 | 文档 | 一句话摘要 |
 |------|-----------|
-| [l_agent_chat使用指南.md](l_agent_chat使用指南.md) | 本地 AI 编码 Agent 聊天服务:FastAPI Web UI + SSE 流式对话,OpenAI 兼容接口(默认 DeepSeek)；含**输入框 `/` 命令与 `@` 文件补全**（两版 UI 同源，附新版实现三坑） |
+| [l_agent_chat使用指南.md](l_agent_chat使用指南.md) | 本地 AI 编码 Agent 聊天服务:FastAPI Web UI + SSE 流式对话,OpenAI 兼容接口(默认 DeepSeek)；含**输入框 `/` 命令与 `@` 文件补全**（两版 UI 同源，附新版实现三坑）；**2026-09-24 增补**：三档**权限模式**（default/allow_all/autopilot，与对话模式正交）、**终端沙盒化**（仅 Windows，AppContainer）、**提示词优化**（独立小模型，默认 `glm-4-flash`） |
 | [l_agent_tool使用指南.md](l_agent_tool使用指南.md) | Agent 工具库:默认工具集(文件/Git/HTTP/远程执行等)与自定义注册,供脚本编辑器等复用 |
 
 ## 四、架构与设计

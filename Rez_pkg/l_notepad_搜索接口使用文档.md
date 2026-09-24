@@ -85,7 +85,8 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
-| GET | `/api/search` | 登录 | 检索用户可见的**笔记 + 知识库工作区**文档 |
+| GET | `/api/search` | 登录 | 检索用户可见的**笔记 + 知识库归档**文档 |
+| GET | `/api/search/route` | 登录 | **快速选库**：一段需求 → 相关知识库排序（毫秒级，见 §1.3） |
 | GET | `/api/search/stats` | 登录 | 索引状态（文档数/分源明细/待处理队列/重建与嵌入进度/向量模型） |
 | POST | `/api/search/reindex` | 管理员 | **同步**清空并重建全部索引，返回写入行数 |
 | POST | `/api/search/reindex_async` | 管理员 | **后台**重建，立即返回；进度见 `stats.reindex` |
@@ -101,8 +102,8 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 | `q` | str | `""` | 查询串（见 §3 语法） |
 | `limit` | int | 20 | 返回条数，上限 **500** |
 | `offset` | int | 0 | 偏移（分页） |
-| `sources` | str | 全部 | 逗号分隔来源过滤：`note`（个人笔记）/ `kb`（知识库工作区） |
-| `mode` | str | `hybrid` | `lex` 纯词法 / `hybrid` 词法+语义 / `sem` 纯语义 |
+| `sources` | str | 全部 | 逗号分隔来源过滤：`note`（个人笔记）/ `kb`（知识库工作区）/ `code`（本机代码库，见 §1.5） |
+| `mode` | str | `hybrid` | `lex` 纯词法 / `hybrid` 词法+语义 / `sem` 纯语义 / `auto` 先 `lex`、零命中回退 `hybrid`（返回多一个 `mode_used`） |
 
 ### 1.2 知识库（`routers/kb.py`）
 
@@ -116,6 +117,76 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 | POST | `/api/kb/{kb}/depot/submit?rel=&description=` | 把 body 原始字节提交为新版本 |
 | GET/PUT | `/api/kb/{kb}/workspace[/file?path=]` | 工作区本地目录（列表带 `rel/name/size/mtime`）与单文件读写；**参数名 `path`，不是 `rel`**（服务端模式；托盘模式见《知识库本机模式》） |
 | GET | `/api/kb/{kb}/workspace/reveal` | 在**服务器**资源管理器打开目录 |
+
+### 1.3 快速选库（`GET /api/search/route`，2026-09-24 新增）
+
+输入一段**复杂需求**，返回**知识库级**排序，供 Agent 决定读哪几个库。与 `/api/search` 的区别：
+搜索接口只做**文档级**召回（`kb_name` 只是命中项的附属字段），不输出库级判断；route 专门做库级聚合。
+
+```bash
+curl -s "http://127.0.0.1:8765/api/search/route?q=%E4%B8%80%E6%AE%B5%E5%A4%8D%E6%9D%82%E9%9C%80%E6%B1%82&depth=1"
+```
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `q` | `""` | 需求原文（可长；内部做关键词抽取，**不走段间 AND**） |
+| `depth` | `1` | `0` 仅库元数据匹配 / `1` 元数据 + 词法按库聚合 / `2` 语义加分（需求嵌一次与**各库摘要向量**比对；语义不可用自动降为 `1`）/ `3` 不处理（分解多查询请调用方自行完成） |
+| `budget_ms` | `300` | 预算；`>0 且 <100` 时 `depth>=2` 自动退回 `1`（`reason_code=budget_downgrade`），并回填 `over_budget` |
+| `limit` | `10` | 返回库数上限（≤50） |
+| `sources` | `kb` | 逗号分隔来源过滤（`note` / `kb`） |
+
+返回（`kbs` 按 `score` 降序）：
+
+```json
+{"query":"...","depth_req":1,"depth_used":1,"degraded":false,"reason":"","reason_code":"ok",
+ "took_ms":4.4,"cached":false,"terms":["选库","路由"],
+ "kbs":[{"kb_name":"rez_pkg","score":8.23,"doc_hits":33,"best_bm25":-45.44,"meta_hits":2,"vec":0.0}]}
+```
+
+- `score = 0.5*log1p(doc_hits) + 2.5*meta_hits + 1.5*vec + 1.5*tanh(-bm25/20)`（权重见 `search_index._ROUTE_W_*`；bm25 项自带 IDF，压低"接口"这类全库高频泛词）。
+- `doc_hits` = 该库词法命中文档数；`meta_hits` = 库名/标题/描述命中的关键词块数；`best_bm25` = 库内最优 FTS 原始分（负值越负越相关）。
+- `reason_code`：`ok` / `delegate`（depth≥3）/ `budget_downgrade`（预算不足跳过语义）/ `semantic_degraded`（语义不可用）。
+- `cached`：同一 `(q, depth, budget_ms, limit, sources, user)` 结果缓存 10s（`search_index._ROUTE_CACHE_TTL`）。
+- **不触发慢路径**：depth 0/1 只查索引表与元数据表，不访问网络；depth 2 也只做**一次** embed（先 0.3s TCP 探测，不可达立即降级），不触发 `hybrid` 无 ollama 时约 6s 的兜底。depth2 冷启动会构建一次库摘要向量（元数据 + 文档质心，存 `kb_vec` 表）后复用。
+- **耗时（本机实测 2026-09-24，42 文档 / 701 块）**：depth0 ~0.4ms、depth1 ~2–8ms、depth2 **热态 ~150–400ms**（embedding 模型冷启动首次可能数秒）；命中缓存 ~0ms。
+- `degraded` / `reason`：请求档位与实际档位不一致时给出原因；`reason_code` 为可编程的机器码。
+
+### 1.4 网页搜索页（`GET /web/search`，2026-09-24 新增）
+
+独立搜索页：**一次搜「个人笔记 + 所有知识库归档」**。顶栏搜索框回车即到此页（表单 `action=/web/search`，带 `mode=auto`），弹窗的「查看完整列表」也指向此页。
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `q` | `""` | 关键词；空则显示引导页 |
+| `mode` | `auto` | `auto`（先词法、零命中回退 hybrid）/ `lex` / `hybrid` / `sem`（同 `/api/search`） |
+| `sources` | `""` | `note` / `kb` / `code`（逗号分隔），空 = 全部 |
+| `kb` | `""` | 限定单个知识库（隐含 `sources=kb`）；结果上方的库标签可直接点选/清除 |
+| `rerank` | 空 | `0` / `1`（受全局配置约束），空 = 跟随全局 |
+| `limit` | `100` | 每页条数（20/50/100/200，≤200） |
+| `offset` | `0` | 分页偏移 |
+
+页面内容：命中数 / 耗时 / **实际模式** / 笔记与知识库计数、**知识库分面**（各库命中数，可点选过滤）、结果卡片（**复用 `static/app.js` 的 `LN.renderSearchHits`**，与顶栏弹窗、「搜索索引」页同款：综合相关度徽章 + 覆盖/近邻/语义/重排/块/词频/bm25/时间等全部打分明细 + `<mark>` 高亮摘要）、分页；页面内嵌**「搜索帮助」面板**（逐项解释 mode/sources/kb/rerank/分页/查询语法，并注明 `auto` = 先词法、零命中再语义兜底），且选择模式后在其下方显示当前模式的一句话说明。模板 `templates/web_search.html`；检索一次取到上限（`MAX_LIMIT=500`）后在服务端切片（命中原始数据以 JSON 注入，前端渲染），分面基于全量命中而非仅当前页。模式说明常量见 `routers/web.py` 的 `MODE_HELP`。
+
+**`mode=auto` 含义**：先用倒排索引词法检索（毫秒级）；**只有当一条都没命中时**才自动改用语义检索兜底。既有词法命中就快，长句/自然语言也不会"无命中"——所以是默认推荐值。
+
+**搜索历史**：搜索框保存最近 20 次查询（浏览器 `localStorage`，键 `ln_search_history`），聚焦时以下拉候选提示；顶栏搜索框与搜索页共用同一份历史（`window.lnSearchHistory`）。
+
+> 注意：`rerank` 参数在页面侧以**字符串**接收（表单未选时提交空串，用 `Optional[int]` 会触发 `int_parsing` 报错），空串 = 跟随全局配置。
+
+### 1.5 代码库索引（`source=code`，2026-09-24 新增）
+
+把**本机代码仓库目录**纳入检索——与笔记 / 知识库并列的第三类索引源。
+
+| 端点 | 权限 | 说明 |
+|------|------|------|
+| `GET /api/search/code_roots` | 登录 | 读取已配置根目录（`label/root/exists`）与 `code_exts` |
+| `PUT /api/search/code_roots` | 管理员 | 保存根目录（`{"roots":["D:\\path\\repo"]}`）并**自动后台重建**；传 `[]` 清空 |
+| `GET /api/search/code/file?root=&file=` | 登录 | 只读查看代码文件（路径限定在已配置根内） |
+
+- **配置**：存 `app_settings.code_roots`（换行分隔的绝对目录），**运行时可改、无需重启**；状态页「代码库索引」卡片可直接编辑保存，保存后调 `POST /api/search/reindex_async` 重建。
+- **扫描规则**：扩展名按 `CODE_EXTS`（`.py/.pyi/.ui/.qss/.bat/.cmd/.ps1/.sh/.toml/.yaml/.yml/.json/.js/.ts/.html/.css/.c/.h/.cpp/.cs/.java/.rs/.go` + 文档类）；跳过 `CODE_SKIP_DIRS`（`.git/__pycache__/node_modules/.venv/dist/build/target/...`）；单文件 ≤ `MAX_INDEX_BYTES`(2MB)；随 `refresh()` 的 `SCAN_TTL_S=5s` 增量比对 `mtime/size`。
+- **命中**：`source=code`、`kb_name`=目录标签（可像库一样 `sources=code` 过滤、分面），`rel`=相对路径。
+- **注意**：代码库**暂不参与向量语义**（命中项 `vec=0`），召回靠词法；如需语义召回代码，要把 code 纳入嵌入流程（后续）。
 
 ---
 
@@ -139,8 +210,8 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 | 字段 | 说明 |
 |------|------|
 | `path` / `rel` | 文档相对路径（笔记 = 相对 `notepad_list`；知识库 = 相对工作区目录） |
-| `source` | `note` / `kb` |
-| `kb_name` | 知识库名（`source=kb` 时） |
+| `source` | `note` / `kb` / `code` |
+| `kb_name` | 知识库名（`source=kb`）/ 代码库标签（`source=code`，默认取目录名） |
 | `snippet` | **命中位置附近** 180 字符摘要（优先短语命中位置 → 否则命中词块最密集的窗口；找不到命中才回退开头） |
 | `matches` | 高亮词列表（相邻 bigram 会合并，如 `创建`+`建包` → `创建包`） |
 | `coverage` | 覆盖率 = 命中的查询词块数 / 总词块数（单字不计入） |
@@ -241,7 +312,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 ## 6. 索引维护与状态
 
-- **索引源**：个人笔记（`notepad_list`，`source=note`）+ 各知识库工作区（`WORKSPACE_EXTS = .md/.markdown/.txt/.rst/.log`，`source=kb`）
+- **索引源**：① 个人笔记（`notepad_list`，`source=note`）；② 知识库**已上传到 depot 的归档版本**（`source=kb`，按 `.md/.markdown/.txt/.rst/.log` 过滤，见 `search_index._sources()` / `_kb_sync_one()`）。**本机工作区目录只用于上传 / 编辑，不参与索引**（2026-09-24 按代码修正）；③ **本机代码库目录**（`source=code`，见 §1.5）。
 - **建索引**：中文按二元切分后写入 FTS5（`search_fts`），原文与 `size/mtime` 存 `search_docs`
 - **增量更新**：
   - 服务内增删改 → `file_store` 变更通知即时标脏，下次查询补索引；
@@ -249,7 +320,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   - 后台重建期间 `refresh()` 直接跳过（搜索读旧索引，不阻塞）
 - **刷新机制（2026-09-17 明确）**：**没有定时重建**；每次搜索前调用 `search_index.refresh()`：
   ① 进程内被标脏的文件（增删改钩子）立即增量索引；
-  ② 距上次全量比对 ≥ **`SCAN_TTL_S = 5` 秒**时，遍历所有源（个人笔记目录 + 各知识库 workspace）按 `size/mtime` 增量比对。
+  ② 距上次全量比对 ≥ **`SCAN_TTL_S = 5` 秒**时，遍历**个人笔记**目录按 `size/mtime` 增量比对（知识库归档另由后台线程按 `KB_SCAN_TTL_S = 300` 秒事件/TTL 同步，比对 `size/rev`，见 `search_index._kb_sync_one()`）。
   **全量重建仅手动**：`POST /api/search/reindex`（同步）/ `POST /api/search/reindex_async`（后台），
   时间点见 `stats.reindex.started_at` / `finished_at`
 - **慢查询先看这条**：**无 ollama 时默认 `hybrid` 每次约 6 秒**（反复探测 `127.0.0.1:11434` 超时），
@@ -270,6 +341,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/search/stats" | jq '.reinde
 |------|---------|
 | 笔记（`source=note`） | 拥有者（`note_registry`）/ 被共享（`note_shares.shared_with` = 用户或 `*`）/ **管理员全部可见**（含未登记文件） |
 | 知识库工作区（`source=kb`） | 该知识库存在即对**所有登录用户**可见（知识库当前无 owner 概念） |
+| 代码库（`source=code`） | 对所有登录用户可见（本机管理员配置的目录） |
 
 权限过滤在 SQL 内完成（`_PERM_SQL`），语义召回的补充文档同样过一遍权限，不会越权。
 

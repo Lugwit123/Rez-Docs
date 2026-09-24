@@ -48,6 +48,26 @@ wuwo rez env l_agent_chat .dev_mod -- l_agent_chat
 
 访问：浏览器打开 `http://127.0.0.1:1250`。
 
+### 前端构建与开发（`web/`）
+
+网页前端在 `web/`（React 19 + assistant-ui + Vite + Tailwind），**构建产物**直接落进
+Python 包的静态目录 `src/l_agent_chat/static/dist/`（见 `web/vite.config.js` 的 `outDir`），
+运行时由 FastAPI 托管，**不需要 Node**。因此改了 `web/src` 必须重新构建才会在页面生效：
+
+```bat
+cd web
+npm install          rem 首次（node_modules 已存在则跳过）
+npm run build        rem 一次性生产构建
+npm run watch        rem 开发常驻：保存即增量重建 dist，刷新页面即可（推荐）
+npm run dev:server   rem Vite dev server（127.0.0.1:5174，HMR，/api 代理到 :1250）
+```
+
+- **推荐 `npm run watch`**：与生产走同一路径（后端 URL、Jinja 模板注入、设置页、VS Code 内嵌 shim 都在），只是保存自动重建。
+- `npm run dev:server` 只有 HMR 快这一优势，但走的是 `web/index.html`，**不经 Jinja**：没有设置页、
+  `__UI_ENTRY`、`__TOOL_CONTENT_EXPANDED`、favicon 与 VS Code shim，只在纯新版 UI 调样式时临时用。
+- 改 `templates/*.html`（含设置页）与 Python 源码**不需要前端构建**；Python 源码由 uvicorn 热重载。
+- 交付 / VS Code 扩展内嵌用构建产物，验完后照常 `npm run build` 固化 `static/dist`。
+
 ## 主要功能
 
 ### 聊天（SSE 流式）
@@ -67,6 +87,11 @@ wuwo rez env l_agent_chat .dev_mod -- l_agent_chat
 }
 ```
 
+> 注：`thinking` / `reasoning_effort` 控制是否启用思考；`show_reasoning` **只作记录**，
+> 后端不再据此裁剪 `reasoning` 事件（见下表），渲染与否交给前端开关。
+> `mode` 是对话模式（`agent` 默认 / `ask` / `plan` / `review`，见「新版 UI 要点」），
+> 缺省或未知值按 `agent` 处理。
+
 SSE 事件类型：
 
 | 事件 | 说明 |
@@ -76,13 +101,38 @@ SSE 事件类型：
 | `tool_error` | 工具执行异常 |
 | `tool_rejected` | 用户拒绝了需人工审批的工具 |
 | `approval_required` | 请求人工审批，附 `approval_id`/`tool`/`args`/`diff`（写文件时含 diff 预览） |
-| `reasoning` | 思考过程（仅 `show_reasoning=true` 时透出） |
+| `reasoning` | 思考过程，**始终透出**（`show_reasoning` 仅作记录；是否渲染由前端「显示思考」开关决定） |
 | `delta` | 回复增量 |
 | `done` | 结束，附完整 `reply` |
 | `error` | 出错信息 |
 
-人工审批：工具执行前对 `APPROVAL_TOOLS` 中的工具发 `approval_required` 事件，
-前端用户确认后回调 `POST /api/tool-approval`（`{approval_id, approved}`）。
+人工审批：需要确认的调用发 `approval_required` 事件，前端确认后回调
+`POST /api/tool-approval`（`{approval_id, approved}`）。**哪些调用要问**由「权限规则 +
+权限模式」共同决定，见「审批与权限模式」；规则可在设置页「🔑 权限规则」增删。
+
+### 新版 UI 要点
+
+默认路由（`/`、`/chat`）是新版（assistant-ui 两栏 + 会话列表），`/classic` 为旧版；
+`?ui=classic` / `?ui=chat` 可临时覆盖（见 `web/src/main.jsx`）。侧栏品牌区文字为 `l_agent_chat`。
+
+- **思考过程**：回答进行中（消息 `running`）思考块**实时展开**，整条回答结束后**自动折叠**，点标题可手动展开/收起。
+  判据是**消息级** `status` 而非单个 part 的 `status`——part 流完会先变 `complete`，用它会导致正文还没吐完就折叠。
+- **翻译**：思考块展开后右上角有「🌐 翻译」，调 `POST /api/translate` 翻译整段思考（免费后端优先、失败回退 AI），再点收起译文。
+- **对话模式**（输入框右下角「模式」下拉，全局设置存 `localStorage`）：`agent`=完整能力（默认）；
+  `ask`=只读问答；`plan`=只规划不执行；`review`=代码审查。随 `POST /api/chat` 的 `mode` 传后端，
+  由 `chat_modes.py` 同时做两件事：注入对应 system 指令 + 按**只读工具白名单**裁剪可用工具
+  （`write_file`/`edit_file`/`run_command`/`run_background`/`execute`/`task` 等一律不给，未列入的
+  远程/MCP 工具也拦掉）。受限模式会跳过 `/ls`、`/read`、`/ws` 快速路径（含切工作区等副作用），
+  改由 planner 用只读工具处理。
+- **权限模式**（输入框右下角「权限」下拉，与「模式」并列）：`default`=默认权限（规则说了算）；
+  `allow_all`=全放行（除 deny 外一律不问）；`autopilot`=自动巡航（普通工具自动放行，改配置 /
+  受保护路径仍确认一次）。它是**服务端设置**（`permission_mode`，切换即时生效），与对话模式
+  是两条正交的轴，详见「审批与权限模式」。
+- **提示词优化**：输入框右下角「✨」把草稿交 `POST /api/prompt/optimize`（实现
+  `prompt_optimizer.py`）改写成更清晰的提示词并写回输入框；请求中按钮显示七彩环形 spinner。
+  模型**独立于聊天默认模型**（设置页「提示词优化」的 `prompt_optimize_provider` /
+  `prompt_optimize_model`，缺省 zhipu / `glm-4-flash` 免费档），不占主力模型额度。
+- **设置页窄屏**：宽 ≤860px 时左侧「设置分组」侧栏变顶部横排，可**按住拖动**横向滚动（桌面仍为竖排）。
 
 ### 工具调用
 
@@ -94,8 +144,65 @@ SSE 事件类型：
   `assistant(tool_calls)` + `role=tool` 的结果追加进 planner 对话（带 `tool_call_id`），
   模型看得到自己已调过什么、结果是什么，因此能不重复地逐步推进；一轮里模型返回多个
   `tool_calls` 时会**并行执行多个工具**。轮数上限 `max_tool_steps`（内置默认 6，设置页可改）。
-  命中 `APPROVAL_TOOLS`（write_file/edit_file/run_command/kill_port/git_push）时先审批。
-  工具失败也会把失败结果回填给模型，让它换别的工具继续。
+  命中 `APPROVAL_TOOLS`（`write_file` / `edit_file` / `apply_patch` / `run_command` /
+  `run_background` / `kill_port` / `git_push` / `vscode_apply_edit` / `vscode_run_command`）
+  时先审批（具体要不要问还受**权限模式**影响，见下节）。工具失败也会把失败结果回填给模型，
+  让它换别的工具继续。
+
+### 审批与权限模式（`permissions.py` / `chat_modes.py`）
+
+**两条正交的轴，别混为一谈**：
+
+- **对话模式**（`agent` / `ask` / `plan` / `review`，见「新版 UI 要点」）= **能力边界**：
+  受限模式先把写盘 / 执行命令的工具从可选清单里移除，因此那些模式下基本不会触发审批。
+- **权限模式**（`permission_mode`）= **放行方式**：在工具已经可用的前提下，决定「直接跑」
+  还是「问一次」。
+
+顺序是**先按对话模式裁工具，再对将要执行的那个调用做权限求值**；权限模式永远不能把对话
+模式裁掉的工具放回来。所以两者不会冲突，也不需要谁去重复实现谁。
+
+规则求值 `permissions.evaluate`（对齐 l_kilocode 的 Ruleset）：按顺序找**最后命中**的一条，
+`deny` 拦 / `ask` 问 / `allow` 放行；都没命中才是 `none`。最终效果由
+`permissions.effective(decision, mode)` 合成：
+
+| 模式 | 含义 | deny | ask | none |
+|------|------|------|-----|------|
+| `default`（默认） | 默认权限：规则说了算 | 拦 | 问 | 回落到 `AUTO_APPROVE` + `APPROVAL_TOOLS`（见下） |
+| `allow_all` | 全部允许：除 deny 外一律不问 | 拦 | 放行 | 放行 |
+| `autopilot` | 自动巡航（预览）：普通工具自动放行 | 拦 | 受保护路径仍问，其余放行 | 放行 |
+
+- **受保护路径**（改 `settings.json` / `permission_rules.json` / `AGENTS.md` 等写操作）在
+  `autopilot` 下**仍会问一次**；只有 `allow_all` 才跳过它。
+- `AUTO_APPROVE`（设置页「工具自动批准」，默认开）+ `APPROVAL_TOOLS` 是**旧回落**，仅在
+  `default` 模式且规则未命中时生效；`allow_all` / `autopilot` 会覆盖它。
+- **口径一致**：聊天审批、WebSocket 终端（`terminal_ws`）、后台进程（`procs`）、文本兜底
+  执行都走 `permissions.effective`，不会各判一套。子 agent（`task`）的硬顶只继承父级
+  **deny** 规则，任何模式都不放宽。
+- 规则分三层（后命中者胜）：内置默认（MCP 工具默认 ask、受保护路径 ask）→ 配置层
+  （`permission_rules`）→ saved 层（`<工作区>/.l_agent_ws/permission_rules.json`，审批卡选
+  「总是允许」写入）。读写经 `GET / POST / DELETE /api/permission-rules`。
+
+### 终端沙盒化（仅 Windows，`sandbox.py`）
+
+在 Windows 上用 **AppContainer + Job Object** 隔离命令执行（对齐 Kilo 的「终端沙盒化」，
+但只做 Windows 原生实现；上游 `kilo-sandbox` 只有 bubblewrap / seatbelt，没有 Windows 后端）。
+
+- 开关 `terminal_sandbox`（默认**关**）。打开后 `run_command`、WebSocket 终端、后台进程
+  （`procs`）、CodeMode `execute` 都在 AppContainer 内跑。
+- **可写范围**：当前工作区 + 沙盒临时目录（`<工作区状态目录>/sandbox/tmp`）+
+  `sandbox_extra_dirs`；其余位置只读（能读，写不了）。默认**禁网**，要联网把
+  `sandbox_network` 打开（授予 AppContainer `internetClient` 能力）。
+- **不静默降级**：开关开着但沙盒不可用（非 Windows / API 缺失 / 授权失败）时，命令返回
+  明确错误，绝不悄悄改成非沙盒执行。
+- 能力探测：`GET /api/sandbox/status`；设置页「WebSocket 终端」卡内也会显示可用性。
+- 实测限制：
+  - 授权走 `icacls … (OI)(CI)M` 写**可继承 ACE**，会传播到目录已有子项并在 ACL 上留痕；
+    **大目录首次授权可能较久**（幂等，已存在则跳过）。
+  - 执行 cwd 必须在容器可**遍历**的路径下：用户配置目录的父路径不可遍历，PowerShell 会
+    `Set-Location` 失败；工作区 / 临时目录应放在容器可访问的位置。
+  - 容器很严格，个别工具可能因缺注册表 / 用户目录访问而失败——这是隔离的代价。
+  - AppContainer 里 PowerShell 启动会打一条 `InitializeDefaultDrives … 访问被拒绝` 的非致命
+    告警：`run_capture` 已从 stderr 剥掉，终端模式按行过滤。
 
 ### 改代码与 diff
 
@@ -291,6 +398,9 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /api/browse` | 浏览目录 |
 | `GET /api/browse_rez` | 多级浏览 rez 包仓库 |
 | `POST /api/translate` | AI / 免费翻译 |
+| `POST /api/prompt/optimize` | 提示词优化（草稿 → 更清晰的提示词；独立小模型，见 `prompt_optimizer.py`） |
+| `GET /api/sandbox/status` | 终端沙盒能力探测（仅 Windows，AppContainer） |
+| `GET/POST/DELETE /api/permission-rules` | 权限规则（saved 层）列表 / 追加 / 删除 |
 
 ## 回归测试
 
@@ -308,6 +418,12 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 - **planner 工具循环**：请求形状、工具往返、HTTP 错误 fail-open
 - **端点级**（真起 uvicorn + 假 provider）：SSE 流式回复、工具调用往返、hook deny、
   审批**放行 / 拒绝 / 超时**、`.codemakerignore` 拦读、工具失败也必须发事件
+- **权限模式**：三档合成（`deny` 永远拦 / `allow_all` 全放行 / `autopilot` 保受保护路径的
+  `ask`）、`normalize_mode` 回退（`test_permissions.py`）
+- **对话模式**：受限模式裁掉写 / 执行工具、与权限模式正交（`test_chat_modes.py`）
+- **终端沙盒**（仅 Windows；默认批**跳过**，`set LAC_SANDBOX_TESTS=1` 才跑真跑用例）：
+  AppContainer 内执行、授权目录可写、**未授权路径写入被拒**、超时可杀、管道收发
+  （`test_sandbox.py`）
 
 设计要点：
 
@@ -326,7 +442,7 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 
 | 配置键 | 环境变量 | 默认 | 说明 |
 |--------|----------|------|------|
-| `ai_provider` | `AGENT_CHAT_PROVIDER` | `volcengine` | 默认供应商（siliconflow/minimax/zhipu/deepseek/volcengine/aliyun） |
+| `ai_provider` | `AGENT_CHAT_PROVIDER` | `volcengine` | 默认供应商（siliconflow/minimax/zhipu/deepseek/volcengine/aliyun/wuzu） |
 | `<供应商>_model` | `AGENT_CHAT_MODEL` | 各供应商默认模型 | 各供应商模型 ID（火山方舟默认 `DeepSeek-V4.1-Flash`） |
 | — | `<供应商>_API_KEY` | l_model_hub 密钥库 | API 密钥统一存 l_model_hub（`~/.lugwit/l_model_hub/config.json` 或包目录 `config.json`），不落 settings.json |
 | — | `AGENT_CHAT_API_URL` | 按供应商推导 | 全局 API 地址覆盖（调试用） |
@@ -335,11 +451,15 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | `temperature` | — | `0.1` | 采样温度 |
 | `timeout` | — | `120` | 请求超时（秒） |
 | `max_history_turns` | — | `20` | 携带历史轮数 |
-| `max_tool_steps` | — | `3` | 工具规划最大步数 |
+| `max_tool_steps` | — | `6` | 工具规划最大步数 |
 | `context_limit_tokens` | — | `6000` | 上下文压缩阈值（估算 token） |
 | `compress_threshold` | — | `0.85` | 达到阈值比例触发压缩 |
 | `compress_keep_recent` | — | `6` | 压缩时保留最近轮数 |
 | `translator_backend` | `AGENT_CHAT_TRANSLATOR` | `baidu` | 翻译后端（baidu/mymemory/ai） |
+| `prompt_optimize_provider` | — | `zhipu` | 提示词优化供应商（**独立于聊天默认模型**，缺省智谱） |
+| `prompt_optimize_model` | — | `glm-4-flash` | 提示词优化模型（免费档，不占主力额度） |
+| `permission_mode` | — | `default` | 权限模式：`default` / `allow_all` / `autopilot`（见「审批与权限模式」） |
+| `auto_approve` | — | `1` | 工具自动批准（**仅 `default` 模式**的旧回落；`allow_all`/`autopilot` 覆盖它） |
 | `mobile_msg_height` | — | `66` | 移动端单条消息气泡限高（屏幕高度百分比，`0` = 不限；≤860px 生效） |
 | `rez_roots` | `AGENT_CHAT_REZ_ROOTS` | 源码+3rd 仓库 | rez 包仓库根（`;` 分隔） |
 | `rules_enabled` | `AGENT_CHAT_RULES_ENABLED` | `1` | 工作区规则注入总开关 |
@@ -359,6 +479,11 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | `hooks_timeout` | — | `10` | 单个 hook 超时秒数 |
 | `hooks_sync_cc` | — | `0` | 并入 Claude Code 各层 `settings.json` 的 hooks（默认关，读别的产品的配置该显式选择） |
 | `mcp_enabled` | — | `1` | MCP 客户端开关 |
+| `terminal_enabled` | `AGENT_CHAT_TERMINAL_ENABLED` | `0` | WebSocket 终端（`ws://…/ws/terminal`）开关 |
+| `terminal_sandbox` | `AGENT_CHAT_TERMINAL_SANDBOX` | `0` | 终端沙盒化（**仅 Windows**，AppContainer；见「终端沙盒化」） |
+| `sandbox_network` | — | `0` | 沙盒内允许联网（授予 AppContainer `internetClient` 能力） |
+| `sandbox_extra_dirs` | — | 空 | 沙盒额外可写目录（分号串 / 列表；工作区与沙盒临时目录之外） |
+| `tool_content_expanded` | — | `0` | 工具生成内容默认是否展开显示 |
 
 ## 依赖该包的包
 

@@ -200,6 +200,8 @@ if (isNew) {
 | POST | `/api/v1/services/restore-builtin?name=` | 恢复被删的内置卡（清墓碑，回原位） |
 | POST | `/api/v1/services/purge-builtin?name=` | **彻底删除**内置卡（改包内默认卡文件，不可恢复） |
 | POST | `/api/v1/services/{name}/{op}` | start/stop/restart/reload/hotstart |
+| POST | `/api/v1/services/git-pull?name=&force=` | 拉取卡片代码仓库（`git pull`）；`force=1` → `fetch origin <分支>` + `reset --hard origin/<分支>`（丢弃本地未提交改动） |
+| POST | `/api/v1/services/git-push?name=` | 推送卡片代码到 GitHub（`add -A` → 有改动则 `commit`（时间戳消息）→ `push origin <当前分支>`） |
 | POST | `/api/v1/services/restart-all` | 按拓扑顺序重启（一段式，避开 `{name}/{op}`） |
 | POST | `/api/v1/services/deps/layout` | 依赖图布局（注册顺序在 `{name}/{op}` 之前） |
 | GET | `/api/v1/services/{name}/log` | 卡片后台日志（支持 `offset` 增量） |
@@ -590,3 +592,36 @@ nginx `error_page 502 504 = @svc_down` → `GET /homepage/down?from=<原始URL>`
 `wuwor l_homepage -- python -m l_homepage.homepage_cli syntax [包名...]`：
 不传包名体检所有常驻卡 `packages` 并集；全量递归 `src/**/*.py`，命中打印 `file:line: Error: msg` 并返回 1，适合提交前把关。
 运行时的启动前守卫则只扫直接模块并跳过测试文件（见主文档《常驻故障复盘与加固》第 1 点）。
+
+## 卡片 Git 同步按钮 + 复制命令按钮移位 + 热启动打开日志（2026-09-24）
+
+**新增「⬇ 拉取 / ⬆ 推送」按钮**（`_grid.html` 的 `.ops` 行，仅 `s.has_git` 时显示；管理员可见）：
+
+- 仓库定位：后端按卡片首个非修饰符 rez 包名，在 `<trayapp>/<货架>/<pkg>` 里找**含 `.git`** 的目录
+  （货架顺序 `rez-package-source → 3rd → build → release`；`_card_git_repo`）。找不到（如 3rd 包 `python`）→
+  接口回「未找到 git 仓库」、前端**不显示**按钮（`_home_context` 给每张卡附 `has_git`）。
+- 依赖：`from l_agent_tool import git_helper`（主页本已依赖 l_agent_tool 的 `kill_port`）；git 操作统一走
+  `git_helper.execute_git`（`GIT_LOCK` 串行、`GIT_TERMINAL_PROMPT=0` 免交互、超时可控），**不再直调 subprocess git**。
+  `execute_git` 内部用命令行 git，即便运行时无 GitPython 也能工作。
+- 拉取：`git pull`；失败（本地有未提交改动/冲突文件，git 为防覆盖而拒绝）时前端**二级确认**
+  「拉取遇到冲突 → 是否强制拉取」，确认后带 `force=1` → `fetch origin <分支>` + `reset --hard origin/<分支>`
+  （**丢弃本地未提交改动**，未跟踪文件不动）。
+- 推送：`add -A` → `status --porcelain` 有改动才 `commit -m "sync <时间戳>"` → `push origin <当前分支>`（`set_upstream`）。
+  凭据走 `git_helper.push` 的免交互策略（不落盘 token；GCM 缓存或失败）。
+- 前端：`svcGit(name, action)` + `doSvcGit(name, action, force)`（`home.html`），确认框 + toast。
+- 注意与「部署到远端」区分：**git push 只是把代码推到 GitHub 仓库**；部署到公网生产机是另一条通道
+  （`l_repo_sync_gui` 的 `deploy_channel` / `deploy_l_homepage.py`，上传到 `121.196.144.88:8764` 并重启）。
+
+**复制启动命令按钮移位**：原在 `.ops` 行（`⧉ 命令`），现移到右上角操作组 `.card-actions`，
+位于「✏️ 编辑」右边，图标 `⌨`，命令值由按钮自带 `data-cmd` 承载（`copyCardCmd` 优先读 `btn.dataset.cmd`，
+回退 `.ops[data-cmd-hot]`）。`.card-actions` 的 `right` 由 `80px` 收到 `44px`（紧贴刷新按钮，消除空隙）；
+`.ops .op` 的 padding 由 `7px 10px` 收到 `5px 6px`、`gap` 8→6。
+
+**热启动现在会打开日志窗口**：「🔥 热启动」（`svcHotStart`）与「♻ 热更新」（`svcReload`）对齐，
+调 `LogViewer.open(name)`；此外 `svcManage` 成功回调里若日志窗口正开着该服务，立即 `LogViewer.refresh()`
+拉一次增量（`window.LogViewer.current()` 暴露当前卡片名），不再等默认 1s 轮询。原因：热启动原先只发请求、
+不打开也不触发刷新，用户以为"日志不更新"。
+
+**远端部署脚本**：`l_repo_sync_gui/999.0/deploy_l_homepage.py`（`DEPLOY_HOST` 默认 `http://121.196.144.88:8764`）
+上传固定 `FILES` 列表 → sha256 全量校验 → `restart_remote_service` 重启远端 8090。
+⚠ 其 `FILES` 是**写死的 7 个文件**，新增模板/代码文件时必须同步加进该列表，否则不会被部署。
