@@ -1,9 +1,30 @@
 # l_notepad 搜索功能增强 — 进度与待办
 
-> 2026-09-24 ｜ 关联文档：`l_notepad_搜索接口使用文档.md`、`l_notepad_server_快速选库路由接口_计划.md`
+> 2026-09-25 ｜ 关联文档：`l_notepad_搜索接口使用文档.md`、`l_notepad_server_快速选库路由接口_计划.md`
 > 本文是**总进度 + todolist**；接口细节以《搜索接口使用文档》为准。
 
-## 1. 已完成（本次增强）
+## 1. 第二轮增强（2026-09-25 本次）
+
+| # | 功能 | 入口 / 接口 | 关键实现 | 状态 |
+|---|------|------------|----------|------|
+| 1 | **手动「创建索引」（含代码文件）** | `GET /api/search/index_libs`、`POST /api/search/index_lib`、搜索页「索引管理」面板 | `search_index.local_libs()` 汇总**代码库根(`kind=code`) + 知识库工作区(`kind=kbws`)**；`index_local_lib()` 只扫该库（`CODE_EXTS` 含 `.py/.js/.json` 等），**不上传 depot**；`embed=true` 顺手嵌向量 | ✅ |
+| 2 | **代码库参与向量语义（P0-2）** | `search_vec` 嵌入流程 | `_doc_key`/`_pending_docs`/`_doc_text` 支持 `source=code`（读本机文件，键 `code:<label>:<rel>`）；**实测原句命中目标文件 `vec=0.63`** | ✅ |
+| 3 | **嵌入失败隔离** | `search_vec.refresh` / `_embed_worker` | 单篇失败**跳过并计数**（`_EMBED_RETRY_MAX=3` 后放弃），不再一篇坏文档卡死整轮；`stats.vec.dropped` 可见 | ✅ |
+| 4 | **关键单字 + 同义词** | `route_terms` / `_SYNONYMS` | 单字 `卡/慢/死` 保留（FTS 前缀 `"卡" *`）；bigram 只在**整块都是低信息字**时丢（原来「卡很」会被误杀）；`卡↔卡顿/卡死/阻塞` 同义扩展 | ✅ |
+| 5 | **IDF 泛词抑制** | `term_idf()` + `_score` + `route` | FTS5 词表（`fts5vocab`）算词块文档频率，占比 ≥30% 的 repo 泛词不参与覆盖率/词频/近邻/路由打分；`route` 返回 `terms_generic_dropped` | ✅ |
+| 6 | **代码库体量治理** | `_scan_code` + `CODE_MAX_*` | 文件数/字节上限（默认 20000 / 512MB）超限即停并标 `capped`；截断时**不删索引行**；`CODE_SKIP_DIRS` 增补 | ✅ |
+| 7 | **`route` 支持本机库** | `GET /api/search/route` | `sources` 默认 `kb,code`；depth0 支持本机库标签元数据命中 | ✅ |
+| 8 | **代码命中体验** | `GET /web/code` | 只读查看页（行号 + `hl` 高亮，5000 行截断）；结果卡片 🧩 + 库名徽标；`open_url` 统一 | ✅ |
+| 9 | **文档** | — | 《搜索接口使用文档》§1.3/§1.4/§1.5/§2/§6/§9/§10；`CHANGELOG v3.4.0` | ✅ |
+| 10 | **「要搜索哪些包」勾选** | `GET /api/search/code_packages`、`/api/search?packages=`、搜索页勾选面板 | 货架（`L_NOTEPAD_PKG_ROOT` = `<trayapp>/rez-package-source`）下 54 个 rez 包，`kind=pkg` 手动建索引；勾选只过滤 `source=code`（笔记/知识库不受影响）；默认不勾选 = 不限；选择存 `localStorage['ln_search_packages']` | ✅ |
+| 11 | **「判断依据」对话框** | 每条命中的 `explain` 字段 + 卡片上的「判断依据」按钮（`app.js` / `app.css`） | 分项表（权重×取值=得分：短语/覆盖率/词频/近邻/bm25/语义）、逐词块（IDF 权重 × 出现次数）、泛词（权重 0）、未命中词块、名次与排序主序、**与下一条的分差 + 主因**、一句话结论；纯前端渲染（顶栏弹窗/搜索页/试搜共用） | ✅ |
+
+### 改动文件（本轮）
+`search_index.py`、`search_vec.py`、`routers/search.py`、`routers/web.py`、
+`templates/{web_search,web_code,web_index,base}.html`、`static/{app.js,app.css}`、
+`Rez-Docs/Rez_pkg/l_notepad_搜索接口使用文档.md`、`doc/CHANGELOG.md`。
+
+## 2. 第一轮增强（2026-09-24）
 
 | # | 功能 | 入口 / 接口 | 关键实现 | 状态 |
 |---|------|------------|----------|------|
@@ -14,51 +35,65 @@
 | 5 | **代码库索引** | `source=code`：`GET/PUT /api/search/code_roots`、`GET /api/search/code/file` | 本机目录纳入检索；`CODE_EXTS`/`CODE_SKIP_DIRS`/`_scan_code()`；`_PERM_SQL` 放行 code；状态页「代码库索引」卡片；搜索页来源「仅代码库」；只读查看 | ✅ |
 | 6 | **文档** | — | 《搜索接口使用文档》§1.1–§1.5 / §6 / §11 增补；`CHANGELOG v3.3.0`；计划文档 §13–§17 | ✅ |
 
-### 改动文件
-`search_index.py`、`search_vec.py`、`routers/search.py`、`routers/web.py`、
-`templates/{base,web_search,web_index,web_kb}.html`、
-`Rez-Docs/Rez_pkg/{l_notepad_搜索接口使用文档.md, l_notepad_server_快速选库路由接口_计划.md}`、
-`doc/CHANGELOG.md`。
-
-## 2. 实测记录（本机）
+### 第一轮实测（2026-09-24，保留作对照）
 
 | 场景 | 结果 |
 |------|------|
-| 长句 `mode=auto` | `mode_used=hybrid`，18 命中（顶层含 `Rez_pkg/l_homepage.md`） |
-| 短句 `mode=auto` | `mode_used=lex`，2.4ms（有词法命中不走语义） |
-| `route` depth 0/1/2/3 | 0.4ms / 2–8ms / 热态 120–190ms（冷启动首次 ~6s）/ 空 + `delegate` |
-| `route` `budget_ms=50`+depth2 | 降为 `depth_used=1`、`reason_code=budget_downgrade` |
-| **代码库索引**（配置 `l_notepad_client`） | 索引 44 文件；`stats.sources` 出现 `code l_notepad_client docs=44` |
-| 自然语言原句→代码库 | `lex` `total=5`，**`folder_favorites_hotkey.py` 排 #3**，24ms；`vec=0` |
-| 标识符 `folder_favorites_hotkey` | 4 文件命中（含目标文件） |
-| **控制实验**：词含"卡顿/主线程/钩子" | `total=1`，**仅** `folder_favorites_hotkey.py`，覆盖 100% |
+| 长句 `mode=auto` | `mode_used=hybrid`，18 命中 |
+| 短句 `mode=auto` | `mode_used=lex`，2.4ms |
+| `route` depth 0/1/2/3 | 0.4ms / 2–8ms / 热态 120–190ms / 空 + `delegate` |
+| 自然语言原句→代码库 | `lex total=5`，目标文件 **#3**，`vec=0` |
+| 控制实验（词含"卡顿/主线程/钩子"） | `total=1`，仅目标文件，覆盖 100% |
 
-### 结论（结果是否有意义）
-- **词法能"定位"**：目标文件进前三；#1/#2（`local_main.py`/`folder_favorites_widget.py`）也在热键路径上。
-- **但不"理解"**：原句排序由 repo 泛词（`notepad/client/ctrl/窗口/程序`）驱动；**关键词"卡"被停用字过滤丢弃**（"卡很久"→`卡很/很久`含 `很`），噪声项（`settings_widget.py`）仍出现。
-- **只有用文档自己的词**（`卡顿/主线程/钩子`）才是**唯一且 100%** 命中 → "知道词才搜得到"。
-- 根因：代码库**未嵌入**（无语义），且泛词未按 IDF 抑制。
+**当时的结论**：「词法能定位、但不理解」——原句排序由 repo 泛词驱动，「卡」被停用字过滤丢弃，代码库无语义。
+本轮（2026-09-25）的三处修改正对这三条：**单字/同义保留**、**IDF 泛词抑制**、**代码语义**。
 
-## 3. 已知限制
+## 3. 实测记录（本机，2026-09-25）
 
-1. **代码库不参与向量语义**（命中项 `vec=0`）——"卡很久/卡顿"这类语义无法召回代码。
-2. **知识库/归档索引白名单只有文档扩展名**（`.md/.markdown/.txt/.rst/.log`）→ 把 rez 包当知识库上传，**`.py` 不进索引**。
-3. **关键词抽取丢弃单字**（`route_terms`/停用字）→ "卡""慢"等关键单字丢失。
-4. **代码根不要指整棵树**：`rez-package-source` 下实测有 **43 万+ `.py`**（含三方/缓存/vendored），整树索引会极大拖慢并污染结果；应指向**单个包目录**，并依赖 `CODE_SKIP_DIRS` 剪枝。
+| 场景 | 结果 |
+|------|------|
+| `route_terms("卡很久 主线程 钩子")` | `['卡很','卡','卡顿','很久','主线','线程','钩子']` —— **「卡」与同义词不再被丢** |
+| 同句 `route depth=1` | 4.9ms；`kbs` 含 `rez_pkg`(2.97) 与 `l_notepad_client`(2.42，`kind=code`) |
+| **原句 → 代码库**（`程序卡很久，主线程被什么钩子阻塞了`） | `lex total=53`，目标文件 `folder_favorites_hotkey.py` **#2**；`hybrid` 同位置且带 **`vec=0.6316`**（P0-2 达标：口语症状能语义召回代码） |
+| `route depth=0 sources=code` | 命中 `l_notepad_client`（`meta_hits=2`，`score=5.0`） |
+| IDF 泛词 | `notepad/client/窗口 → 0.0`（`程序/搜索` 保留 2.4）；`route` 结果 `terms_generic_dropped` 回填 |
+| 手动建索引 | `POST /api/search/index_lib {"label":"l_notepad_client"}` → `files=44, capped=false, duration_ms=16`（增量无变化） |
+| 体量上限（压到 5 文件复测） | `files=5, capped=true`，且**已有 44 行索引没被删**；恢复上限后 `files=44, capped=false` |
+| 代码嵌入速度 | 40 个代码文档 23.5s（≈0.6s/文档，含 44 文件 / 1.1MB 的面包屑库） |
+| **rerank 上线**（本机 llama.cpp + bge-reranker-v2-m3 Q8，`D:\Tools\llama.cpp\start_rerank.bat`） | 同一句原话 `mode=hybrid`：目标文件 `folder_favorites_hotkey.py` **rr=+1.004 排第 1**（开 rerank 前是第 3，且 kb 文档以 142 分霸榜）；整轮 **987ms**（rerank 722ms） |
+| rerank 调参前后 | 候选不截断 5×900 字符 = **1.55s** → 截到 300 字符 = **0.6s**；llama-server 默认 `-ub 512` 装不下一个候选，必须 `-ub 2048` |
+| 纯症状句（去掉 `中键/托盘` 等标识符） | rerank 也救不回来（`clipboard_store.py` 第 1，目标文件第 7）——**语义分（0.58–0.65）本身没区分度**，只有整句含标识符时词法候选才对 |
+| **UI 默认路径暴露的两个问题**（2026-09-25 晚，用户截图） | ① 长句 `lex` 段间 AND 只剩 **2 条**命中（目标文件不在候选）；② `auto` 只在零命中才回退 hybrid，长句就停在这 2 条上 |
+| 修法 + 复测 | 段数 >4 → 全部 OR（`2 → 87` 条候选）；`auto` 在「命中 <3 或长句」时走 hybrid → **`mode_used=hybrid`、目标文件第 1（rr=0.74）**，整轮 ≈1.5s |
 
-## 4. TODO（待办）
+### 结论
+- 「口语 → 代码」这条链**打通**：关键单字/同义词保住了召回，IDF 抑制住泛词，语义分把目标文件稳定在前三且分数可解释。
+- 仍需人工选库/建索引（**有意为之**：不进 depot、不自动上传）。
+
+## 4. 已知限制
+
+1. **知识库工作区索引是手动的**：改了工作区文件要再点一次「创建索引」（TTL 自动刷新只覆盖代码库根）。
+2. **`.py` 不进知识库归档**：`WORKSPACE_EXTS`（也是 depot 自动上传白名单）仍是文档类型；要让知识库归档含代码，需另议（体积/配额）。
+3. **IDF 是全局统计**：`docs < 20` 时不启用；库很小 + 词很常见时可能误判泛词。
+4. **代码块占内存缓存额度**（`L_NOTEPAD_VEC_CODE_CHUNKS=8000`）：代码量极大时会把部分笔记块挤出缓存（该文档本轮无语义分）。
+5. **代码根不要指整棵树**：`rez-package-source` 下实测 43 万+ `.py`，超 `CODE_MAX_*` 会截断（截断会少索引，不会误删）。
+6. **`route` 默认含本机库**：Agent 只要知识库需显式 `sources=kb`。
+7. **重排是独立进程**：`D:\Tools\llama.cpp\start_rerank.bat`（llama-server，11435）没起就自动降级回融合排序；
+   改了 `package.py` 的 rerank env 必须**真重启**服务进程——2026-09-25 实测“热重启”只记了一次事件、进程没换（env 仍是旧的 12/400/3）。
+8. **纯症状句仍搜不准**：语义分在同 repo 文件间无区分度（0.58–0.65），rerank 只能重排「已经召回的候选」——识别符（`中键`/`托盘`）在候选里才有救。
+
+## 5. TODO（剩余）
 
 | 优先级 | 事项 | 说明 / 验收 |
 |--------|------|-------------|
-| **P0** | **把 rez 包代码纳入知识库索引** | 放开知识库扩展名：`search_index.WORKSPACE_EXTS` 加入 `CODE_EXTS`；`routers/kb.py::_WORKSPACE_EXTS` 改为**单一来源**（`= search_index.WORKSPACE_EXTS`，影响上传校验 `:126/:551`、浏览预览）；`workspace_sync` 自动跟随。**待定**：全局放开 vs 加开关（`L_NOTEPAD_KB_CODE`）；需评估 depot 上传体积/配额 |
-| **P0** | **代码库支持向量语义** | 把 `source=code` 纳入嵌入流程（`search_vec` 的来源/分块），使"卡很久/卡顿"能语义召回代码；验收：原句 + `vec>0` 命中目标文件 |
-| P1 | 关键词抽取保留关键单字 + 同义词 | 单字"卡/慢/死"保留或加同义（卡↔卡顿/卡死）；避免 `很/都` 把整词带没 |
-| P1 | 泛词抑制（IDF） | `notepad/client/窗口/程序` 等 repo 泛词降权/过滤 |
-| P1 | 代码库体量治理 | 单库文件数/字节上限 + 进度显示 + 更严 skip（`site-packages/.venv` 等）；避免整树索引 |
-| P2 | `route` 支持 `sources=code` | 当前 route 默认 `sources=kb`，代码库不出现在选库结果里 |
-| P2 | 代码命中体验 | 卡片区分图标/徽章；查看页加行号/高亮；文件树定位 |
-| P2 | 评测集 | 建一批"需求→应命中文件"的标注，量化 recall@k，用于调权重 |
-| P3 | 文档补写 | 代码库索引使用说明并入 Rez-Docs；索引体积/耗时观测 |
+| P2 | **rerank 常驻** | `D:\Tools\llama.cpp\start_rerank.bat` 目前要手开窗口；做成开机自启或托盘托管，否则重启电脑后静默降级（检索仍正常，只是没重排） |
+| P2 | 纯症状句召回 | 语义分无区分度 → 试「文件级摘要向量」或查询改写（把口语扩成标识符），目标：无标识符也能进前 3 |
+| P2 | **评测集** | 建一批「需求 → 应命中文件」的标注，量化 recall@k，用于继续调权重（IDF 阈值 / 同义词表 / 权重） |
+| P2 | 代码命中体验再进一步 | 结果页直接显示命中行号（当前查看页高亮但需自己找行）；文件树定位 |
+| P3 | 工作区索引自动化 | 工作区改动后**提示**「该库索引已过期」（`workspace_sync` 已有 (size,mtime) 基线，可复用），仍由用户点按钮重建 |
+| P3 | 知识库归档含代码 | 评估 depot 体积/配额后再决定是否放开 `WORKSPACE_EXTS` |
+| P2 | 代码树剪枝规则 | 把 `L_NOTEPAD_CODE_SKIP_EXTRA` 之类做成可配置，便于给特定仓库加跳过目录 |
 
-## 5. 下一步建议
-先做 **P0-1（知识库放开代码扩展名）** 与 **P0-2（代码语义）**：前者打通"网页上传 rez 包 → 连代码一起可搜"，后者让"口语症状"也能命中。两项都改完，再用本次那条原句回归，目标是把 `folder_favorites_hotkey.py` 稳定送到 **#1** 且带语义分。
+## 6. 下一步建议
+先做 P2「评测集」：有了 recall@k，「IDF 阈值 30%」「同义词表」「`_W_VEC` 权重」这些现在靠手感调的参数才有依据；
+其次把「工作区索引过期提示」做出来（工作量小，直接复用 `workspace_sync` 已有基线），减少「手动建索引」的漏点。

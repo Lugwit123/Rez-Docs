@@ -5,7 +5,7 @@
 `l_agent_chat` 是本地 AI 编码 Agent 聊天服务：FastAPI 提供 Web UI + SSE 流式对话，
 可调用本地工具集（文件/命令/Git/HTTP）辅助编码，支持对话存储、远程工具服务、
 上下文压缩与 token 统计。模型走 OpenAI 兼容 Chat Completions 接口，支持多个供应商
-（厂商），默认火山方舟 `volcengine` + `DeepSeek-V4.1-Flash`；模型目录与 API Key
+（厂商），默认火山方舟 `volcengine` + `deepseek-v4-flash`；模型目录与 API Key
 复用 `l_model_hub` 的统一注册表（`models.json`）与密钥库（`config.json`）。
 
 ## 包信息
@@ -17,7 +17,7 @@
 | 作者 | Lugwit Team |
 | 依赖 | `python-3.12+<3.13`, `fastapi`, `uvicorn`, `jinja2`, `requests`, `psutil`, `l_agent_tool` |
 | 默认端口 | `1250` |
-| 默认供应商 / 模型 | 火山方舟 `volcengine` / `DeepSeek-V4.1-Flash` |
+| 默认供应商 / 模型 | 火山方舟 `volcengine` / `deepseek-v4-flash` |
 
 ## 启动
 
@@ -394,7 +394,7 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /api/workspace` | 工作区信息 |
 | `POST /api/workspace` | 设置工作区 |
 | `GET/POST /api/workspace/root` | 工作区根目录管理 |
-| `POST /api/workspace/root/activate` | 激活根目录 |
+| `POST /api/workspace/root/activate` | 激活根目录（= 把该项移到 `folders` 首位） |
 | `GET /api/browse` | 浏览目录 |
 | `GET /api/browse_rez` | 多级浏览 rez 包仓库 |
 | `POST /api/translate` | AI / 免费翻译 |
@@ -443,7 +443,7 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | 配置键 | 环境变量 | 默认 | 说明 |
 |--------|----------|------|------|
 | `ai_provider` | `AGENT_CHAT_PROVIDER` | `volcengine` | 默认供应商（siliconflow/minimax/zhipu/deepseek/volcengine/aliyun/wuzu） |
-| `<供应商>_model` | `AGENT_CHAT_MODEL` | 各供应商默认模型 | 各供应商模型 ID（火山方舟默认 `DeepSeek-V4.1-Flash`） |
+| `<供应商>_model` | `AGENT_CHAT_MODEL` | 各供应商默认模型 | 各供应商模型 ID（火山方舟默认 `deepseek-v4-flash`） |
 | — | `<供应商>_API_KEY` | l_model_hub 密钥库 | API 密钥统一存 l_model_hub（`~/.lugwit/l_model_hub/config.json` 或包目录 `config.json`），不落 settings.json |
 | — | `AGENT_CHAT_API_URL` | 按供应商推导 | 全局 API 地址覆盖（调试用） |
 | `host` | `AGENT_CHAT_HOST` | `127.0.0.1` | 监听地址（局域网设 `0.0.0.0`） |
