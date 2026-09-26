@@ -33,13 +33,46 @@
 | **进程监督 plugSync** | 外部守护 | 父进程 | 托盘被异常结束会被拉起；托盘「重启」会先清理进程内派生的子服务 |
 
 ExecServer 里注册的动作分两类：`action_registry`（本机脚本/命令行可调，如 `depot_*` 之外的自定义动作）、
-`web_actions`（**网页可调白名单**，当前 16 个：`depot_*`、`kb_ws_*`）。查当前清单：
+`web_actions`（**网页可调白名单**，当前 22 个：`depot_*`、`depot_local_*`（6 个）、`kb_ws_*`）。查当前清单：
 
 ```cmd
 curl.exe -s http://127.0.0.1:19527/health          :: registered_actions / web_actions
 curl.exe -s http://127.0.0.1:19527/worker_stats    :: 备用解释器池
 curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器看）
 ```
+
+**本机目录树（2026-09-26 新增，`l_tray/local_tree.py`）** —— 给网页端版本库页的「工作区」标签用
+（浏览器模式没有客户端桥，读不到本机路径）：
+
+| 动作 | 参数 | 返回 |
+|---|---|---|
+| `depot_local_tree` | `root, depth=3, limit=2000, token` | `{root, tree:[{name,path,isdir,size,mtime,kids}], truncated, seq}`（与客户端 `bridge.treeDir` 同形） |
+| `depot_local_version` | `root, token` | `{root, seq}` 变更序号，网页轮询它决定要不要重拉 |
+| `depot_local_open` | `path, mode="reveal"｜"open", token` | 在托盘这台机器的资源管理器里打开 / 定位；`reveal`：目录→打开它、文件→打开所在文件夹并选中；`open`：`os.startfile` 交给默认程序（**可执行/脚本/快捷方式类扩展名被拒**，见下） |
+| `depot_local_mkdir` | `parent, name, token` | 在 `parent`（目录）下新建**一层**目录；同名已存在 → 报错 |
+| `depot_local_newfile` | `parent, name, text="", token` | 新建文本文件（默认空）；同名已存在 → 报错 |
+| `depot_local_delete` | `path, token` | 删除文件 / 目录（目录连内容一起），**送回收站**（`winshell.delete_file`，可还原）；**不许删工作区根目录及其上层目录** |
+
+- **边界**：`root` 必须命中**该 token 用户某个 depot 工作区的 `local_root`**，其余动作的 `path` / `parent`
+  必须在这些根**之内**（拿 token 查 `GET /api/depot/workspace`，结果缓存 15 秒）；读只给名字/大小/mtime，
+  写只给新建 + 删到回收站；名字只能是单层且不含 `\ / : * ? " < > |`；深度 ≤8、条目数有上限；
+  这些动作**只支持 Windows**（`explorer` / `os.startfile` / `winshell`）。
+- **路径比对走 realpath**（2026-09-26 加固）：`_norm()` = `realpath + normcase + normpath`，`_check_path()`
+  返回**解析后**的路径。只做字符串前缀的话，工作区里放一个指向 `C:\Windows` 的 junction 就能越界；
+  现在 junction / symlink 逃逸会被判成"不在工作区根目录下"。`depot_local_open(mode="open")` 另外按扩展名
+  挡掉 `.exe/.com/.scr/.pif/.msi/.msp/.cpl/.jar/.bat/.cmd/.ps1/.psm1/.vbs/.vbe/.js/.jse/.wsf/.wsh/.hta/.lnk/.url/.reg`
+  —— 不然往工作区丢个 `.bat` 就是"网页一键在本机执行"。
+- **token 口径**（2026-09-26 改）：页面带的 token **为空时不再回落托盘自己的会话 token**（`_allowed_roots("")`
+  直接回空）——那等于把 `token_override`"用网页登录态替代托盘账号"的语义反过来，让没带登录态的页面
+  拿到托盘账号的工作区根。现在空 token 直接拒答「网页没带登录态（cookie 读不到？）…」；有 token 但查不到
+  工作区才报「拿不到你的工作区本地路径（托盘登录态不可用？…）」。所以**浏览器模式要用这几个动作，
+  页面和托盘都得是登录态**；客户端模式的开 / 定位走本地桥（`bridge.revealInExplorer`），不需要托盘，
+  但**新建 / 删除目前只有托盘实现**（客户端桥没有写能力）。
+- **变更序号**：`watchdog` 递归监听该 root（事件触发即自增；没装 watchdog 退化为根目录
+  `mtime + 条目数`）。`l_tray` 的 `requires` 因此加了 `watchdog`，删除用到的 `winshell` 也显式写进了 `requires`
+  （此前只是 Tray.py 在 import，属隐式依赖）。
+- 改了动作不必重启托盘：`POST /run {"module":"l_tray.local_tree","function":"reregister","reload":true}`
+  （注意：`web_actions` 只对**带白名单 Origin 的浏览器请求**开放，本机 curl 不带 Origin 会被当成动态 `/run` 而报 unknown action）。
 
 ## 3. 统一登录（P5）
 
@@ -107,3 +140,15 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | 退出确认（新增） | `_confirm_quit()`，默认取消、Esc 取消、异常放行 |
 | 启动项参数 | 启动管理/小工具网格里 `.solo` → `.soloignore`（含用户 `auto_start.json`） |
 | 模块加载 | 新增 `_load_sibling_module()` 统一兼容顶层模块加载（修掉"登录点了没反应"的真因） |
+
+## 7. 2026-09-26 变更记录
+
+| 改动 | 说明 |
+|---|---|
+| 网页动作 +2（新增） | `l_tray/local_tree.py` 注册 `depot_local_tree` / `depot_local_version`（本机目录树快照 + 变更序号，供网页端版本库页在**浏览器模式**下看工作区本地目录，见 §2） |
+| 依赖（新增） | `package.py` 的 `requires` 加 `watchdog`（变更序号靠它事件驱动；缺席时退化为根目录 mtime） |
+| 注册点 | `Tray.py` 启动 ExecServer 时 `local_tree.register(...)`；改了动作可 `reregister` 热灌，不必重启托盘 |
+| 说明 | 版本库页的工作区列表/增删改已改为**页面直连 depot 服务**，托盘的 `depot_workspace_*` 动作保留给别的调用方（见《网盘版本库Depot设计.md》§6.2） |
+| 网页动作 +1（2026-09-26 补） | `depot_local_open`：在资源管理器中打开 / 定位本机文件（`reveal` / `open` 两种），供版本库页工作区树的右键菜单用；路径限工作区 `local_root` 之内 |
+| 网页动作 +3（2026-09-26 续） | `depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`（删除走回收站，不许删根目录本身）；`requires` 显式加 `winshell` |
+| 边界加固（2026-09-26 P0） | ① `_norm()` 加 `realpath`，`_check_path()` 回**解析后**路径 → junction/symlink 逃逸不再能蒙过前缀比对；② 空 token **不再回落托盘会话 token**（新增 `_require_roots()`），没带登录态的页面直接拒答；③ `mode="open"` 挡可执行/脚本/快捷方式扩展名（`_NO_STARTFILE_EXTS`）；④ 删根保护扩到"根本身 **及其上层目录**"。验收：假 `depot_bridge` + 临时工作区探针（含 `mklink /J` 逃逸用例）全绿 |

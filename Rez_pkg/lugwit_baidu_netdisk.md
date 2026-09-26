@@ -266,15 +266,23 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 | 接口 | 参数 | 返回 |
 |------|------|------|
 | `/api/depot/status` | — | `{owner, db, apps_root, depot_root, changes:[最近1条]}` |
-| `/api/depot/list` | `dir=/` | `{dir, owner, items:[...]}` 见下 |
-| `/api/depot/tree` | `dir=/` | `{dirs:[子目录名]}` |
+| `/api/depot/list` | `dir=/` | `{dir, owner, items:[...]}` 见下（**目录是隐含的**：只有下面还有存活文件才列出，整目录搬走/删光后不会留空目录） |
+| `/api/depot/tree` | `dir=/` | `{dirs:[子目录名]}`；库根（`/lib`）只校验登录，**库根之下按 owner 判读权**（与 `/list` 同口径，越权 403） |
+| `/api/depot/list_recursive` | `dir=/&depth=6&limit=4000` | 递归列该目录下全部内容（页面「⤢ 展开」视图用）；超 `limit` 截断并回 `truncated:true` |
 | `/api/depot/history` | `path=/a/b.png&limit=100` | `{path, revisions:[...]}` |
-| `/api/depot/changes` | `limit=50` | `{changes:[...]}` 只含已提交 CL |
-| `/api/depot/change/{cl_id}` | — | `{cl_id, files:[...]}` |
+| `/api/depot/changes` | `limit=50` | `{changes:[...]}` 只含已提交 CL。**非管理员只看自己提交的**（管理员看全部） |
+| `/api/depot/change/{cl_id}` | — | `{cl_id, files:[...]}`；CL 带**别人的全部文件路径**，不是自己的 CL 又非管理员 → 403 |
 | `/api/depot/pending` | — | `{lists:[...], files:[...]}` 你的待提交区 |
 | `/api/depot/locks` | `prefix=/` | `{locks:[{path, owner}]}` |
 | `/api/depot/sync_plan` | `prefix=/` | `{prefix, plan:[...]}` 相当于 `p4 sync -n` |
-| `/api/depot/download` | `path=/a/b.png&rev=0` | 文件字节流，`rev=0` 取最新 |
+| `/api/depot/download` | `path=/a/b.png&rev=0&inline=1` | 文件字节流，`rev=0` 取最新。**支持 `Range`**（回 206 + `Content-Range`，视频/音频可拖进度条）；`rev>0` 回 `Cache-Control: private, max-age=31536000, immutable` + `ETag`，`rev=0` 回 `no-cache` + `ETag`（重验证命中即 304，不碰百度） |
+| `/api/depot/library` | — | `{libraries:[{root, name, description, owner, mode, status, …}]}` 库清单（每个库的存储模式 / 文件数 / 工作区数） |
+| `/api/depot/sessions` | `dir=/sessions&limit=200` | 列会话目录并带**对话名**（标题来自 `depot_session_meta`，**不读内容**——blob 在网盘上，逐个下不现实）；`l_agent_chat` 侧栏「仅云端会话」用 |
+| `/api/depot/workspace` | `all=1` | `{owner, admin, scope, selected_workspace_id, workspaces:[…], libraries:[…]}`。默认只回**自己的**，`all=1` 回**所有人的**（带 `owner`，只读视图；改/删仍按 owner 校验）。**页面「工作区」标签就调这一个** |
+| `/api/depot/workspace/{ws_id}` | — | 单个工作区：`{workspace, maps, pending, locks}` |
+| `/api/depot/workspace/{ws_id}/have` | `prefix=/` | 该工作区的 have 清单（执行机 reconcile 的比对基准） |
+| `/api/depot/workspace/{ws_id}/path` | `local=<本机绝对路径>` | 本地路径 → depot 逻辑路径（越界 400；按工作区 `maps` 或隐式映射换算） |
+| `/api/depot/workspace/{ws_id}/local_path` | `path=<depot 路径>` | depot 逻辑路径 → 执行机本地路径 |
 
 `/api/depot/list` 的 `items[]` 每项：
 
@@ -327,8 +335,8 @@ POST /api/depot/revert   {"path":"/art/x.png", "rev": 3, "description":""}
 POST /api/depot/delete   {"paths":["/art/x.png"], "description":""}
 POST /api/depot/move     {"moves":[{"src":"/a/x.png","dst":"/b/y.png"}]}
 POST /api/depot/move     {"src_dir":"/a", "dst_dir":"/b"}      // 整目录搬
-POST /api/depot/lock     {"path":"/art/x.png", "force": false}
-POST /api/depot/unlock   {"path":"/art/x.png"}
+POST /api/depot/lock     {"path":"/art/x.png", "force": false}   // 需该路径 depot.write，否则 403
+POST /api/depot/unlock   {"path":"/art/x.png"}                   // force=true 仅管理员，否则 403
 ```
 
 `submit_stream`（直传即提交）：
@@ -342,11 +350,13 @@ curl.exe -X POST "http://127.0.0.1:1027/baidu/api/depot/submit_stream?path=/art/
 
 | 码 | 含义 |
 |----|------|
-| 400 | 路径非法（含 `..`、空段、以 `.depot` 开头）或参数不合逻辑 |
+| 400 | 路径非法（含 `..`、空段、以 `.depot` 开头）或参数不合逻辑（含「同名工作区已存在」） |
 | 401 | 没登录 |
-| 404 | 版本不存在 |
-| 409 | **被别人签出**，`detail` 里有是谁 |
+| 403 | 别人的资源（P6 越权；工作区改/删非管理员；`lock` 无写权；`unlock force` 非管理员；`/change/{cl_id}` 非本人） |
+| 404 | 版本不存在 / 工作区不存在 |
+| 409 | **被别人签出**，`detail` 里有是谁；`edit_text` 的 `base_rev` 过期也走这里（防覆盖） |
 | 410 | 该版本已删除（`action=delete`，没有 blob） |
+| 413 | `edit_text` 内容超 2MB（请走上传通道） |
 | 503 | 元数据库连不上 |
 
 ### 5.5 路径规则
@@ -356,6 +366,26 @@ curl.exe -X POST "http://127.0.0.1:1027/baidu/api/depot/submit_stream?path=/art/
 - 必须以 `/` 开头，反斜杠自动转正斜杠
 - 不允许 `..`、空段
 - 首段不能是 `.depot`（内部保留）
+
+### 5.6 工作区与库（页面「工作区」标签 / 执行机用）
+
+页面 `web_depot.html` 的工作区列表与增删改**直连这几个接口**（不再经托盘，见《网盘版本库Depot设计.md》§6.2）；
+执行机（托盘 / 客户端 / 脚本）做 reconcile 时也用它们：
+
+| 接口 | body / 参数 | 说明 |
+|------|-------------|------|
+| `POST /api/depot/workspace` | JSON `{name, library, local_root, host?, id?, owner?, maps?[]}` | 新建（无 `id`）/ 修改（有 `id`）。`library` 非空时顺带 `library_upsert`。改别人的 / 替别人建：**只有 admin/system**，否则 403；放行时按**目标 owner** 落库 |
+| `POST /api/depot/workspace/select` | `{ws_id}` | 记住「当前工作区」到服务端（跨浏览器 / 桌面端一致），列表接口回 `selected_workspace_id` |
+| `POST /api/depot/workspace/{ws_id}/owner` | `{owner}` | 转移归属。自己的随便转；别人的只有 admin/system（普通用户由 store 按 `from_owner` 校验）。目标名下同名 → 400 |
+| `DELETE /api/depot/workspace/{ws_id}` | — | 删工作区（含 maps / have / pending / 锁记录），**不动版本、不动 blob** |
+| `PUT /api/depot/workspace/{ws_id}/maps` | `{maps:[…]}` | 整体替换映射行；空列表 = 回到 `/<library>/… ↔ <local_root>/…` 隐式映射 |
+| `GET /api/depot/workspace` 的 `libraries` 字段 | — | 建工作区时选库用（同一份库清单） |
+| `PUT /api/depot/library` | `{root, name?, description?, mode?, status?}` | 建库 / 改库（**存储模式 `blob` / `dir` 在这里定**） |
+| `POST /api/depot/migrate` | `?ws= {root, dry_run?}` | 把某库下 blob 模式的文件物化成 dir 模式（活文件 + `vNNN` 快照） |
+| `POST /api/depot/reconcile` | `?ws= {items:[…], cl_id?}` | 收执行机的本地扫描结果 → 落待提交区（`p4 reconcile` 后半段）。add/edit 的内容**必须先由执行机传进 blob 仓**，服务端只做映射校验与落库 |
+| `POST /api/depot/sync_done` | `?ws= {items:[…]}` | 下载完回写 have |
+| `POST /api/depot/edit_text` | `?path=&description=&base_rev=&ws=` + body UTF-8 文本 | 在线编辑一步直提（页面「✏ 编辑」用的就是它）；带 `base_rev` 做防覆盖（当前版本不符 → 409），上限 2MB |
+| `POST /api/depot/import` | `?root=&dir=&dry_run=&after=&batch=&ws=` | 把服务端本地目录整批导入成版本（分批、可续跑） |
 
 ---
 
@@ -368,12 +398,16 @@ curl.exe -X POST "http://127.0.0.1:1027/baidu/api/depot/submit_stream?path=/art/
 大图标工具栏  刷新·获取最新·提交 ∣ 签出·添加·删除·撤销
               ∣ 差异·时间线·版本图 ∣ 移动·下载·锁定·解锁 ∣ 取消
 路径栏        可编辑 depot 路径 + ▾最近去过的目录 + 🔖书签
-左栏  250px   [Depot | Workspace] + 排序/过滤 + depot 目录树
-中栏          [Files | Pending (N) | Submitted]
-              7 列表格：☐ 文件 版本 修改时间 大小 类型 状态
-右栏  300px   选中文件的版本历史（回滚 / 下载）
-底栏  170px   [Log | 历史]  每次 API 调用记一行，可拖高度
+左栏  250px   [Depot | Workspace] + 排序/过滤 + depot 目录树（左树标签固定，不参与拖动）
+中栏          [Files | Pending (N) | Submitted | 工作区]（视图工具条 ▤▦⤢+滑块属于 Files 标签，跟着它走）
+              视图三态：列表（7 列表格）/ 缩略图（带尺寸滑块）/ ⤢ 展开（递归 + 按目录分组）
+右栏  300px   [🕐 详情 / 历史 | 📄 预览/编辑]：版本历史（回滚 / 下载）与文件预览同一栏两标签
+              · 宽度可拖（`#vsplit`，双击复位 300）
+底栏  170px   [Log | 历史 | 差异]  每次 API 调用记一行，可拖高度
+              ↓ 中栏 / 右栏 / 底栏 的标签都可以**拖动改顺序、拖到别的面板**（内容跟着走）
+                每个标签条末尾有一个 **＋**：从别的面板把标签叫过来（等价于「拖过来」的鼠标版）
 状态栏 22px   ● 数据库 | depot 根 | 待同步 N | 最新提交 #N | 👤 owner
+              工具栏右端：客户端/浏览器 · 托盘在线/离线（点击重探）
 ```
 
 三套右键菜单：
@@ -429,6 +463,91 @@ window.addEventListener("depot-api", function (ev) {
 客户端里额外有 `window.lugwitBridge`（QWebChannel 注入，能算本地文件 md5、
 选本地文件）；浏览器里这个对象不存在，页面用特性检测降级。
 
+### 6.2 视图 / 本地目录 / 登录（2026-09-26 整理）
+
+**三态视图**（Files 标签页，phead 三个按钮 + 「视图」菜单）：
+
+| 维度 | 取值 | 说明 |
+|---|---|---|
+| 呈现 | `▤ 列表` / `▦ 缩略图` | 缩略图带尺寸滑块（小/中/大，0/1/2） |
+| 范围 | `⤢ 展开`（开关） | 递归铺开左侧树选中节点下的全部内容，**按目录分组**、组可折叠；调 `/api/depot/list_recursive` |
+
+两者**正交可叠加**：列表+展开 = 分组行；缩略图+展开 = 组内磁贴栅格。缩略图磁贴：
+图片走 `/api/depot/download?rev=<该条目的 rev>&inline=1`（rev 固定 → 命中 immutable 缓存，
+刷新不回源）；**视频磁贴中心有 ▶**（首帧由 `<video preload=metadata>` 进视口才建 + seek 0.05s 逼出，
+解码失败退回 🎬），点 ▶ 就地内联播放（`controls` + 带声 + `play()`，同时只播一个），✕ 收回首帧态。
+
+**右栏「📄 预览/编辑」标签页的图片**：整图按预览区**宽高**等比适配（图片分支给 `#previewOut` 挂 `pimg`
+→ `height:100%` + flex 居中 + `max-width/max-height:100%` + `object-fit:contain`），不出滚动条，
+改右栏宽度即时跟随；小图不放大。文本 / PDF / 视频分支不受影响。
+右栏只有 300px 宽，`#previewBar`（路径 / 大小 / 编辑 / 下载 / 刷新）会自动折成多行（`flex-wrap`）。
+
+**刷新后恢复**：视图（呈现/尺寸/展开）、面板显隐（左侧树 / 底部 / 右侧详情）、排序、
+当前标签页与目录、选中项、底部标签、**右栏标签（`histTab`）**、差异视图模式、**右栏宽度（`histW`）**
+—— 全存 `localStorage["depot_ui"]`（`saveUI()` 去抖 300ms + `flushUI()` 在 `pagehide`/`beforeunload` 兜底）。
+旧键 `depot_view` / `depot_thumb_size` / `depot_expand` 会自动迁移后删除；
+老存档里 `bottom: "preview"`（那时预览还在底部）由 `setBottomTab("preview")` 转成右栏标签。
+
+**中栏 ↔ 右栏可拖**：两栏之间是 5px 的 `#vsplit`（`col-resize`，悬停变蓝），拖动改
+「详情 / 历史」宽度 —— 钳制 **180 ~ min(760, layout−320)**（给中栏留 320，不然文件表会挤没），
+双击复位 300。收起右栏时那条缝也一起隐藏（不然拖着没反馈）。宽度存 `depot_ui.histW`。
+
+**标签可拖动（排序 + 跨面板）**：中栏 / 右栏 / 底栏 的 9 个标签都能拖（左树的 Depot/Workspace 不参与）。
+拖到本面板别处 = 排序，拖到别的面板 = **标签连同它的内容一起搬过去**（例：把「📄 预览/编辑」拖到底栏、
+把「Pending」拖到右栏）。落地时被拖的标签在新面板里变成当前标签；原面板若被搬空，活动标签自动落到
+剩下的第一个。实现是一条薄薄的「标签引擎」（`TAB_DEFS` 表 + `tabOrder` + `relayoutTabs/applyTabs`），
+**内容元素 id 一个没改**，所以业务代码照旧；每个标签自带自己的工具条（Files 的 ▤▦⤢+滑块、Log 的 🧹
+都在标签里，随标签走）。
+
+**每个标签条末尾的「＋」**（`#centerPlus` / `#histPlus` / `#bottomPlus`，就在最后一个标签右侧 2px）：
+点开列出**别的面板里**的标签，选一个就把它的标签+内容搬到本面板末尾并切过去（`addTabToPanel()` →
+`showTab()`，跟拖过来同一条路径）；本面板已收满 9 个时该项显示「已经有全部 9 个标签」。
+面板被搬空（`notabs`）时标签条隐藏，**只剩这个 ＋**——窄边上点它就能把标签叫回来（不必非得拖）。
+
+**标签之间的 1px 分隔线**：纯 CSS，没加元素、没动布局 —— `.tab` 本来就留着 `border:1px solid transparent`
+（活动态才上色），所以只需给非首个标签补个颜色：`.tabstrip .tab + .tab{border-left-color:var(--border)}`，
+外加 `.tab.on + .tab{border-left-color:transparent}`（活动标签自己左右都有边框，旁边那条不画，
+免得叠成 2px）。左树那对标签不在 `.tabstrip` 里，单独给了 `#treePanel .phead>.tab+.tab` 同款两条。
+实测：加/不加这两条规则，标签的 `left/width` 完全相同（`sameGeometry: true`）——确实只是"改个 border 颜色"。
+
+**面板被搬空 → 自动折叠，但留落点**：右栏收成 26px 窄边（`＋` 提示，拖进去即恢复原宽度）、
+底栏折叠成 26px 标签条；中栏不能折叠，就摆一句「没有标签 —— 从右栏 / 底栏拖一个过来」。
+归属与顺序存 `depot_ui.tabs = {center:[…],right:[…],bottom:[…]}`，刷新后原样恢复（`normTabOrder()`
+会丢掉未知 id、去重、把存档没提到的标签按默认归属补齐；存档里明确为空的空面板保持空）。
+
+**登录**：页面**没有**自己的用户名密码框（2026-09-26 删掉）。401 一律由 `apiReq` 跳
+`/login?next=<本页>`（nginx 把 `/login` 路由到认证服务 1027）；「连接 → 登录 / 切换账号」手动跳同一个 URL。
+页面不再用 JS 写 `lugwit_token` cookie。
+
+**工具栏右端小灯**：显示两个**互不相干**的东西 ——
+`客户端桥 window.lugwitBridge`（客户端注入，决定本地能力：本地目录树 / 选本地路径 / 打开本地文件 /
+在资源管理器中定位）与 `托盘服务 127.0.0.1:19527/health`（`l_tray` 的 ExecServer，还提供浏览器模式的
+本机目录树与**本机文件增删**）。业务接口（版本 / 文件 / 工作区）都直连 depot 服务，两样都不是必需的。
+文案即 `客户端/浏览器 · 托盘在线/离线`，点击可重探，「连接」菜单里也有同一状态与「重新检测」。
+详见 `网盘版本库Depot设计.md` §6.2。
+
+**工作区标签页的本地目录树**两条来源：客户端里用 `window.lugwitBridge.treeDir()`（进程内快照）；
+**浏览器模式**改由托盘的 `depot_local_tree` 动作读（只读、root 必须命中该用户某个工作区的
+`local_root`），并用 `depot_local_version`（watchdog 变更序号）每 2.5s 轮询、**变了才重拉**，
+切走标签页即停。见 `Rez_pkg/l_tray.md` §2。
+
+**本机路径的右键：在资源管理器中打开 / 新建 / 删除**（2026-09-26 加）：左树 Workspace 标签里
+- **文件行**右键 → `📂 在资源管理器中打开`（打开所在文件夹并选中）、`▶ 用默认程序打开`、
+  `🗑 删除文件（回收站）`、`📋 复制路径`、`🔄 刷新本地树`
+- **目录行**右键 → 上面那套（打开＝打开该目录）+ `📁 在此新建目录…`、`📄 在此新建文件…`
+- **树空白处**右键 → 在工作区根上 `新建目录… / 新建文件…`、打开根目录、刷新
+- **中栏「工作区」每张卡片**右键 → 打开本地根 / 新建目录、新建文件 / 复制本地路径、工作区名、库路径
+
+新建走 `promptText()` 单行对话框（回车确定、Esc 取消、默认名选中）；删除**先 confirm**（显示完整路径，
+目录会提示「内容一起进回收站」）。落地在 `localOpen()` 与 `localFsCall()`：打开走本地桥
+（`revealInExplorer` / `openExternal`，浏览器模式回落托盘 `depot_local_open`）；
+**新建 / 删除目前只有托盘实现**（`depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`，
+客户端桥没有写能力），删除用 `winshell` 送**回收站**、可还原，且**拒绝删除工作区根目录本身**。
+
+⚠️ **浏览器模式要托盘已登录**：页面 cookie 是 HttpOnly 时 `pageToken()` 读到空串，托盘会回落到
+**自己的会话 token**；托盘没登录就拿不到工作区列表，动作会拒答并提示「托盘登录态不可用？在托盘里点
+「登录」后重试」。客户端模式的开 / 定位（本地桥）不需要托盘，新建 / 删除仍需托盘在线。
+
 ---
 
 ## 7. 云盘文件管理（`/files`）
@@ -442,9 +561,13 @@ window.addEventListener("depot-api", function (ev) {
 | `POST /api/files/mkdir` | `{dir, name}` 新建文件夹 |
 | `POST /api/files/delete` | `{paths:[...]}` |
 | `POST /api/files/rename` | `{path, new_name}` |
+| `POST /api/files/move` | `{paths:[...], dest, new_name?}` 跨目录移动（百度 `opera=move`，**纯元数据、零字节**，目标目录自动创建）。相册回收站、**删相册挪进「其他」**走的就是它 |
 | `GET /api/files/download` | 服务端代理 dlink 下载 |
 | `GET /api/files/stream` | 在线预览（视频/音频/图片/PDF/文本等），inline + Range |
 | `GET /api/files/thumb` | 缩略图代理 |
+| `GET /api/vision/credentials` | 读图像识别 AK/SK（脱敏）+ 存储说明（权威在 auth 中心存储，经 hub 的 `/v1/keys`） |
+| `POST /api/vision/credentials` | 写图像识别 AK/SK（`{api_key, secret_key}`，传 `****` 保留旧值）→ 落 auth 的中心密钥存储（经 hub `POST /keys`，需登录态） |
+| `POST /api/vision/tag` | **图片 AI 打标**：`{content_key, image_base64}` → `{tags, raw, model, cached}`。走**百度智能云图像识别**（另一套 AK/SK，见 §19），结果按 `content_key` 缓存进 `vision_tag` 表；额度/QPS 超限返 **429**（`code=vision_quota`） |
 | `POST /api/files/upload` | `{local_path, remote_dir, remote_name, auto_mkdir, overwrite}` 传**服务端本地**文件 |
 | `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传；响应含 `rapid`（秒传命中＝零上行；**当前实测不命中**，见 §14.4）与 `md5_real` |
 | `POST /api/upload/prepare` | **客户端直连百度的第一步**：`{dir, name, size, block_list}` → 秒传探测 / 直传票据（见 §14） |
@@ -452,6 +575,16 @@ window.addEventListener("depot-api", function (ev) {
 | `POST /api/files/download_local` | 下载到服务端本地目录 |
 
 `overwrite=true` → `rtype=3` 同名覆盖；`false` → `rtype=1` 同名重命名。
+
+**大文件上传（2026-09-26 改）**
+
+- `/api/files/upload`（传**服务端本地路径**）现为**流式分片**：`baidu_netdisk_api.upload_file()`
+  用 `scan_file()` 单次遍历算分片 md5 + `read_chunk()` 按需只读那一片，**内存峰值 ~4MB**。
+  改前是 `read_bytes()` 整包 —— 500MB 视频会吃 500MB 常驻内存。
+  实测：60MB 上传全程 700ms 采样，进程 RSS 只涨 ~9MB（73.9 → 82.6 MB）。
+- `/api/files/upload_stream` 保留给**浏览器直传 / 小文件**（整包 body）；服务端大文件别再走它。
+- `/api/files/upload` 只允许读**白名单目录**内的本地文件（默认 `~/.lugwit`，见 §14.2），越界回 **403**；
+  否则任何登录用户都能借它把服务器上任意可读文件传上云（越权读盘）。
 
 **授权失效要能看见（2026-09-18 修）**
 
@@ -879,6 +1012,7 @@ Content-Type: application/json
 |------|------|------|
 | `LUGWIT_UPLOAD_TICKET_TOKEN` | **空＝关** | 关时 `prepare` **不下发** `access_token` → 客户端拿不到百度凭据、只能回退"服务器代传"（现状）。开启才会下发（必须已是 HTTPS 入口） |
 | `LUGWIT_UPLOAD_ROOTS` | `/apps/Lugwit/l_wchat` | 直传可写根白名单（`os.pathsep` 分隔）。不限定范围等于开放"往网盘任意路径写" |
+| `LUGWIT_NETDISK_LOCAL_ROOTS` | `~/.lugwit` | **服务端本地文件**上传（`/api/files/upload`）的可读目录白名单（`os.pathsep` 分隔）。越界回 403 |
 
 ### 14.3 内容复核规则（实测结论，别想当然）
 
@@ -922,7 +1056,7 @@ python tests\test_upload_direct_client.py --host https://121.196.144.88
 | `--dir` | 测试目录（默认 `l_wchat/_probe_direct`，不进相册索引） |
 | `--keep` | 保留测试文件（默认删） |
 | `--expect-rapid` | 要求二次 prepare 命中秒传（当前不满足，只有百度开通后才该加） |
-| `--user/--password` | 客户端测试用；不给时读 WChat 的 `config.json` |
+| `--user/--password` | 客户端测试用；不给时读 WChat 的 `config.json`（2026-09-26 起在 `~/.lugwit/l_WChat/config.json`，包目录旧位置兜底） |
 
 前端 JS（`l_WChat/999.0/src/l_WChat/static/upload_direct.js`）的本机验证：
 `l_WChat/999.0/tests/test_direct_upload_local.mjs`（Node 跑真实 JS + 真发百度），
@@ -989,6 +1123,94 @@ if known is None: 才 ensure_blob(...)
 是否真的存在于网盘。
 
 **关联**：客户端状态口径与现场记录见《l_agent_chat会话存云与工作区.md》§14。
+
+## 17. 版本库页 2026-09-26 变更汇总
+
+一次会话里改的点，都在 `web_depot.html` + `web_server.py`（页面细节见 §6.2）：
+
+| 变更 | 落点 |
+|---|---|
+| 三态视图（列表 / 缩略图+尺寸 / ⤢ 展开按目录分组）+ 两者可叠加 | `web_depot.html`；展开调新接口 `GET /api/depot/list_recursive`（BFS 逐目录 `list_dir`，状态一次前缀查询覆盖子树，`depth`/`limit` 截断） |
+| 缩略图 = 图片走 `/api/depot/download?rev=<条目 rev>&inline=1`；视频磁贴给首帧 + 中心 ▶ 内联播放 | 首帧 `<video preload=metadata>` 进视口才建 + seek 0.05s；同时只播一个 |
+| 刷新后恢复视图与位置（面板显隐 / 排序 / 标签页 / 目录 / 选中 / 底部标签 / 展开折叠 / 差异模式） | `localStorage["depot_ui"]`，`saveUI()` 去抖 + `flushUI()` 兜底；旧三键自动迁移 |
+| `/api/depot/download` 支持 `Range`（206 + `Content-Range` + `Accept-Ranges`）、`ETag` + 分档 `Cache-Control` | 视频拖进度条；带 rev 的图片刷新零请求，304 不碰百度 |
+| 工作区列表/增删改**直连 depot 服务**（不再经托盘） | 见 §5.6（接口全表）与《网盘版本库Depot设计.md》§6.2 |
+| 版本库页删掉自带登录框（含 JS 写 cookie） | 401 统一跳 `/login?next=<本页>`；「连接」菜单留手动入口 |
+| 工具栏右端「客户端/浏览器 · 托盘在线/离线」小灯 | 客户端桥（`window.lugwitBridge`）与托盘 `19527/health` 是两件事，文案分开写 |
+| 浏览器模式下工作区本地目录树改由托盘读 | 托盘新动作 `depot_local_tree` / `depot_local_version`，见 `Rez_pkg/l_tray.md` §2 |
+| 预览标签页图片**按容器宽高等比适配**（不再按原始像素撑出滚动条） | `#previewOut.pimg{height:100%;flex 居中}` + `img{max-width/max-height:100%;object-fit:contain}`；`previewPath` 只在图片分支挂 `pimg`，其余分支清空 class |
+| 中栏 ↔ 右栏加**可拖动的竖缝**（改「详情 / 历史」宽度） | 新 `#vsplit` + `setHistW()`（钳 180~min(760, layout−320)、双击复位 300），宽度进 `depot_ui.histW`；收起右栏时缝一起隐藏 |
+| **「📄 预览/编辑」从底部标签挪进右栏**（和「详情 / 历史」并排两个标签） | `#previewBody` 整块搬进 `#histPanel`（id 全不变，省掉一堆引用）+ 新 `setHistTab()`；底栏只剩 `[Log \| 历史 \| 差异]`；老调用点 `setBottomTab("preview")` 自动转发到右栏；标签存 `depot_ui.histTab` |
+| **标签可拖动排序、可拖到别的面板**（中栏 / 右栏 / 底栏，共 9 个；左树固定） | 标签引擎 `TAB_DEFS`/`tabOrder`/`relayoutTabs()`/`applyTabs()`/`bindTabDrag()`（HTML5 DnD + 竖线插入指示），标签与内容一起搬；面板搬空 → 右栏收 26px 窄边、底栏折叠、中栏给提示（都是落点）；归属顺序存 `depot_ui.tabs`。顺带把面板级工具收进标签（Files 的 ▤▦⤢+滑块、Log 的 🧹）、底栏折叠 ✕ 提到面板 phead |
+| **工作区本地树 / 工作区卡片右键 → 在资源管理器中打开** | 页面 `localOpen()`（客户端桥 `revealInExplorer`/`openExternal`，浏览器模式托盘 `depot_local_open`）+ `wsNodeMenu`/`wsCardMenu`；托盘新增 `depot_local_open`（`mode=reveal\|open`，路径限工作区 `local_root` 之内）。顺带把托盘动作的 traceback 收缩成最后一句（`trayErr()`），并让「托盘未登录 → 取不到工作区」报得明白 |
+| **同一右键再加：新建目录 / 新建文件 / 删除** | 页面 `promptText()`（回车确定/Esc 取消）+ `wsNewEntry()` / `wsDeleteEntry()` / `localFsCall()` / `wsRootMenu()`（树空白处＝在根上新建）；托盘 `depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`——删除走 `winshell` **回收站**（可还原），**拒绝删工作区根目录本身**，名字限单层且不含 `\ / : * ? " < > \|` |
+| 页面自带帮助 `web_help.html` 同步 | §2.10「页面标签 → 接口」按新布局改写（中栏四标签 / 右栏两标签 / 底栏三标签、工作区本地树的两条来源），新增「界面操作（2026-09-26 起）：标签可拖动、面板尺寸、刷新后恢复、预览区图片、工作区右键本机操作」。注意该页在 `web_server.py` **import 时读盘**（`_HELP_HTML`），改完要等 `.dev_mod` 热重载或重启服务才生效 |
+| 标签条末尾恒有 **＋**（加标签） | `TAB_DEFS[*].label` + `addTabToPanel()` + `tabAddMenu()`：`＋` 紧跟在最后一个标签后（在 `.tabstrip` 之后、`.spacer` 之前，所以永不被标签条的 `overflow:hidden` 裁掉）；面板搬空时标签条隐藏、只剩 `＋` 可点，窄边上照样能把标签叫回来 |
+| 标签之间加 **1px 分隔线**（纯 CSS） | `.tabstrip .tab + .tab{border-left-color:var(--border)}` + `.tab.on + .tab{...:transparent}`（活动标签自带左右边框，防叠 2px）；左树那对标签单独 `#treePanel .phead>.tab+.tab`。因为 `.tab` 本就留了 1px 透明边框，**零布局影响**（实测加/不加几何完全一致） |
+
+## 18. 服务端上传与稳定性（2026-09-26 改）
+
+| 变更 | 落点 | 说明 |
+|---|---|---|
+| `upload_file()` 改**流式分片** | `baidu_netdisk_api.py` | `read_bytes()` 整包 → `scan_file()`（单次遍历算分片 md5）+ `read_chunk()`（按需读片），内存峰值 O(文件) → **~4MB**。`create_file` 只要分片 md5 列表，不需要整文件 md5，所以流式可行。实测 60MB 上传进程 RSS 只涨 ~9MB |
+| 新增 `POST /api/files/move` | `web_server.py` + `baidu_netdisk_api.move_remote()` | 百度 `filemanager opera=move`：跨目录移动，**纯元数据零字节**，目标目录自动创建。相册回收站的"挪进/挪回"用它 |
+| 服务端本地上传加白名单 | `web_server.py::_assert_local_upload_allowed()` | `/api/files/upload` 只允许读 `LUGWIT_NETDISK_LOCAL_ROOTS`（默认 `~/.lugwit`）内的文件，越界 **403** |
+| 修：`token_path` 未导入 | `web_server.py` 顶部 `from .baidu_netdisk_auth import (...)` | `_token_keepalive_once()` 调 `token_path()` 但没导入 → keepalive 线程 `NameError`，**服务启动即崩**。现象很迷惑：`netdisk_status` 说 running 但 pid 已不存在、1028 无监听、nginx 报 upstream 拒连（10061） |
+
+## 19. 图片 AI 打标（百度智能云识图，2026-09-26 加）
+
+**和网盘 OAuth 是两套东西**：网盘那套是 `pan.baidu.com` 的 xpan 接口（`client_id/secret/refresh_token`）；
+识图走 `aip.baidubce.com`，凭据是智能云控制台**「图像识别」应用**的 API Key / Secret Key，按调用次数计费。
+
+- 模块 `vision.py`：`client_credentials` 换 access_token（缓存 30 天，提前一天刷新）→
+  `POST /rest/2.0/image-classify/v2/advanced_general`（form `image=<base64>`）→ `[{keyword, score, root}]`；
+  本地过滤 `score >= 0.3`、最多 5 个。免费档 **QPS 2** → 进程内串行限速 0.6s/次（留余量）；
+  `error_code` 17/18 → `VisionQuotaExceeded` → HTTP **429 + `code=vision_quota`**；110/111 → 刷 token 重试一次。
+  **排错关键**：`error_code=18` 隔多久调都一样，通常不是并发，而是「没在控制台点过『领取免费资源』」（QPS 视为 0）
+  或账号未实名（无免费额度）。差分判据：同一 AK 打**未勾选**的接口（如 OCR `general_basic`）会报 `error_code=6`
+  无权限 —— 若目标接口报 6，是应用没勾该接口；报 18 则是额度/开通状态问题。
+- 密钥：**托管在 lugwit_auth 的中心密钥存储**（命名空间 `model_hub`；PG 里是信封加密密文
+  `secret_enc` + `dek_wrapped` + `kek_id`，KEK 只在 auth 内/机外）——provider id `baidu_vision`
+  （AK）/ `baidu_vision_secret`（SK），字段 `baidu_vision_api_key` / `baidu_vision_secret_key`。
+  **本机不再有任何明文密钥文件**（旧的 `~/.lugwit/l_model_hub/config.json` 已迁走并删除）。
+  读：问 hub 的 `GET /v1/keys/{provider}`（本机回环匿名；密钥明文不跨机，handler 里核
+  `client.host`）；写：hub 的 `POST /keys`（需 lugwit token，即网页调用方的登录态）。
+  本包**不 import l_model_hub**（那包 `__init__` 会启动源码热重载服务），跨包只走 HTTP。
+  env `LUGWIT_BAIDU_VISION_AK`/`_SK`（或 `BAIDU_VISION_API_KEY`/`_SECRET_KEY`）优先于中心存储。
+  入口：网盘首页（`/baidu/`）「🖼️ 图像识别（AI 打标）凭证」卡片，或 hub 管理台。
+  access_token 缓存仍在本机 `<state_dir>/baidu_vision_token.local.json`（派生值，非托管密钥）。
+- 缓存表 `vision_tag(content_key PK, tags text[], raw jsonb, model, created_at)`：**键是原图 sha256**，
+  同内容只调一次 API。表建在 depot 同一个 Postgres 里（`depot_store.py` 的 `_SCHEMA_SQL` 幂等加表）。
+- 调用方现在是相册（手动批量打标，缩图在浏览器做）：见 `Rez-Docs/相册功能与数据模型.md` §7。
+
+**注意**：百度没有"查剩余额度"的开放接口，额度用尽只能靠 error_code 17 探测 → 调用方应当**停下来**，
+不要为了跑完而自动转按量付费（当前实现：前端 429 即停）。
+
+## 20. 越权与内存加固（2026-09-26 P0）
+
+一轮**只加固、不改业务语义**的修复。每条都是代码里能指出行号的实证，验收方式写在最后。
+
+| 问题 | 修法 | 落点 |
+|---|---|---|
+| `POST /api/depot/lock` **漏判写权** —— 锁会挡住别人对该路径的提交（等同写操作），却任何登录用户都能加锁，可把别人路径锁死 | 加 `_depot_write_perm(request, user, req.path)`（与 `checkout` 同口径）→ 越权 403 | `web_server.py::api_depot_lock` |
+| `POST /api/depot/unlock` 的 `force=true` 无门 —— 任意用户可强拆别人的锁（`web_help.html` 一直写的是"管理员用"）。注意**非 force 分支本身是安全的**：`store.unlock` 的 `DELETE ... AND ws_id=$2` 只能解开本工作区的锁 | `force` 且非 admin/system（`_is_admin_user`）→ **403**；非 force 不动 | `web_server.py::api_depot_unlock`、`depot_store.unlock` |
+| 跨用户元数据泄露：`GET /api/depot/changes`、`/change/{cl_id}`、`/tree` 三个 GET 没有 P6 判定（`/list`、`/history` 都有），任何登录用户能枚举别人的 CL 列表、**CL 里别人的全部文件路径**、以及任意目录的分支 | `changes`：`store.changelists(limit, owner=本人)`（非管理员）；`change/{cl_id}`：`store.changelist_owner()` 不符 → 403，不存在 → 404；`tree`：库根只校验登录、库根之下 `_depot_perm(...,'depot.read')`（与 `/list` 完全同一口径） | `web_server.py`、`depot_store.changelists/changelist_owner` |
+| `submit_stream` 与 `/api/files/upload_stream` 用 `await request.body()` **整包读进内存**（无上限）—— 一个大上传能把整个服务打爆 | 改成 `async for chunk in request.stream()` 边收边落盘（与 `mark_add_stream` 同一写法），空体仍 400；`_remember_session_title` 改收**临时文件路径**，只对 `session_*.json` 且 ≤2MB 才回读算标题 | `web_server.py` 两个上传端点 + `_remember_session_title` |
+| 托盘本地动作的边界是"字符串前缀"，**不解析 symlink / junction** → 工作区里放一个指向 `C:\Windows` 的 junction 就能越界读写删 | `_norm()` 改用 `os.path.realpath`（含 normcase/normpath）；`_check_path` 返回**解析后的路径**，后续动作落在已校验的真实目标上 | `l_tray/local_tree.py` |
+| 网页 token 为空时 `depot_bridge._http` 回落**托盘自己的会话 token** → 没带登录态的页面拿到托盘账号的工作区根（与 `token_override`"用网页登录态替代托盘账号"的语义相反） | `_allowed_roots("")` 直接回空，新增 `_require_roots()` 抛"网页没带登录态" | `l_tray/local_tree.py` |
+| `depot_local_open(mode="open")` 对工作区内**任意**文件 `os.startfile` → 同步目录里丢个 `.exe/.bat` 就是网页一键在本机执行 | 按扩展名挡可执行/脚本/快捷方式（`.exe .com .scr .pif .msi .msp .cpl .jar .bat .cmd .ps1 .psm1 .vbs .vbe .js .jse .wsf .wsh .hta .lnk .url .reg`）；目录走 `explorer` 不受影响 | `l_tray/local_tree.py::_NO_STARTFILE_EXTS` |
+| 删根保护只比"根本身"，多工作区根嵌套/重叠时删父目录会连带另一个工作区 | 改为"目标等于任何 allowed root，**或**是任何 root 的上层目录"即拒 | `l_tray/local_tree.py::depot_local_delete` |
+
+**验收（已跑）**
+
+- 托盘侧 `local_tree` 边界探针（假 `depot_bridge` + 临时工作区）：工作区内放行 / 区外拒绝 / 空 token 拒绝 /
+  `mklink /J` 建的 junction 逃逸拒绝 / 删根拒绝 / `open` 拒 `.bat` / mkdir·newfile·tree 正常 → 全绿。
+- 服务端：`changelists` 三种参数组合的 SQL 占位与 args 正确；`api_depot_lock`/`api_depot_tree` 签名带 `request`
+  （FastAPI 能注入）；`api_depot_unlock(force=True)` 在 `role=0` 时 403、`role∈{1,2}` 放行、非 force 不触发 403。
+- 三个文件 `py_compile` 通过。
+
+**仍未动（后续）**：`submit_stream` / `upload_stream` 只做了"不整包进内存"，**没有加体积上限**（策略待定）；
+`/api/depot/status` 里的 `changes:[最近1条]` 仍是全局视图；客户端桥没有写能力，客户端模式的新建/删除仍依赖托盘。
 
 
 

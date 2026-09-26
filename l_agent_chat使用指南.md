@@ -6,7 +6,14 @@
 可调用本地工具集（文件/命令/Git/HTTP）辅助编码，支持对话存储、远程工具服务、
 上下文压缩与 token 统计。模型走 OpenAI 兼容 Chat Completions 接口，支持多个供应商
 （厂商），默认火山方舟 `volcengine` + `deepseek-v4-flash`；模型目录与 API Key
-复用 `l_model_hub` 的统一注册表（`models.json`）与密钥库（`config.json`）。
+复用 `l_model_hub` 的统一注册表（`models.json`）与密钥（权威存储 = lugwit_auth 中心密钥存储，经 hub 取）。
+
+> **模型 id 必须是 `l_model_hub` 清单里真实存在的**（`GET {hub}/v1/models`）。写了不存在的名字
+> （例：早期的 `DeepSeek-V4.1-Flash`，清单里只有 `deepseek-v4-flash`）时，网关会把它当
+> **未知模型**走 auto 兜底：按 `priority.json` 的 global 顺序（volcengine → deepseek →
+> siliconflow → **minimax** → zhipu → …）**每个厂商各取一个代表模型**依次试，实际可能落到
+> 完全另一家。页脚会如实标出上游回报的实际模型（`served`，如「实际 MiniMax-M2.5」）；
+> 各家内联工具调用模板（`seed:tool_call` / `minimax:tool_call`）就是「谁接上的」指纹。
 
 ## 包信息
 
@@ -35,16 +42,26 @@ wuwo rez env l_agent_chat -- l_agent_chat -y
 
 `-y`：端口被占用时自动结束占用进程，不询问。
 
-带重载（推荐开发用）：`l_agent_chat` 的启动器 **默认已开启 uvicorn 热重载**
-（`reload=True`，监视 `src/l_agent_chat` 源码目录），改源码保存即自动重启生效，
-**无需手动重启服务**。因此 `.dev_mod` 修饰符对该包是多余的——它只对
-「默认关、带 `.dev_mod` 才开」的其它后端（auth/netdisk/note/chat）有意义。
-
-若仍显式带 `.dev_mod`，语法必须跟在包名后：
+带热重载（推荐开发用）：热重载**不是默认开的**，它由 `.dev_mod` **硬门控**
+（wuwo 注入 `L_DEV_MOD=1`）；带 `.dev_mod` 启动时才起 `SrcWatchService`
+（还可被 `L_SRC_WATCH=0` 关掉）。
 
 ```bat
 wuwo rez env l_agent_chat .dev_mod -- l_agent_chat
 ```
+
+⚠ **不带 `.dev_mod` 时改 `.py` 不生效**：服务是单进程 `uvicorn.run(app)`，
+**没有** `uvicorn --reload`。改完必须手动重启，别盲杀进程：
+
+```bat
+wuwor l_agent_chat -- python -m l_agent_chat.app restart_self_cli
+```
+
+模板 `.html` 是例外：走 Jinja `auto_reload`，刷新页面即变。
+**实测踩过**：改了 `config.py` 而进程还在跑旧配置 → 表现为「市场源读取失败」，
+排错时先比「进程启动时间 vs 文件修改时间」（见《src_hot_reload 源码热重载与主页常驻》）。
+
+`.dev_mod` 这类修饰符必须跟在包名后（`wuwo rez env <包> .dev_mod -- <alias>`）。
 
 访问：浏览器打开 `http://127.0.0.1:1250`。
 
@@ -133,6 +150,12 @@ SSE 事件类型：
   模型**独立于聊天默认模型**（设置页「提示词优化」的 `prompt_optimize_provider` /
   `prompt_optimize_model`，缺省 zhipu / `glm-4-flash` 免费档），不占主力模型额度。
 - **设置页窄屏**：宽 ≤860px 时左侧「设置分组」侧栏变顶部横排，可**按住拖动**横向滚动（桌面仍为竖排）。
+- **手机端与老内核兼容**：Tailwind v4 把工具类全塞进 `@layer`，而「荣耀自带浏览器」这类老 Chromium
+  内核（<99）**不认 `@layer`** —— 未知 at-rule 整块丢弃，工具类一个不剩（侧栏 `hidden`、`truncate`
+  全失效，页面塌成无样式单列）。构建期用 `@csstools/postcss-cascade-layers` 把层拍平，且**必须跑在
+  `generateBundle`**（见 `web/vite.config.js` 的 `cascadeLayersPlugin`）：逐 CSS 模块跑时它看不见
+  无层那份 style.css，会把无层/层内优先级算反，反而压掉旧 UI 的 `.btn`。
+  手机端输入框高度也在移动端媒体查询里调大（`.composer-input { min-height: 64px }`）。
 
 ### 工具调用
 
@@ -148,6 +171,18 @@ SSE 事件类型：
   `run_background` / `kill_port` / `git_push` / `vscode_apply_edit` / `vscode_run_command`）
   时先审批（具体要不要问还受**权限模式**影响，见下节）。工具失败也会把失败结果回填给模型，
   让它换别的工具继续。
+
+- **工具按需声明**（`tool_router.py`）：默认只把**核心集**（读/写/改/搜/命令/后台/`execute`/
+  `task`/`ask_user`/待办）声明给模型，其余靠 `find_tools` / `describe_tool` 按需拉出来
+  （过程流水里写「工具清单就绪：声明 N/M 个」）。目的是省掉每轮上万 token 的工具 schema。
+- **`ask_user`（向用户提问）**（`ask_user.py`）：信息不足、需要用户拍板（选哪个目录 / 哪个方案 /
+  要不要删）时用它**真问一句并等回答**，最长 `ask_timeout`（默认 600s）；用户的回答就是该次工具
+  结果，planner 拿着它继续。作答期走 SSE `ask_required` + `POST /api/ask-answer`（与工具审批同一
+  条 Future 通道，实现见 `app.py` 工具循环里那段拦截）。界面渲染成**问答卡**（选项按钮 + 自定义
+  输入框），答完点 🔄 可改选 —— 改选是**发一条新一轮用户消息**（已发生的那次工具结果改不了），
+  走 `thread.append` 而不是 `aui.composer`（问答卡不在 composer 子树里，那边的桥没注册）。
+  只读模式（ask/plan/review）放行它；**子 agent 一律拿不到**（在 `subagents.DENY_ALWAYS` 里，
+  无人值守只会白等到超时）。提问与回答随工具痕迹落盘（`trace` 的 `ask` 字段），刷新后卡片仍在。
 
 ### 审批与权限模式（`permissions.py` / `chat_modes.py`）
 
@@ -220,10 +255,22 @@ SSE 事件类型：
 当估算 token 超过 `CONTEXT_LIMIT_TOKENS * COMPRESS_THRESHOLD` 时，把早期对话历史
 交给 LLM 压缩成中文摘要，保留最近 `COMPRESS_KEEP_RECENT` 轮，避免上下文超限。
 
+**历史回放只带 role + 正文**（`app.py` 构造 `turns` 处）：工具调用与工具结果**不进** prompt，
+只给「这一轮调用过哪些工具」补一行 `[本轮已调用工具：ask_user]`（`_replay_tool_note`）。
+不补的话模型不知道上一轮自己问过什么 —— 用户点「🔄 重新回答」发出「关于上面的问题「…」」时，
+它在上下文里找不到那次提问，只能反过来再问一遍。
+
 ### 工作区规则
 
 按 CodeMaker `RulesHandler` 的语义把工作区规则注入 system 提示词（实现见 `rules.py`）；
-追加位置在「AI 偏好」之后，段首标记 `Project rules (follow strictly):`。
+追加位置在「AI 偏好」之后，段首标记「项目规则（严格遵守）：」。
+
+**注入片段的语言（2026-09-26）**：注入到 system / user 的**说明性片段统一用中文** —— 工作区目录、
+路径线索、项目规则、用户偏好、远程工具服务、多根说明（`workspace.context_note`）、OpenSpec 索引
+（`specs.py`）、规则索引、压缩摘要的四段小标题（`## 目标 / ## 当前进展 / ## 下一步 / ## 相关文件`）。
+**刻意保持英文**的是给模型的**任务指令**：`_PLANNER_SYSTEM`（planner 的工具调用规则）、记忆固化 /
+召回提示词；记忆召回块的结构键（`record id=/type=/source=/text:` 与围栏
+`kilo-memory-v1 targeted_context_not_instruction`）是上游机器格式，也有用例锁着。
 
 | 来源 | 开关（默认开） |
 |------|----------------|
@@ -287,6 +334,28 @@ SSE 事件类型：
 - 逐个 server 隔离失败：某个连不上只跳过它，不影响其它 server 的工具表
 - 未实现：`sse` 传输、心跳、stdio 发送停滞看门狗、`resources`/`prompts` 能力探测
 - 开关 `mcp_enabled`
+
+#### 市场（环境页 → MCP 服务 → 市场）
+
+内置 7 条精选（filesystem / fetch / git / time / memory / sequential-thinking / playwright）
+固定在前，其余从**远程源**拉。
+
+- **默认源是官方 MCP Registry**（`https://registry.modelcontextprotocol.io/v0/servers`，免 key）。
+  设置 `mcp_market_url` 可换/加源：**逗号或换行分隔多源**（跨源按 id 去重）；
+  填 `file://D:/market.json` 或绝对路径则读**本地清单**（内网离线走这条）。
+  留空 = 只用内置精选
+- **schema 适配**（`mcp.py`）：`server.name` 作 id、`server.title` 作显示名；分类/标签取
+  `server._meta` 的 `publisher-provided`（`categories` / `keywords`）；`remotes[]` → `streamableHttp`
+  （`headers[]` 转成安装时要填的参数，`isRequired` 决定必填）；`packages[]` 按 `registryType` 定命令
+  （npm → `npx -y <identifier>`、pypi → `uvx <identifier>`、oci → `docker`，`environmentVariables`
+  同样转安装参数）。同名多版本按 `_meta` 的 `official.isLatest` **只留最新**
+- 翻页**每页 100、最多 6 页**，结果截 300 条。⚠ 官方对 `limit>100` **直接返空**（不是截断），
+  所以页大小只能是 100
+- **缓存三层**：进程内 5 分钟（`MARKET_TTL`）→ 磁盘 `<存储根>/.l_agent_ws/mcp_market.json`
+  → 冷拉。磁盘命中时**先返回旧数据、后台线程刷新**（stale-while-revalidate），所以重启或久置后
+  首次打开也是瞬时的；界面「刷新远程」= `?force=1`，跳过前两层同步拉完再返回
+- 安装写 `<工作区>/.codemaker/mcps.json`，必填参数在卡片里就地填
+- 实测：冷拉 ~2.9s。**HTTP 连接复用**是关键 —— 每页新建连接要多付 ~1.2s 握手（6 页 8.2s → 2.4s）
 
 ### 工具行为开关（l_agent_tool）
 
@@ -391,10 +460,11 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /health` | 健康检查 |
 | `GET /api/models` | 模型列表 |
 | `GET/POST /api/settings` | 读取/更新运行配置 |
-| `GET /api/workspace` | 工作区信息 |
+| `GET /api/workspace` | 工作区信息（含 `workspace_file`：agent 自己那份 `.code-workspace`） |
 | `POST /api/workspace` | 设置工作区 |
 | `GET/POST /api/workspace/root` | 工作区根目录管理 |
 | `POST /api/workspace/root/activate` | 激活根目录（= 把该项移到 `folders` 首位） |
+| `POST /api/ask-answer` | 回答 `ask_user` 的提问（SSE `ask_required` 之后调用；`{ask_id, answer}`） |
 | `GET /api/browse` | 浏览目录 |
 | `GET /api/browse_rez` | 多级浏览 rez 包仓库 |
 | `POST /api/translate` | AI / 免费翻译 |
@@ -413,6 +483,13 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 
 - **工作区规则 / OpenSpec 索引注入**：frontmatter 四字段、always·index·skip 分档、来源开关、
   两条路径（直连问答 `_build_messages` 与 **planner 工具循环** `_planner_messages`）
+- **工作区文件（`.code-workspace`）**：`tests/test_workspace_file.py` —— 默认位置 / 相对路径解析 /
+  `folders[0]` 基准 / 写回保留未知键与显式 `name` / 切基准与删除的顺序语义 / 不再产出 `config.json`
+- **内联工具调用兜底**：`tests/test_inline_tool_calls.py` —— `seed:tool_call` 与 `minimax:tool_call`
+  两种模板解析、幻觉工具名丢弃、流式过滤器逐字符切块边界、planner 兜底、`model_cb` 上报实际模型
+- **`ask_user`**：`tests/test_ask_user.py`（注册与参数、只读模式放行、子 agent 被 `DENY_ALWAYS` 拦掉、
+  选项规范化）+ `tests/test_agent_endpoint.py` 的 `AskUserTest`（真起服务：SSE `ask_required` → 回答
+  进工具结果；超时给 `NO_ANSWER` 仍能正常收尾）—— 端点批要 `python tests/run_all.py --endpoint`
 - **hooks**：matcher 语义、可阻断集合、决策合并（deny 只在可阻断生效 / ask 不覆盖 deny /
   `hookEventName` 不符丢弃）、**真起子进程**走 stdin-stdout 的端到端、Claude Code 四层设置来源
 - **planner 工具循环**：请求形状、工具往返、HTTP 错误 fail-open
@@ -444,13 +521,13 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 |--------|----------|------|------|
 | `ai_provider` | `AGENT_CHAT_PROVIDER` | `volcengine` | 默认供应商（siliconflow/minimax/zhipu/deepseek/volcengine/aliyun/wuzu） |
 | `<供应商>_model` | `AGENT_CHAT_MODEL` | 各供应商默认模型 | 各供应商模型 ID（火山方舟默认 `deepseek-v4-flash`） |
-| — | `<供应商>_API_KEY` | l_model_hub 密钥库 | API 密钥统一存 l_model_hub（`~/.lugwit/l_model_hub/config.json` 或包目录 `config.json`），不落 settings.json |
+| — | `<供应商>_API_KEY` | 中心密钥存储 | API 密钥统一存 **lugwit_auth 的中心密钥存储**（命名空间 `model_hub`，PG 密文；本机无明文密钥文件）。本包经 hub 的 `GET /v1/keys` 取（回环），不落 settings.json |
 | — | `AGENT_CHAT_API_URL` | 按供应商推导 | 全局 API 地址覆盖（调试用） |
 | `host` | `AGENT_CHAT_HOST` | `127.0.0.1` | 监听地址（局域网设 `0.0.0.0`） |
 | `port` | `AGENT_CHAT_PORT` | `1250` | 服务端口 |
 | `temperature` | — | `0.1` | 采样温度 |
 | `timeout` | — | `120` | 请求超时（秒） |
-| `max_history_turns` | — | `20` | 携带历史轮数 |
+| `max_history_turns` | — | `20` | 携带历史轮数（只带 role+正文，助手轮附「本轮已调用工具」一行） |
 | `max_tool_steps` | — | `6` | 工具规划最大步数 |
 | `context_limit_tokens` | — | `6000` | 上下文压缩阈值（估算 token） |
 | `compress_threshold` | — | `0.85` | 达到阈值比例触发压缩 |
@@ -479,6 +556,7 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | `hooks_timeout` | — | `10` | 单个 hook 超时秒数 |
 | `hooks_sync_cc` | — | `0` | 并入 Claude Code 各层 `settings.json` 的 hooks（默认关，读别的产品的配置该显式选择） |
 | `mcp_enabled` | — | `1` | MCP 客户端开关 |
+| `mcp_market_url` | — | 官方 MCP Registry | MCP 市场源（逗号/换行分隔多源；`file://` 或绝对路径 = 本地清单；留空 = 只用内置精选） |
 | `terminal_enabled` | `AGENT_CHAT_TERMINAL_ENABLED` | `0` | WebSocket 终端（`ws://…/ws/terminal`）开关 |
 | `terminal_sandbox` | `AGENT_CHAT_TERMINAL_SANDBOX` | `0` | 终端沙盒化（**仅 Windows**，AppContainer；见「终端沙盒化」） |
 | `sandbox_network` | — | `0` | 沙盒内允许联网（授予 AppContainer `internetClient` 能力） |
@@ -495,7 +573,7 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 
 启动器启动前会检查端口：被占用时打印 PID/进程名/exe 路径并询问是否结束；
 `-y` 直接结束。会剔除 netstat/psutil 中的僵尸 LISTENING 残留，并清理
-reload 模式的 supervisor + worker 双进程树。
+历史遗留的 `uvicorn --reload` supervisor + worker 双进程树（本包现已不用那条路径）。
 
 Windows 独占绑定防共享（治本）：
 
@@ -503,8 +581,8 @@ Windows 独占绑定防共享（治本）：
   同一端口——旧进程残留时请求会被路由到旧代码（"改了源码不生效"的元凶）。
 - 启动器在调用 `uvicorn.run` 前打补丁（`_patch_uvicorn_exclusive_bind`），
   把监听 socket 改为 `SO_EXCLUSIVEADDRUSE` 独占绑定：端口被占用时直接报错，
-  绝不静默共享。reload 模式 socket 由 supervisor 创建一次传给 worker，
-  worker 重启复用同一 socket，无重新绑定竞态。
+  绝不静默共享。**单进程**运行，socket 由本进程自己创建，所以在这里补即可生效
+  （重启不涉及 socket 交接，没有重新绑定竞态）。
 - 端口探测 `_port_bindable` 同样用独占绑定，避免 `SO_REUSEADDR` 误判"已释放"。
 - 僵尸 socket（netstat 显示 LISTENING 但 PID 已死，句柄被后代继承持有）：
   自动找出死 PID 的存活后代并结束（`_clear_zombie_holders`）。
@@ -513,11 +591,15 @@ Windows 独占绑定防共享（治本）：
 
 ## 常见问题
 
-- **改了源码不生效**：确认 `reload` 生效的条件——启动器需以 `reload=True` 且
-  `reload_dirs` 指向 `src/l_agent_chat`（已默认）。独占绑定下旧进程残留会导致
-  启动直接报错而非静默抢请求，用 `-y` 重启即可自动清理（含僵尸 socket）。
-- **API key 报错**：密钥统一在 l_model_hub 密钥库管理（环境变量 `<供应商>_API_KEY`
-  或 l_model_hub 的 `config.json`），设置页只读展示各供应商密钥状态。
+- **改了源码不生效**：先看**是不是 `.py`**。`.py` / 启动期配置**不保证**热重载 ——
+  热重载要带 `.dev_mod` 启动（硬门控）且 `L_SRC_WATCH` 未被关掉；开发机实测
+  「watchfiles 首次重载后可能停摆」。不确定就直接重启：
+  `wuwor l_agent_chat -- python -m l_agent_chat.app restart_self_cli`（停旧起新）。
+  另一类原因是**旧进程残留抢端口**：独占绑定下会直接报错而非静默抢请求，
+  用 `-y` 重启即可自动清理（含僵尸 socket）。
+- **API key 报错**：密钥统一在 **lugwit_auth 的中心密钥存储**（命名空间 `model_hub`，PG 密文；
+  环境变量 `<供应商>_API_KEY` 仍最高优先）；本包经 hub 的 `GET /v1/keys` 取，hub/auth 不通会
+  明确报错而不是回退本地文件。设置页只读展示各供应商密钥状态。
 - **公网/手机访问时看不到流式、审批总是被拒（user_rejected）**：nginx 默认会缓冲上游响应，
   SSE 会攒到请求结束才一次性下发（人工审批 120s 超时即判为拒绝）。应用侧已在 SSE 响应加
   `X-Accel-Buffering: no` 关掉本响应的缓冲；若仍被缓冲，可在 nginx 的 `location /agent_chat/`

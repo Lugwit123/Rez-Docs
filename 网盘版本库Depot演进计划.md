@@ -2,6 +2,12 @@
 
 状态：**计划台账，截至 2026-09-17**。已实现设计见[网盘版本库Depot设计.md](网盘版本库Depot设计.md)；百度 md5 实测事实以[Rez_pkg/百度云接口元数据实测.md](Rez_pkg/百度云接口元数据实测.md)为准。
 
+> **2026-09-26 提示**：本台账只管 T1–T6 这条**存储/上传**主线，不含当天的**页面与本机侧**改动。
+> 那些已落地的内容在别处：`Rez_pkg/lugwit_baidu_netdisk.md` §6/§6.2/§17（三栏 + 标签可拖动/跨面板 +
+> 条末 `＋`、预览/编辑迁到右栏、中栏↔右栏可拖宽、刷新后恢复、工作区本地树右键）与 §5.6（工作区接口全表，
+> 页面已直连服务端不再经托盘）、`Rez_pkg/l_tray.md` §2（托盘 `depot_local_*` 6 个网页动作：
+> 目录树 / 变更序号 / 在资源管理器打开 / 新建目录·文件 / 删除到回收站）。
+
 对象包：`rez-package-source/lugwit_baidu_netdisk/999.0`（999.0 源码即环境）。
 相关文档：`Rez-Docs/Depot库与工作区方案.md`（待评审方案）、`Rez-Docs/网盘版本库Depot设计.md`（已实现设计）、`Rez-Docs/Rez_pkg/百度云接口元数据实测.md`（md5 实测事实源）。
 
@@ -12,7 +18,7 @@
 | 任务 | 状态 | 交付物 / 证据 |
 |---|---|---|
 | T1 md5 权威化 | **实测后改判并落地** | `remote_meta()` / `meta_by_path()`；`ensure_blob` 上传后校验 size（+trusted md5）。**百度 md5 是混淆指纹，不能当权威**（见 T1 实测表） |
-| T2 上传字节不过服务器 | **部分已实现，待端到端核实** | WChat 侧已实现「相册直传 + 登录闸门（`/login` 页）+ `static/upload_direct.js?v=3` 拦截层 + 懒回源」；通用 Depot 客户端直传、真实手机/公网流量验收与凭据边界仍待核实。详见本节；细节见 `Rez_pkg/lugwit_baidu_netdisk.md` §14 与 §7。 |
+| T2 上传字节不过服务器 | **部分已实现，待端到端核实** | WChat 侧已实现「相册直传 + 登录闸门（`/login` 页）+ `static/upload_direct.js?v=4` 拦截层 + 懒回源」；通用 Depot 客户端直传、真实手机/公网流量验收与凭据边界仍待核实。详见本节；细节见 `Rez_pkg/lugwit_baidu_netdisk.md` §14 与 §7。<br>**2026-09-26 补**：① **下行**已全走百度 CDN 直链（缩略图 `max-age=604800` / 原图 dlink `max-age=259200`，含视频，PC 浏览器实测），服务器只发元数据；② **上行**直传仍只在 App 内（浏览器无原生层 → 回退服务端中转）；③ `upload_direct.js` 增加 `group` 转发（相册目标）故版本号 v=3 → **v=4**；④ 服务端中转那步不再整包进内存（`upload_file()` 已流式分片，峰值 ~4MB，见 §18）。 |
 | T3 l_wchat 纳管 | **工具已实现并验证** | `tools/depot_import_tree.py`；实测源 686 文件/66.8MB；已导入 motherhood 9 个（CL #241/#242） |
 | T4 manifest 优化 | **工具已实现并验证** | `tools/depot_manifest_gc.py`（保留策略 + `--verify` 抽样校验，实测 `CL #242: manifest=4 DB=4 缺=0 多=0 OK`）；`depot_manifest_verify.py` / `depot_manifest_replay.py` 2026-09-20 补齐（auth P7 灾备前置，回环实测：178 份清单 / 868 条版本 → 重建 SQL 覆盖全部、带 setval、apply 幂等；并检出库里既有漂移：**清单引用到的 blob 登记缺 71 条**） |
 | T5 blob GC | **工具已实现并验证** | `tools/depot_blob_gc.py`（dry-run 实测：登记行 16 / 无引用 0 / 盘面孤儿 0） |

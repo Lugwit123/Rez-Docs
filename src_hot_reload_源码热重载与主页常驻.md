@@ -167,7 +167,7 @@ l_WChat 的 `exclude_dirs=DEFAULT_EXCLUDE_DIRS+("wchat-android",)`。
 | lugwit_auth | lugwit_auth_server | 1027 | lugwit_auth.auth_server | helper（已收编）；**endpoint `/api/v1/auth/src_watch`**（nginx 前缀归属） |
 | lugwit_baidu_netdisk | baidu_netdisk_web | 1028 | lugwit_baidu_netdisk.web_server | helper（已收编）；`restart_exts` 含 `.html`（页面是 import 期烘死常量）；`owns_port=service_cli._is_ours`；endpoint `/api/src_watch` |
 | l_WChat | l_wchat_backend | 1234 | l_WChat.app（别名改 `python -m l_WChat.app`） | helper（已收编）；`exclude_dirs` 加 `wchat-android` |
-| l_model_hub | l_model_hub_server | 8462 | l_model_hub.server | helper；`keys.py` 写包内 `config.json`，**别进 restart_exts** |
+| l_model_hub | l_model_hub_server | 8462 | l_model_hub.server | helper；密钥 2026-09-26 起走 auth 中心存储（`keys.py` 不再写包内 `config.json`），`restart_exts` 维持默认 |
 | l_mindmap（目录 `l_mindmap_fasthtml`） | l_mindmap_server | 8100 | l_mindmap.server | helper；app 是 **FastHTML**；页面头部是 Python 常量 → 只监视 .py |
 | l_mindmap_mmd | l_mindmap_mmd_server | 8110 | l_mindmap_mmd.server | helper；Jinja 模板（auto_reload） |
 | l_notepad_server | l_notepad_api | 8765 | l_notepad_server.backend_server | helper；app 在 `create_app()` 里建 → 在那里 `mount`；数据在用户目录 |
@@ -261,7 +261,10 @@ def _resolve_src_watch(use_env: bool) -> str:
   `uvicorn.run(app, ...)` 单实例普通进程（启动前的 `ensure_port_free` 自清障保留）。
 - **`restart_exts=(".py", ".html")`**：本服务的页面不是 Jinja 模板，而是 import 期
   `_HTML = read_text()` 烘进来的常量 → **改 `.html` 也必须重启**（与主页/lugwit_auth
-  的 auto_reload 语义不同，别照抄）。
+  的 auto_reload 语义不同，别照抄）。**烘死的页面不止 `web_files.html`：`web_depot.html`
+  是 `_PAGE_DIR/*` 拼字符串（同进程内读盘），`web_help.html` 更是 `_HELP_HTML = read_text()`
+  的独立常量**——三个都靠 `.html` 触发重启才生效；热重载期间页面会短暂显示门户的
+  「服务正在热更新」页，属正常。
 - **开关接口 `/api/src_watch`（GET/POST）**：按 nginx 归属选前缀 —— `location /api/`
   归网盘(1028)，`/api/v1/` 归 auth，`/` 归主页。
 - **自重启链**：同 lugwit_auth（独立进程 `restart_self_cli` + `/F` 单杀不带 `/T` +
@@ -298,9 +301,10 @@ def _resolve_src_watch(use_env: bool) -> str:
   （**不能像网盘那样用 `/api/`**：nginx 的 `location /api/` 归百度网盘 1028。）
 - **监视范围**：`watch_root = src/l_WChat`，但 `exclude_dirs=DEFAULT_EXCLUDE_DIRS + ("wchat-android",)`
   —— `wchat-android/` 是安卓壳工程（`.html/.json/.js` 一大堆），不排除会让 Gradle/前端改动触发无关重启。
-- **踩点提醒**：`config.json` 就在 `watch_root` 里、且**是服务自己运行时写的**（`paths.USER_CONFIG_PATH`），
-  所以它只能"被监视"，**绝不能进 `restart_exts`/`extra_restart_names`**，否则写配置 → 重启 → 再写 = 死循环。
-  （实测它落在"非重启类改动"里；当前没传 `on_frontend_change`，等价于忽略。）
+- **踩点提醒（2026-09-26 已解决）**：原先 `config.json` 就在 `watch_root` 里、且**是服务自己运行时写的**
+  （旧 `paths.USER_CONFIG_PATH` 指向包源码目录），所以它只能"被监视"、绝不能进 `restart_exts`，否则
+  写配置 → 重启 → 再写 = 死循环。现在配置改落用户目录（`paths.CONFIG_PATH`，
+  `~/.lugwit/l_WChat/config.json`），`watch_root` 内不再有运行时写入的文件 —— 这个死循环隐患随之消失。
 - **托盘路径未带 `.dev_mod`**：`l_tray/Tray.py` 用 `["l_WChat", ".solo", ".ps"]` 启动 → 静态运行；
   要热重载走主页卡片（卡片 `run_cmd` 带 `.dev_mod`）或 `999.0/dev_restart.bat`（也是 `.dev_mod .solo`）。
 

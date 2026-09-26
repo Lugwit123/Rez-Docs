@@ -708,8 +708,12 @@ prefs 往返/profile 越权 403/新旧端点互见同一份数据/owner 域边�
    （指纹 `7ffa563119e0`）加密的，而生产 auth 用**它自己的** DPAPI `master.key`
    （指纹 `b8213eb2cb64`）→ 解不开 → fail-closed 503。
 2. **dev / prod 共用同一个 PG**：本机开发实例 `lugwit_auth.auth_server`（`127.0.0.1:1027`）
-   的 `DEFAULT_DB_URL` 硬编码指向**生产库**（`config.py:37`），于是开发实例用本机密钥
+   的库连接串指向**生产库**（原 `config.py:37` 硬编码），于是开发实例用本机密钥
    把行写进了生产库；生产实例拿另一把密钥 → 读不了。**这是最该根治的一条。**
+   > **2026-09-26 已收口（部分）**：源码里**不再硬编码**库密码 —— 改为 env `LUGWIT_AUTH_DB_URL`
+   > \> `~/.lugwit/lugwit_auth/db.json`（0600，`{"url": …}`，由 `config.require_db_url()` 解析并
+   > fail-closed），`l_qframelesswindow/_auth_client/config.py` 里那份副本同步清掉。
+   > **但 dev 仍指生产库**（当前 db.json 就是生产串）——"dev 独立库"这步没做，仍是待办。
 
 **即时修复**：把生产 `master.key` 对齐为数据密钥（备份原文件后写 `RAW1\n<key>`），
 生产 auth 热重载（touch 源文件触发 `SrcWatchService`）后 503 消失、12 条账号恢复。
@@ -815,6 +819,17 @@ wuwor lugwit_auth -- lugwit_auth_rotate_master_key --apply
 **硬规则（防复发）**：除 `lugwit_auth` 外，全仓**禁止** `import lugwit_auth.secret_store`、
 禁止自造 Fernet/主密钥。共享秘密一律走 auth 的 HTTP（`/secrets` 或 `/crypto`）。
 唯一例外：**纯本机、per-user 的缓存**（如 `l_notepad_client` 的本地 DPAPI 文件）——那是另一信任域。
+
+**P4.6 落地进展（2026-09-26）**：第一个真实消费方接进来了 —— 模型侧密钥不再落本机文件。
+
+| 项 | 落点 |
+|---|---|
+| 命名空间 | `model_hub`（13 个 key：各厂商 `*_api_key`、`volcengine_access/secret`、`wuzu_auth`、`baidu_vision(_secret)`） |
+| 写入者 | `l_model_hub`（`auth_secrets.py`：admin01 登录 → `/api/v1/secrets`；token 只在内存）、网盘首页凭证卡（经 hub `POST /keys`） |
+| 读取者 | hub 自己（`keys.py`，带 60s TTL 缓存）；同机消费方走 hub 的 `GET /v1/keys[/{provider}]`（**回环匿名**，handler 核 `client.host`，明文不跨机）；`l_agent_chat`、`lugwit_baidu_netdisk/vision.py` 已改走它 |
+| 服务凭据 | `~/.lugwit/l_model_hub/auth.json`（0600，`{"username","password"}`）；env `LUGWIT_AUTH_USER`/`LUGWIT_AUTH_PASSWORD` 可覆盖 |
+| 迁移 | `l_model_hub/tools/migrate_keys_to_auth.py`（默认 dry-run，`--apply` 才动，校验通过后删明文文件）；实测 12 行入库、`dek_wrapped` 全在、`kek_id` 与本机 KEK 一致 |
+| 未做 | `l_WChat` 自己的 `config.json` 仍存一份厂商 key（文件已搬出源码树，但**值与中心存储是两份**，需按 P4.6 收敛）；PG 连接串已挪到 `db.json`，但 dev 仍指生产库 |
 
 **实测**：本机/生产 `/health` 均返回 `kek_id=7ffa563119e0`；`/crypto/wrap → unwrap` 往返一致；
 `/secrets/{ns}` 可读；严格模式单测（无 key 拒绝生成 / 显式放行才生成 / 有 key 正常读）全绿。

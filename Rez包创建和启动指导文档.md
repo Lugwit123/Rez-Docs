@@ -491,6 +491,20 @@ wuwor l_tray -- st
 wuwor l_tray -- start_tray
 ```
 
+> ⚠️ **只对"卡片外的包"直启**（库 / GUI / 工具 / 数据库 / 一次性脚本）。
+> 如果目标是**主页卡片里的服务**（`l_log_backend`、`l_wchat_backend`、`chatroom_backend`、
+> `l_notepad_api`、`homepage_start`…），**不要**用 `wuwor` 直启 —— 会绕过重启锁 / 常驻守护 /
+> 重启历史，卡片状态一片空白。走主页卡片，或用卡片 API：
+>
+> ```bat
+> curl http://127.0.0.1:8090/api/v1/services/hosted
+> curl "http://127.0.0.1:8090/api/v1/services/status?target=l_wchat_backend"
+> curl -X POST "http://127.0.0.1:8090/api/v1/services/<卡片名>/restart?trigger=cli"
+> ```
+>
+> 豁免：`l_homepage` 自身（控制面，鸡生蛋）、`.soloignore` 排障、用户明确要求。
+> 规划中的统一入口 `wuwo svc ...` 见 §17.5。
+
 ### 调用 Python 模块
 
 ```bat
@@ -894,3 +908,21 @@ def _http_json(method, path, body=None, token=""):
 | 5432 | PostgreSQL（chatroom 库） |
 
 > 端口通过环境变量可覆盖（如 `LUGWIT_AUTH_PORT`），默认值在各自 `config.py` / 启动脚本。
+
+### 17.5 服务卡片 vs 普通包：启动入口别搞混
+
+| | 卡片外的包 | 主页卡片里的服务 |
+|---|---|---|
+| 例子 | `l_qt_wgt_lib`、`l_muse_backup_viewer`、`l_tray`、`postgresql` | `l_log_backend`、`l_wchat_backend`、`chatroom_backend`、`l_notepad_api`、`homepage_start`… |
+| 怎么起 | `wuwor <包> [修饰符] -- <别名>` | 主页卡片按钮，或卡片 API（现行为 `POST /api/v1/services/<卡片名>/<op>?trigger=cli`；`wuwo svc ...` 为规划中的统一入口） |
+| 谁来管 | 调用方自己（起完就不管） | 主页 —— 重启锁、常驻守护（watchdog）、重启历史、日志、兜底页都归它 |
+
+**为什么卡片服务不能直启**：`wuwor` 直启会绕过重启锁（`%TEMP%/lugwit_hotreload/<alias>.lock`）、
+常驻守护与重启历史；热更/守护各自以为"没人动手"，可能同时拉两个实例，卡片状态与日志归属也会乱。
+
+**怎么查一张卡属于哪边**：`GET http://127.0.0.1:8090/api/v1/services/hosted` →
+`aliases` / `packages` 是卡片服务的键（`?status=1` 附在线状态，`?target=<别名>` 收窄到单卡）。
+
+**豁免（允许直启）**：① `l_homepage` 自身（控制面，鸡生蛋）：
+`wuwor l_homepage .dev_mod .solo -- homepage_start`；② `.soloignore` 的"强制起第二实例"排障；
+③ 用户明确要求的排障直启。完整设计与待办见 `Rez_pkg/服务托管与统一启动入口_计划.md`。

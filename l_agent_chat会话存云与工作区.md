@@ -21,6 +21,9 @@
 - [x] **`maps` 形状抄到了**：`[{depot_path, local_path, exclude}]`，库根 ↔ local_root 根
 - [x] **depot 路径平铺**：`<库>/<rel>`，不带 `<user>` 段（由 `sync_plan` 实测判定）
 - [x] **`local_root` = 存储根下的 `.l_agent_ws`**（不是 agent 的活动根）
+- [x] **工作区本体换成 `.code-workspace`**（2026-09-26）：agent 自己的工作区 = 一份与 VS Code 同格式的
+      `folders` 列表（`folders[0]` = 基准）；旧的 `<锚点>/.l_agent_ws/config.json`（`roots`/`active_root`）
+      不再读写、不做迁移，运行期偏好进 `settings.json` 的内部键 —— 详见 §15
 - [x] **提交只推变化项**（待推清单与「N 项待提交」同源）+ `force` 全量重推
 - [x] **提交进度（SSE）**：`GET /api/depot/push/stream`，逐文件一帧；实测帧实时到达
 - [x] **拉取只拉需要拉的 + 进度（SSE）**：`GET /api/depot/pull/stream`；`force` 全量拉
@@ -491,3 +494,26 @@ GET /api/session/cloud  →  {"entries": [{"id","rel","rev","size","locked_by"}]
 
 **检查清单提醒**：以后再看到 `⚠` 一直是 `⚠`、但 rev 在涨 —— 先怀疑服务端 dedup 的
 "登记行 vs 网盘文件"不一致，别在客户端反复点。
+
+## 15. 工作区本体：一份 `.code-workspace`（2026-09-26）
+
+agent 自己的「工作区」不再用私有格式，**直接就是一份 `.code-workspace`**（与 VS Code 同格式）——
+同一份文件也能给 VS Code 打开，两边看到的文件夹与顺序一致。
+
+| 项 | 现在 |
+|----|------|
+| 工作区文件 | 默认 `<REZ_ROOTS[0]>/l_rez_src_ws.code-workspace`；`AGENT_CHAT_WORKSPACE_FILE` > 设置 `workspace_file` 可覆盖 |
+| 文件内容 | 只写 `folders`（每项 `{path, name?}`：绝对，或**相对文件所在目录** —— 与 VS Code 同规则；同盘写相对、跨盘写绝对）；`settings` / `extensions` / `launch` / `tasks` 原样保留，agent 不增删 |
+| 基准（相对路径 / shell cwd） | **`folders[0]`**：切基准 = 把该项移到数组首位（对 VS Code 侧零副作用） |
+| 运行期偏好 | `<锚点>/.l_agent_ws/settings.json` 的内部键：`workspace_source` / `vscode_root` / `workspace_file` / `storage_root`（默认 = 锚点） |
+| 旧格式 | `<锚点>/.l_agent_ws/config.json` 的 `roots` / `active_root`、`~/.lugwit/agent_chat_workspace.json`、`<根>/.agent_chat/` —— **不再读写、不做迁移** |
+
+- **`save_settings()` 改成合并写**：设置页保存的是 `editable_keys()` 那一组，整体覆盖会把上面那几个
+  内部键顺手抹掉；`config._INTERNAL_KEYS` 另外保证体检（`settings_warnings`）不把它们报成「未知键」。
+- **接口兼容**：`/api/workspace` 的 `roots` / `active_root` 形状不变（前端不用改），新增 `workspace_file`
+  字段；注入的多根说明与「其余文件夹必须绝对路径」照旧。
+- **部署**：远端若没有那份工作区文件，`folders` 为空 → 视野根会退回存储根（锚点）；给远端补一份
+  （`folders` 按它原有的 roots 写）即可 —— `push_pkg_to_remote.py` 只推包内文件、不覆盖它。
+- 测试：`tests/test_workspace_file.py`（10 例：默认位置 / 相对路径解析 / `folders[0]` 基准 / 写回保留
+  未知键与显式 `name` / 切基准与删除的顺序语义 / 不再产出 config.json）；测试隔离用
+  `AGENT_CHAT_WORKSPACE_FILE`（否则会读写真仓库里那份，见 `tests/agent_server.py`）。

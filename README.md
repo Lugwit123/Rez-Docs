@@ -26,11 +26,12 @@
 |------|-----------|
 | [l_script_editor.md](Rez_pkg/l_script_editor.md) | 脚本编辑器组件库:代码编辑/补全/会话管理 + 8764 HTTP 远程执行服务 + `/ui/*` Qt UI 自动化端点 + **端口固定 / 服务发现(`~/.Lugwit/run/<service>.json`) / IPC 命名管道** |
 | [服务发现与IPC.md](Rez_pkg/服务发现与IPC.md) | **本机怎么找到并调用服务**:发现文件格式与 CLI、命名管道(带端口+authkey)、当前端口分配表、页面走 TCP/脚本走 IPC 的双栈理由 |
+| [l_tray.md](Rez_pkg/l_tray.md) | **托盘（本机能力中枢）**：`19527` ExecServer 的 `/health`·`/run`·`/register`、`action_registry` 与 `web_actions` 白名单（当前 22 个，含 `depot_local_*` 6 个：目录树/变更序号/在资源管理器打开/新建目录·文件/删除到回收站）、托盘登录态与 Origin 限制、`requires`（watchdog / winshell） |
 | [l_notepad_server.md](Rez_pkg/l_notepad_server.md) | L Notepad 服务端(8765):Web UI、REST API、多知识库(`/web/kb/{name}`),认证经 lugwit_auth |
 | [l_notepad_client.md](Rez_pkg/l_notepad_client.md) | **桌面客户端(排错向)**：启动方式(含 alias detach 坑)、日志位置、静默崩溃分层排查(Python 异常 vs Qt 原生崩溃)、事件查看器/WER dump 抓现场；**2026-09-23 修复**两处 Python 异常 + faulthandler 句柄 |
 | [l_notepad_搜索接口使用文档.md](Rez_pkg/l_notepad_搜索接口使用文档.md) | **搜索接口怎么用**:`/api/search` 与 `/api/kb/{kb}/search` 参数/返回字段/打分公式、查询语法(引号短语/多字 OR 召回)、`lex/hybrid/sem` 三模式、向量语义(模型切换/阈值/重嵌)、索引维护与权限模型、已知坑 |
 | [l_homepage.md](Rez_pkg/l_homepage.md) | 主页开发笔记：`/homepage/deps` 依赖拓扑、卡片/局部刷新、日志窗口。**2026-09-23 增补**：常驻/热更新诊断页、故障率（按触发来源）、日志查看器「加载更早 + 历史日期」、兜底页三态、卡片 `window.open`、语法体检 CLI。**2026-09-24 增补**：卡片 Git 同步按钮（⬇ 拉取 / ⬆ 推送，含冲突时强制拉取）、复制命令按钮移到「编辑」旁、热启动即打开日志窗口 |
-| [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | **使用手册**：Depot 与网盘页面、接口、操作语义；实现模型与计划分别链接主文档/计划台账 |
+| [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | **使用手册**：Depot 与网盘页面、接口、操作语义；实现模型与计划分别链接主文档/计划台账。**2026-09-26 增补**：页面三栏 + 标签可拖动/可跨面板/条末 `＋`（§6.2、§17）、预览/编辑从底栏挪进右栏、中栏↔右栏可拖宽度、**§5.6 工作区与库接口全表**（页面直连，不再经托盘）、工作区本地树右键（打开/新建/删除，见 §6.2 + `Rez_pkg/l_tray.md`）、**§20 越权与内存加固（P0）**（lock/unlock force/changes·change·tree 的 P6 补判、两个上传端点改流式、托盘 realpath/空 token/open 白名单） |
 | [lugwit_baidu_netdisk.md §14](Rez_pkg/lugwit_baidu_netdisk.md) | **客户端直传 / 安卓壳**：`POST /api/upload/prepare|finish`、原生 HTTP 通道、登录 + HTTPS 闸门 |
 | [lugwit_baidu_netdisk.md §16](Rez_pkg/lugwit_baidu_netdisk.md) | **blob 去重必须先验存**：登记行还在、网盘文件没了 → 提交只涨 rev 不写 blob，重传永远修不好（2026-09-22 修复） |
 
@@ -38,7 +39,7 @@
 
 | 文档 | 一句话摘要 |
 |------|-----------|
-| [l_agent_chat使用指南.md](l_agent_chat使用指南.md) | 本地 AI 编码 Agent 聊天服务:FastAPI Web UI + SSE 流式对话,OpenAI 兼容接口(默认 DeepSeek)；含**输入框 `/` 命令与 `@` 文件补全**（两版 UI 同源，附新版实现三坑）；**2026-09-24 增补**：三档**权限模式**（default/allow_all/autopilot，与对话模式正交）、**终端沙盒化**（仅 Windows，AppContainer）、**提示词优化**（独立小模型，默认 `glm-4-flash`） |
+| [l_agent_chat使用指南.md](l_agent_chat使用指南.md) | 本地 AI 编码 Agent 聊天服务:FastAPI Web UI + SSE 流式对话,OpenAI 兼容接口(默认 DeepSeek)；含**输入框 `/` 命令与 `@` 文件补全**（两版 UI 同源，附新版实现三坑）；**2026-09-24 增补**：三档**权限模式**（default/allow_all/autopilot，与对话模式正交）、**终端沙盒化**（仅 Windows，AppContainer）、**提示词优化**（独立小模型，默认 `glm-4-flash`）；**2026-09-26 增补**：**MCP 市场**（环境页 → MCP 服务，默认源官方 MCP Registry，HTTP 连接复用 + 磁盘缓存/后台刷新）、热重载规则订正（单进程，改 `.py` 需手动重启） |
 | [l_agent_tool使用指南.md](l_agent_tool使用指南.md) | Agent 工具库:默认工具集(文件/Git/HTTP/远程执行等)与自定义注册,供脚本编辑器等复用 |
 
 ## 四、架构与设计
@@ -46,16 +47,19 @@
 | 文档 | 一句话摘要 |
 |------|-----------|
 | [Nginx反向代理机制.md](Nginx反向代理机制.md) | **网络与路由主文档**：统一入口、路由表、前缀剥离、WebSocket、排错 |
+| [密钥落点与红线.md](密钥落点与红线.md) | **密钥治理速查（2026-09-26 实测）**：三条铁律 / 落点一览（哪是 PG 密文、哪是 DPAPI 包裹、哪是派生 token）/ 中心密钥存储读写链路（消费方 → hub `/v1/keys` → auth `/api/v1/secrets` → PG + KEK）/ 优先级口径 / 禁止清单与允许例外 / 自检排错命令 / 已知欠账（dev 库、5432、l_WChat 双份 key、depot 无密钥扫描…） |
 | [Rez_pkg/HTTPS证书与域名申请总结.md](Rez_pkg/HTTPS证书与域名申请总结.md) | **HTTPS 主文档**：IP 自签为主（App 内置 CA）；DuckDNS / Let's Encrypt 路线已停用；443 SNI、续期与自愈 |
 | [网盘版本库Depot设计.md](网盘版本库Depot设计.md) | **已实现设计主文档**：按库隔离 blob、元数据与 Depot 工作流 |
 | [网盘版本库Depot演进计划.md](网盘版本库Depot演进计划.md) | **唯一计划台账**：T1–T6、T2 直传部分已实现且待端到端核实（登录闸门 + `/login` 页 + `upload_direct.js` 拦截层 + 懒回源） |
 | [Depot库与工作区方案.md](Depot库与工作区方案.md) | **未实施/待评审方案**：P4 Client View 与工作区候选设计，不能当现状 |
 | [标题栏提供的服务.md](标题栏提供的服务.md) | 标题栏登录入口、服务器设置、脚本编辑器接入；工具细节链接独立指南 |
 | [宝妈笔记App架构与发布.md](宝妈笔记App架构与发布.md) | App 架构/发布历史记录；其中 HTTP、cleartext、`--reload` 内容需核实，按现行链接执行 |
+| [相册功能与数据模型.md](相册功能与数据模型.md) | **相册主文档（2026-09-26）**：相册=容器（手动建、不再自动命名）/ 视图=数据模型（`_views.json` v2 + 权限位，`time·age·album·ext·size·tag·trash` + and/or/not，内置 `月龄`/`回收站` 均可编辑且要密码） / **删相册→照片挪进保留相册「其他」**（自动新建、不能删）/ 回收站（云盘 + depot `opera=move`）/ 视频（≤500MB 直传、>500MB 客户端实时压缩带进度、网格内联播放）/ 百度直链与浏览器缓存管理 / 三处落点与索引字段 / **AI 打标（百度智能云识图，手动批量；AK/SK 走 auth 中心密钥存储）** + **标签可见/可手动增删（§7.1）** / 已知取舍与排错速查 |
 | [ComfyUI调试经验.md](ComfyUI调试经验.md) | ComfyUI 前端调试案例集:节点 flag 图标不显示等 DOM/CSS 排查过程与修复 |
 | [CodeMaker能力清单与移植评估.md](CodeMaker能力清单与移植评估.md) | **外部组件调研 + 移植候选**：从 `codemaker-26.9.4` 捆绑 Agent 挖出的治理层行为（规则注入/ignore/hooks/MCP/spec 解析）与 `l_agent_chat` 的差距对照；**非现状、非已批准计划** |
 | [l_agent_chat会话存云与工作区.md](l_agent_chat会话存云与工作区.md) | **未完成改造的交接文档**：会话改为云为真源（P4 式 depot ↔ workspace）、不一致用状态显示；已完成部分 + 确切下一步 + 服务端 P4 API 全表；**§13 云端会话在侧栏可见 + 按需拉取（已实现）**、**§14 `⚠ 云端内容缺失` 重传修不好的服务端去重缺陷（已修）** |
 | [l_log会话上云计划.md](l_log会话上云计划.md) | **计划文档（未实施）**：l_log 的 AI 会话如何上云 —— 落点 `<根>/ai_chats/` → 库 `/l_log`；照抄 l_agent_chat 会话存储的 7 条硬事实；分 8 步实施与验收 |
+| [Rez_pkg/服务托管与统一启动入口_计划.md](Rez_pkg/服务托管与统一启动入口_计划.md) | **计划文档（未实施，2026-09-26）**：服务生命周期收敛到主页卡片这一个控制面；新增 `wuwo svc ...`（不依赖 rez 环境、薄 HTTP 客户端，含 `list/status/start/stop/restart/reload/log/open`）作为 AI 与脚本的唯一入口；卡片数据**实时向主页要**（新端点 `GET /api/v1/services/hosted`，可选 `?status=1` / `?target=` / `?log=N`）；对"绕过入口直启"**只提示不阻断**（`L_HOSTED_BY` 标记 + `.unmanaged` 逃生口），并附误杀回归验收 |
 
 ---
 

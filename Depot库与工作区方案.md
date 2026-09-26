@@ -108,15 +108,19 @@ root_of_path(dpath)       = "/" + dpath 首段                           # "库"
 
 `web_depot.html` 里与工作区相关的现有代码：
 
-| 部位 | DOM / 变量 | 行号 |
+> ⚠️ **这张表是 2026-09 的方案快照**：功能都已落地（工作区接口见 `Rez_pkg/lugwit_baidu_netdisk.md` §5.6，
+> 页面布局与交互见同文 §6），`行号` 一列随页面多次改版**已经漂移**，只能当"长什么样"的索引看，
+> 定位代码请按 DOM / 变量名搜。左树那对标签仍在（`#tabDepot` / `#tabWorkspace`，唯一不参与拖动的标签组）。
+
+| 部位 | DOM / 变量 | 行号（快照） |
 |------|-----------|------|
 | 左栏标签 | `#tabDepot` / `#tabWorkspace` | 210 / 211 |
-| 左栏工作区下拉 | `#wsSelect` | 217 |
+| 左栏工作区下拉 | `#wsdd`（原 `#wsSelect`） | 217 |
 | 左栏工作区树容器 | `#wsBody` | 223 |
-| 中栏"工作区配置" tab | `#tabWsCfg` | 232 |
+| 中栏"工作区配置" tab | `#tabWsCfg`（现可拖到别的面板） | 232 |
 | 中栏配置面板 | `#bodyWorkspace`（`#wsListBox` 257 / `#wsNameInput` 263 / `#wsRootInput` 268） | 254–275 |
 | 状态变量 | `wsList` / `wsCur` / `wsTree` / `wsOpen` | 343 |
-| 持久化 | localStorage `depot_ws_v2`（兼容旧 `depot_ws_root`） | 344–358 |
+| 持久化 | ~~localStorage `depot_ws_v2`~~ → **已改为服务端**：当前工作区存 `POST /api/depot/workspace/select`，页面视图态存 `depot_ui` | 344–358 |
 | 函数 | `wsRoot()` `saveWs()` / `refreshWsSelect()` / `wsTreeNode()` `renderWorkspace()` `loadWorkspace()` / `showWorkspaceTab()` `openWsPanel()` `closeWsPanel()` / `renderWsPanel()` `saveWsForm()` `addWs()` `pickWsRoot()` | 355/356 · 943 · 969/1004/1018 · 1032/1038/1041 · 1044/1076/1092/1100 |
 
 - 本地目录树靠 `window.lugwitBridge.treeDir(root, 3, 2000)` 现取（1024）
@@ -209,11 +213,16 @@ P4 的 View 是若干行 `//depot/...  //client/...`。本方案分两级：
 **二级（完整）**：显式映射表，支持子目录重挂与排除
 
 ```text
-depot_path          local_path
-/l_wchat/成长记录    .                       # 库的子目录 → local_root 下同名
-/l_wchat/相册        photos                  # → local_root/photos
--/l_wchat/缓存       -                       # 前置 - 表示排除（不参与检出/提交）
+depot_path            local_path
+/l_wchat/成长记录      .                       # 库的子目录 → local_root 下同名
+/l_wchat/album/宝宝 2 个月  photos            # 相册按"相册名"分子目录（2026-09-26 定：页面上自建）
+-/l_wchat/缓存         -                       # 前置 - 表示排除（不参与检出/提交）
 ```
+
+> 相册的真实落点约定（2026-09-26）：**depot** = `/l_wchat/album/<相册名>/<日期_原名>`，
+> **云盘** = `/apps/Lugwit/l_wchat/album/<相册名>/<日期_原名>`。相册名由用户在相册页自建
+> （不再按日期自动命名；月龄归类改由"视图条件"表达，见《相册功能与数据模型.md》）。
+> 删相册只把照片标进回收站并 `opera=move` 挪到 `/l_wchat/album/回收站`，**不搬云端文件内容**。
 
 ### 3.4 与 P4 对照
 
@@ -435,8 +444,8 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 
 | 部位 | 现状 | 改动 |
 |------|------|------|
-| `wsList/wsCur`（343） | localStorage `depot_ws_v2` | 改为启动时 `GET /api/depot/workspace`；本地 localStorage 仅作缓存 |
-| `saveWs()`（356） | 只写 localStorage | 改调 `POST /api/depot/workspace` |
+| `wsList/wsCur`（343） | localStorage `depot_ws_v2` | ✅ 已改为 `GET /api/depot/workspace`（**2026-09-26：页面直连**，不再经托盘；见 `网盘版本库Depot设计.md` §6.2） |
+| `saveWs()`（356） | 只写 localStorage | ✅ 已改调 `POST /api/depot/workspace` |
 | 初始化（344–358） | 读 localStorage | 加**一次性导入**：本地有、后端没有 → 提示"是否导入为后端工作区" |
 | `renderWsPanel/saveWsForm/addWs()`（1044/1076/1092） | 纯本地 | 接后端；加"库"下拉（来自 `GET /api/depot/library`）与 `mode` 展示 |
 | `loadWorkspace()`（1018） | `bridge.treeDir` 拉本地树 | 叠加 per-file 状态角标：`have` 落后/`pending`/`out_of_date`（复用 `statusIcons()` 705 风格） |
@@ -444,7 +453,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 | 工具栏 | 已有 刷新/获取最新/提交/签出/添加/删除/撤销 | 「获取最新」接 `workspace/{id}/sync_plan` + 下载 + `sync_done`；「添加/签出/提交」带上 `ws` 参数 |
 | 中栏 | `Files / Pending / Submitted` | `Files` 增加"工作区视角"角标列 |
 | 新面板 | 无 | 工作区配置里加"映射行"编辑（depot_path / local_path / 排除） |
-| 浏览器降级 | `HAS_BRIDGE`（337） | 无 bridge 时工作区只读（不能扫本地），给出明确提示 |
+| 浏览器降级 | `HAS_BRIDGE`（337） | ✅ 已实现（2026-09-26）：无 bridge 时本地目录树改由托盘 `depot_local_tree` 读（root 限工作区 `local_root`），并用 `depot_local_version` 轮询变更、变了才重拉；托盘也不在才给明确提示 |
 
 ## 8. 架构修改清单（按文件）
 

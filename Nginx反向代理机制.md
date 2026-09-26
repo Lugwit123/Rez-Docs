@@ -79,9 +79,14 @@
 ```nginx
 http {
     include       mime.types;
-    client_max_body_size 100g;      # 网盘大文件直传，单文件可能 10G
-    proxy_read_timeout   3600s;     # 大文件/WS 长连接超时拉起
-    absolute_redirect     off;      # 相对 302 不被拼成 http://<IP>:8080/...（见 §4 注）
+    # 大文件上传：相册视频最大 500MB（超 500MB 由客户端压缩）；网盘直传单文件可能 10G
+    client_max_body_size   100g;
+    client_body_buffer_size 16m;
+    client_body_timeout    3600s;
+    send_timeout           3600s;
+    proxy_read_timeout     3600s;     # 大文件/WS 长连接超时拉起
+    proxy_send_timeout     3600s;
+    absolute_redirect      off;       # 相对 302 不被拼成 http://<IP>:8080/...（见 §4 注）
 
     # ===== 上游（后端服务都在本机）=====
     upstream lugwit_auth_backend          { server 127.0.0.1:1027; keepalive 16; }
@@ -182,6 +187,12 @@ location /docs/                   { root html; autoindex on; }
 ```
 
 > ⚠️ `absolute_redirect off;` **必须开**（2026-09-16 实测）：否则 nginx 会用绝对重定向把 `https://<IP>/` 302 成 `http://<IP>:8080/homepage`，而 8080 只绑回环 → 首页对外打不开。该指令放在 `http{}` 级，443 两个 server 块与 8080 调试口一起生效。
+
+> 📦 **大文件上传在 location 上再写一遍**（2026-09-26）：`/l_wchat/` 与 `/baidu/` 两个 location 各自显式带
+> `client_max_body_size 100g;` + **`proxy_request_buffering off;`**。前者防将来 http 级被改；后者让 nginx
+> **边收边转**——默认行为是先把整份 body 落到 `client_body_temp` 再转发，500MB 视频等于多一份磁盘 I/O 与首字节延迟。
+> 相册视频（≤500MB 原样上传、>500MB 客户端实时压缩）与网盘大文件直传都吃这两条。
+> 验证：12MB mp4 走 `http://127.0.0.1:8080/l_wchat/api/album/upload` → 200，`size` 与实际字节一致。
 
 ### 4.1 核心机制：`proxy_pass` 带不带 URI 决定剥不剥前缀
 

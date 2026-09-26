@@ -198,6 +198,24 @@ curl -s "http://127.0.0.1:8765/api/search/route?q=%E4%B8%80%E6%AE%B5%E5%A4%8D%E6
 | `GET /api/search/code/file?root=&file=` | 登录 | 只读查看（`root` = 库标签，代码库根与知识库工作区都可）；路径限定在库根内 |
 | `GET /web/code?root=&file=&hl=` | 登录 | 网页只读查看页：行号 + `hl`（逗号分隔词）高亮，超 `5000` 行只渲染前 5000 行 |
 
+**代码块的「上下文头」**（2026-09-26）：每个代码文件的索引文本前会拼一段头
+（`search_index.code_head`）= `[包名] 相对路径` + `符号: 顶级 def/class 清单` + 模块首行说明。
+`.py` 用标准库 `ast` 抽取（**零新依赖**），其它语言按行首 `def/class/function/…` 正则兜。
+- 检索侧写进 `search_fts.title` 列（bm25 权重 6），向量侧 `search_vec.embed_doc` 给**每个块**冠头
+- 只对"查询里提到包名/符号名"的场景有效；实测 8 条口语症状查询里名次**逐条不变**（没人提名字）
+- 想单独关掉做对照：进程内 `search_index.code_head = lambda *a: ""`（`title` 会退回 `rel`），别改数据目录
+
+**代码块的切块边界按函数/类**（2026-09-26）：向量侧切块从"空行 + 字符窗"改成
+`search_index.code_symbol_spans()`——`ast` 拿顶层 `def/class` 的精确行号，**一块 = 一个符号**，
+另加模块头（docstring/import/常量）与尾部残留两块。这样"这个函数怎么实现"才可能命中那个函数，
+而不是"整个文件相关"。非符号区（常是常量/内嵌资源，如 `ui.py` 开头）细分只留前 `_CODE_REGION_CHUNKS=3` 块，
+免得碎片占满 `MAX_CHUNKS_PER_DOC` 把真正的函数块顶掉；非 Python 文件 `ast` 解不出 → 自动退回普通分块。
+⚠️ 改了切块逻辑后**必须重嵌**该库的向量：`vec_docs` 只比 `size/mtime/rev/model`，**看不出切块规则变了**
+（实测踩过：改完只有重嵌过的库生效，另一个库 133 篇还是旧的字符窗块）。
+现在这条已经**自动化**：`search_vec.CHUNKER_REV` 持久化在 `app_settings.vec_chunker_rev`，
+与当前常量不一致时 `refresh()` 会**清空 vec 表全量重嵌**并置 `embed_state.rechunked`。
+→ **动了切块或块头规则，就把 `CHUNKER_REV` 加一**，别自己删表。`stats.vec.chunker_rev` 可以看到当前值。
+
 ```bash
 # 看有哪些本机库、各自索引了多少
 curl -s "http://127.0.0.1:8765/api/search/index_libs"
@@ -214,14 +232,25 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 - **参与向量语义（2026-09-25 起）**：代码库文件按本机文件内容嵌入（键 `code:<label>:<rel>`，与笔记/知识库共用分块与模型），所以"口语症状"（"程序卡很久"）也能语义召回代码（实测 `vec≈0.63`）；单篇嵌入失败只跳过并计数（`_EMBED_RETRY_MAX=3` 后放弃），不阻塞其余文档。
 - **知识库工作区为什么不走归档**：`.py` 进 depot 会连带体积/配额问题，且自动上传与"手动创建索引"的预期相反。工作区走本机索引后，`workspace_sync` 的上传白名单（`WORKSPACE_EXTS`）仍是文档类型，**`.py` 只进本地索引、不会被动上传**；代价是工作区索引需手动重建（手动全量重建也会带上它们）。
 
-### 1.6 「要搜索哪些包」（rez 源码包，2026-09-25 新增）
+### 1.6 「要搜索哪些包」（本机库勾选，2026-09-25 新增）
 
-搜索页可勾选「要搜索哪些包」（`rez-package-source` 下带 `package.py` 的目录，本机 54 个），
-只在这些包里搜代码；笔记与知识库不受勾选影响。
+搜索页可勾选「要搜索哪些包」= **全部本机库的并集**（本机实测 54 项）：
+
+| `kind` | 是什么 | 来源 |
+|--------|--------|------|
+| `code` | **代码库根** | `code_roots`（如 `l_notepad_client`）——TTL 自动刷新 |
+| `pkg` | **rez 源码包** | 货架 `L_NOTEPAD_PKG_ROOT` 下带 `package.py` 的一级目录（53 个） |
+| `kbws` | 知识库工作区 | 知识库页配的工作区目录 |
+
+勾选后只在这些库里搜代码；笔记与知识库**不受勾选影响**。
+
+> 同一目录只登记一项（代码库根优先）——`l_notepad_client` 既是货架里的包、又配成了代码库根，
+> 所以它显示为「代码库根」。**早期版本只列 `pkg`，导致它不在列表里**：勾了别的包时它的命中
+> 会被 `packages` 过滤掉却勾不回来（2026-09-25 已修：列表改成全部本机库）。
 
 | 端点 | 权限 | 说明 |
 |------|------|------|
-| `GET /api/search/code_packages` | 登录 | `root`（货架目录）+ `packages[]`（`label/root/exists/docs/indexed/scan`） |
+| `GET /api/search/code_packages` | 登录 | `root`（货架目录）+ `packages[]`（`label/kind/root/exists/docs/indexed/scan`） |
 | `GET /api/search?packages=a,b` | 登录 | 只保留 `source=code` 且 `kb_name ∈ {a,b}` 的命中 |
 
 - **货架位置**：`L_NOTEPAD_PKG_ROOT`（`package.py` 里按 `{root}/../../../rez-package-source` 给，即 `<trayapp>/rez-package-source`）；
@@ -397,6 +426,63 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 > 连不上 / 超时一律降级回融合排序（`rerank.used=false` + `reason`），不报错、不返回空；失败 3 次进入 60s 冷却。
 
+### 5.2 同义词扩展文件（口语 → 检索用词，2026-09-26）
+
+口语 query 搜不到的关键往往是"词不对"（用户说「卡住」，文档写「无响应/阻塞」）。扩展分两层：
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| 内置 | `search_index._SYNONYMS` | 手写 8 条（`卡↔卡顿/卡死/阻塞`、`慢↔性能/耗时`…） |
+| 扩展 | 数据目录 `synonyms_extra.json` | `{"口语词": ["该一起搜的词", ...]}`，按 mtime 热加载；由 `tools/jev_distill.py` 蒸馏产出 |
+
+```json
+{ "死住": ["无响应", "卡死"], "没反应": ["无响应", "阻塞"], "卡很久": ["卡顿", "阻塞", "hang"] }
+```
+
+- 生效范围：**召回层**（`route_terms` 的同义扩展），不参与打分；改文件立即生效，运行时零外网依赖。
+- 产出方式（**本地 Jev-Style 决策模型，推荐**；无需注册、无需 key）：
+  ```bash
+  # 1) 模型：chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF（0.8B/Q8_0 774MB，含中文）
+  #    放 D:\Tools\llama.cpp\models\，用 D:\Tools\llama.cpp\start_decision.bat 起（端口 11436）
+  # 2) 蒸馏（判决位读法，0.2s/次；8 并发）
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.jev_distill --provider local --write --workers 8
+  ```
+  **关键：别用 chat 让它"回答 A/B"**——官方 `readout_config.json` 规定的是**判决位读法**
+  （`template=macjev-render-v1`）：提示骨架
+  `State:\n<state>\n\nQuestion [noul]: <问题>\nOptions:\n- false: ...\n- true: ...\nJudge each option:\n<选项> ->`，
+  判决读在 ` ->` 之后的位置，答案 token 是 `" yes"`(9542) / `" no"`(874)，取 logprob 重归一化。
+  实测刻度：`无响应/卡死/阻塞 → 1.000`、`数据库/订阅/足球 → 0.000`；chat 野路子只会给 0.55/0.45 的糊结果。
+- 产出方式（云端 Jev，需 key；当前注册暂停）：
+  ```bash
+  set TYPESAFE_API_KEY=xxx
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.jev_distill --write
+  ```
+  用 Jev 云端 API 时同样**不能生成**：它只答 `boolean/score/choice`。所以每条 query 先挑
+  「与 query 有字面重叠的真词表词条」当候选，每个候选问一道"该不该一起搜"，keep 的收成映射表。
+- 评估：先 `tools/eval_search.py` 存基线，回填后再跑一次比 `recall@k / MRR`（`--inproc` 免服务）。
+
+### 5.3 现象词族表（等义词族，2026-09-26）
+
+数据目录 `term_families.json`：`{"族名": ["词", ...]}`（`_` 开头的键是说明）。与 §5.2 的区别：
+那里是「一词 → 若干同义」的**定向**表，这里是**等价类**——族内任意成员展开成同族其他成员。
+
+```json
+{ "卡顿": ["卡", "卡顿", "卡住", "卡死", "迟钝", "假死", "冻结", "无响应", "反应慢"],
+  "没反应": ["没反应", "无反应", "没动静", "死住", "不响应", "失效", "点了没反应"] }
+```
+
+- 内容是**按现象分族手写的语言学枚举**（27 族 / 122 词条），**不从历史查询统计**——可审计、可版本化
+- 注入双向封顶：`_FAM_INJECT_MAX=4`（单个词最多注入几个同族词）、`_FAM_TOTAL_MAX=12`（整条查询总量），
+  否则一个高频词就能把 OR 表达式撑满，把后面查询段的词块挤掉
+- 生效范围：**召回层**（`route_terms`），不参与打分；改文件按 mtime 热加载
+- ⚠️ **实测零效果**：8 条 A/B 名次**逐条不变**（查询侧的族扩展在文档侧没有落点）；
+  **更不要**把它追加进 `search_fts.symptom` 列——实测负收益（seen 0.169 → 0.112），
+  因为族词被 30+ 文件共用后变成全库泛词、IDF 归零。详见
+  `l_notepad_搜索功能增强.md` §7.3 / §7.4
+- 状态：保留（召回层中性、零成本，将来接结构化槽位可复用这套族名）。Jev 蒸馏那条路线（§5.2）
+  已**停用**：它是唯一"依赖查询"的产物（`data/synonyms_extra.proposed.json` 未启用，内容是同一条
+  查询内部 bigram 互映射的噪声）
+
 ---
 
 ## 6. 索引维护与状态
@@ -418,6 +504,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   而 `mode=lex` 约 10ms
 - **`GET /api/search/stats` 字段**：`docs` / `fts_rows` / `fts_consistent` / `db_bytes` / `sources[]`（每源 `root/docs/bytes/last_indexed_at`，本机库行另有 `kind/editable/scan`，`deep=1` 加 `disk_files/missing/changed/extra`）/ `code_libs` / `code_max_files` / `code_max_bytes` / `pending` / `scan_ttl_s` / `last_scan_ago` / `max_index_bytes` / `workspace_exts` / `reindex`（后台重建进度）/ `vec`（模型、块数、维度、按来源 `by_source`、嵌入进度、失败放弃 `dropped`、下载进度、目录）/ `deep` / `fts_integrity`
 - **相关环境变量（本机库）**：`L_NOTEPAD_CODE_MAX_FILES`（20000）/ `L_NOTEPAD_CODE_MAX_BYTES`（512MB）/ `L_NOTEPAD_VEC_CODE_CHUNKS`（8000，代码块的内存缓存额度）
+- **症状列 `search_fts.symptom`（2026-09-26）**：AI 从代码注释推测的「用户口语症状」写进这一列
+  （`bm25(search_fts, 6, 4, 1)`），数据在 `data/symptoms.json`，生成器 `tools/symptom_build.py`。
+  ⚠️ **改了 `symptoms.json` 之后必须让代码库强制重灌才生效**（症状是写进 FTS 列的，热加载只更新缓存）：
+  正常情况下 `_symptom_stale` 会让下一次 `refresh()` 用 `_scan_code(force=True)` 重灌；
+  **但 `search()` 本身不刷新**——自己写脚本测的时候必须先 `_scan_code(..., force=True)` + commit，
+  再回查 `SELECT title, symptom FROM search_fts WHERE rowid=?` 确认落库，否则量到的是旧列（踩过，见增强文档 §7.2）
+- **`GET /api/search/stats` 的 `families` / `symptom.tagged`**：分别显示现象词族表（族数与注入上限）
+  和带族标注的症状条目数
 
 ```bash
 # 后台重建（管理员）→ 轮询进度

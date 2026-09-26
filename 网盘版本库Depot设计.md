@@ -149,10 +149,18 @@ scan_file 得 md5
 `web_server.py`，页面 `/depot`，API 前缀 `/api/depot/`：
 
 ```text
-status  list  history  changes  change/{cl_id}
-submit  submit_stream  revert  delete
-lock  unlock  locks  sync_plan  download
+status  library(?PUT)  list  list_recursive  tree  sessions  migrate
+history  changes  change/{cl_id}  pending  locks  sync_plan  download(Range/ETag)
+submit  submit_stream  revert  delete  move  import  edit_text
+checkout  mark_delete  mark_move  mark_add_stream  revert_pending  submit_pending  cl_description
+lock  unlock
+workspace(GET/POST)  workspace/select  workspace/{id}(GET/DELETE)  workspace/{id}/owner
+workspace/{id}/maps(PUT)  workspace/{id}/have  workspace/{id}/path  workspace/{id}/local_path
+reconcile  sync_done
 ```
+
+完整参数 / 返回 / 状态码见《Rez_pkg/lugwit_baidu_netdisk.md》§5（5.1 查询、5.2 待提交工作流、
+5.3 一步接口、5.4 状态码、5.5 路径规则、5.6 工作区与库）。
 
 约定：
 
@@ -162,9 +170,9 @@ lock  unlock  locks  sync_plan  download
 - `/api/depot/download` 解析 blob 的 `fs_id` → `dlink` → `StreamingResponse`，
   带 `X-Depot-Rev` 响应头
 
-页面 `web_depot.html` 标题栏抄 `l_notepad_server/templates/web_edit.html` 的
-`.topbar` / `.topbar-meta` 样式；两栏布局 `minmax(0,1fr) 400px`，左侧文件表 + CL 视图，
-右侧版本历史面板。
+页面 `web_depot.html`（现为**三栏 + 底栏**：左树 250 / 中栏 / 右栏、底栏 170，中栏 / 右栏 / 底栏的
+标签可拖动换位，布局细节见《Rez_pkg/lugwit_baidu_netdisk.md》§6）：标题栏抄
+`l_notepad_server/templates/web_edit.html` 的 `.topbar` / `.topbar-meta` 样式。
 
 ### 6.1 鉴权闸门与内容获取链路（2026-09-17）
 
@@ -217,7 +225,33 @@ lock  unlock  locks  sync_plan  download
 - depot **文件内容在百度网盘**（`pan.baidu.com`）→ 机器连不上外网时取内容报 **500 / 经 nginx 502**，**与代码无关**
 - 实测：`curl https://pan.baidu.com` 返回 `000` 时，列表 200、下载 500
 
-### 6.2 工作区数据源 = 托盘（2026-09-17）
+### 6.2 工作区数据源：**页面直连 depot 服务**（2026-09-26 取代原「唯一走托盘」方案）
+
+**现状（2026-09-26）**：`web_depot.html` 的工作区列表与增删改**直连 depot 服务的
+`/api/depot/workspace*`**（带页面自己的统一登录 cookie），不再绕托盘 19527：
+
+| 页面调用 | 等价托盘动作（保留但本页不再用） |
+|---|---|
+| `GET /api/depot/workspace?all=1` | `depot_workspace_list` |
+| `POST /api/depot/workspace` | `depot_workspace_save` |
+| `DELETE /api/depot/workspace/{id}`（批量逐个删，收集 `deleted`/`failed`） | `depot_workspace_delete` |
+| `POST /api/depot/workspace/select` | `depot_workspace_select` |
+| `POST /api/depot/workspace/{id}/owner` | `depot_workspace_set_owner` |
+
+依据：托盘那几个动作（`l_tray/depot_bridge.py`）本来就只是**透传同样的 URL**
+（`_http(token_override=...)`），页面自己带 cookie 能调；而托盘依赖还有个副作用 ——
+托盘没起/晚起，页面就看不到自己的工作区。改直连后 401 也会由 `apiReq` 统一跳
+`/login?next=<本页>`，不会静默失败。
+
+**托盘现在只负责本机能力**：本地目录树（`depot_local_tree` / `depot_local_version`）、
+在资源管理器中打开 / 定位本地文件（`depot_local_open`）、新建目录 / 新建文件 / 删除到回收站
+（`depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`）、选本地路径 —— 以上都只作用于
+**工作区 `local_root` 之内**（删除额外禁止删根目录本身，走回收站可还原）。工作区树与工作区卡片的
+右键菜单用它们；浏览器模式下工作区标签页的本地树由托盘读，并用变更序号轮询自动刷新。
+（浏览器模式要求托盘已登录：页面 HttpOnly cookie 读不到 token 时托盘回落自己的会话 token，没登录就拿不到工作区列表。）
+
+<details>
+<summary>历史方案（2026-09-17，已被上面取代，留档看取舍）</summary>
 
 **结论：页面（`web_depot.html`）的工作区列表与增删改，唯一数据源是托盘服务
 （`l_tray` ExecServer，`POST http://127.0.0.1:19527/run`）——不落 `localStorage`、
@@ -238,7 +272,9 @@ lock  unlock  locks  sync_plan  download
 | `depot_workspace_save` | `POST /api/depot/workspace`（JSON：`name` / `library` / `local_root` / `host` / 可选 `id`） |
 | `depot_workspace_delete` | `DELETE /api/depot/workspace/{ws_id}` |
 
-调用约定：
+</details>
+
+调用约定（仍适用于仍在用托盘的调用方）：
 
 - 请求体 `{"action": "<名>", "kwargs": {...}}`；成功信封 `{"ok":true,"result":"<repr>","data":<结构化结果>}`，
   **页面取 `data`**（`result` 只是 repr 字符串）；失败 `{"ok":false,"error":"<traceback>"}`。
@@ -249,11 +285,13 @@ lock  unlock  locks  sync_plan  download
   > env `LUGWIT_ACCESS_TOKEN` > `LUGWIT_USER`/`LUGWIT_PASSWORD` 登录（401 换新重试）。
   `/api/v1/auth/auto` 已默认关、不再是取 token 途径（见 `Rez_pkg/l_tray.md` §3）。
 
-**工作区按用户归属（2026-09-17 二次修正）**：页面把 cookie 里的 `lugwit_token` 随 `kwargs`
-一起传给托盘（三个动作都带 `token` 参数），托盘走 `_http(token_override=...)` **以该用户身份**
-访问 depot 服务 —— `depot_workspace` 的 `owner` 取 JWT `sub`，`workspaces()/workspace_upsert()/
-workspace_delete()` 全部带 owner 过滤，所以**归属就是登录的人**（实测新建得到 `47/admin01`）。
-只有没传 token 时才退回托盘的本机自动授权账号（那会解析成 `system01`，是另一套视角，别混用）。
+**工作区按用户归属（2026-09-17 二次修正；2026-09-26 页面改直连后同样成立）**：
+现在页面直连时身份来自**页面自己的 `lugwit_token` cookie**（服务端 `_owner(user)` 解析），
+和当年「随 `kwargs` 传给托盘 → `_http(token_override=...)`」是同一个用户口径；托盘那条路
+（给别的调用方用）依旧支持传 `token`。`depot_workspace` 的 `owner` 取 JWT `sub`，
+`workspaces()/workspace_upsert()/workspace_delete()` 全部带 owner 过滤，所以**归属就是登录的人**
+（实测新建得到 `47/admin01`）。只有没传 token / 没带 cookie 时才退回本机自动授权账号
+（那会解析成 `system01`，是另一套视角，别混用）。
 
 ⚠️ 早期版本没传 token，导致页面看到的是 `system01` 名下那几条（本机视角）。现已改掉：
 `GET /api/depot/workspace` 只返回**当前用户**的工作区，卡片与下拉都显示 `👤 owner`，

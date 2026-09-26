@@ -141,10 +141,34 @@ l_folder_favorites / wuwo 管理界面）、`Tray.py` 内联 `packages=[...]`（
 | `.solo` | 守卫交互确认（无 stdin 即默认）→ **杀旧实例进程树**后继续启动 |
 | `.soloignore` | 只观测并把 peer 注入 `L_SOLO_PEER_*`，**不杀旧**，是否接管由包自己决定（§6.3） |
 
-⚠️ **现状：只有 `l_WChat` 实现了 `L_SOLO_IGNORE` 接管**（`_solo_ignore_takeover()`）。其余被切的项
-（`l_notepad_client` / `l_scheduler` / `l_fastapi_guard` / `l_repo_sync_gui` / `l_hermes` /
-`l_folder_favorites` / `wuwo_gui`）**没有**该逻辑 → 重复点击会**起第二个实例**（纯 GUI 多开一般无害，
-但带端口的常驻服务需注意）。要恢复保护，就给这些包照 §6.3 补接管实现。
+⚠️ **现状：只有 `l_WChat` / `l_notepad_client` 实现了 `L_SOLO_IGNORE` 接管**
+（`_solo_ignore_takeover()` / `_solo_takeover_if_peer()`）。其余被切的项
+（`l_scheduler` / `l_fastapi_guard` / `l_repo_sync_gui` / `l_hermes` /
+`l_folder_favorites` / `wuwo_gui`）**没有**该逻辑 → 重复点击会**起第二个实例**。要恢复保护，
+就给这些包照 §6.3 补接管实现。
+
+### 6.5 「纯 GUI 多开无害」对 `l_notepad_client` 不成立（2026-09-26 实测丢数据）
+
+> 多个 `l_notepad_client` 实例各持一份剪贴板历史模型，退出时都往同一个
+> `%USERPROFILE%\.Lugwit\l_notepad_client\favorites\clipboard_history.json` 落盘：
+>
+> - **旧覆盖新**：B 实例退出时按自己的内存列表落盘 → 覆盖 A 实例刚写的新条目；
+> - **空覆盖**：B 若在「异步加载历史」完成前退出（快速退出 / 崩溃 / 读文件失败），模型还是空的，
+>   落下去就是 `[]` —— **9-26 的真实事故：`clipboard_history.json` 被抹成 2 字节，而
+>   `clipboard_images\` 里 1577 个图片文件还在**（没走「清除全部」，所以没连带删图）。
+>
+> 两层修复（`l_notepad_client` 999.0）：
+>
+> 1. **存储层**（`clipboard_store.py`）：历史未成功加载一律不写盘（`_history_ready` 闸门，挡"空覆盖"）；
+>    落盘对 `<history>.json.lock` 加 `msvcrt` 跨进程锁，并在锁内**重读磁盘按去重键合并**（内存条目原样
+>    保留、磁盘独有条目补进来、本次已删/改名的键走墓碑不让复活）→ 挡"旧覆盖新"。
+> 2. **启动层**（`local_main.py::_solo_takeover_if_peer`）：本包补上 §6.3 的接管——按 wuwo 注入的
+>    `L_SOLO_PEER_*` 清树并复核命令行，从源头避免重复实例。与 §6.3 的两点差异：**无端口可等**；
+>    **清不掉时不 `exit(1)`**，只打告警继续启动（纯 GUI 无端口冲突，且存储层已能合并，
+>    "点了没反应"比多开一个更糟）。
+>
+> 残留边界：`.soloignore` 只在**托盘启动项**里带（`wuwor ... .soloignore -- ...`）；
+> 手工 `wuwor l_notepad_client` 连开两个仍然不被拦截，此时靠上面第 1 层的合并保证不丢数据。
 
 ## 7. 相关文件
 | 文件 | 作用 |
