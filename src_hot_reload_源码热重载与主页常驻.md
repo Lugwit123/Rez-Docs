@@ -1,8 +1,14 @@
 # src_hot_reload 源码热重载 + 主页常驻守护（现行机制）
 
-状态：**现行主文档，截至 2026-09-17**。`.dev_mod` → `L_DEV_MOD=1` 的启动门控与 wuwo `ENV_MODIFIERS` 约定仍保留；早期 uvicorn `--reload` 方案仅作历史背景，见[dev_mod_热更新机制_fa50f01f.md](dev_mod_热更新机制_fa50f01f.md)。
+状态：**现行主文档，截至 2026-09-27**。`.dev_mod` → `L_DEV_MOD=1` 的启动门控与 wuwo `ENV_MODIFIERS` 约定仍保留；早期 uvicorn `--reload` 方案仅作历史背景，见[dev_mod_热更新机制_fa50f01f.md](dev_mod_热更新机制_fa50f01f.md)。**2026-09-27 增补**：主页自重启健壮性（§主页常驻守护）、`trigger=cli` 来源、服务操作统一入口 `wuwo svc`（见 [Rez_pkg/服务托管与统一启动入口_计划.md](Rez_pkg/服务托管与统一启动入口_计划.md)）。
 
 **重要实测警示**：`l_notepad_server` 的 `L_SRC_WATCH` 对 Python 改动仍不可靠；改动 `.py` 后必须手动重启服务，不能把自动自重启视为已验证保障。
+
+> 文中出现的 `wuwor <包> -- <别名>`（如 `wuwor l_homepage .solo -- homepage_start`、
+> `wuwor lugwit_baidu_netdisk .solo -- baidu_netdisk_web`）多是**内部拉起链**：
+> 重启执行进程、guard 守护、控制面自启 —— 这些是"有意直启"的豁免场景（见 §主页常驻守护）。
+> **日常运维（启停/重启/热更新/看日志）一律用 `wuwo svc ...`**，见
+> [Rez_pkg/服务托管与统一启动入口_计划.md](Rez_pkg/服务托管与统一启动入口_计划.md)。
 
 ## 背景：uvicorn --reload 的三个坑（对全部后端服务通用）
 
@@ -386,6 +392,27 @@ def _resolve_src_watch(use_env: bool) -> str:
 - 主页卡片 `auto_start` 缺省视作 `True`（`_normalize` 对 `homepage_start` 默认常驻），可切换；
   guard 循环里若主页卡片 `auto_start` 变为 `False` 则守护自行退出。
 
+### 2026-09-27 加固：主页自重启不再空窗、guard 不再泄漏
+
+实测场景：短时间连改几次 `homepage_cli.py` → 每次触发一次 src-watch 自重启 →
+**第二次新实例 `bind` 报 `[Errno 10048]`、旧的也已退出 → 主页整段空窗**，
+`homepage.log` 留下 `[homepage] restart: 超时未见新主页监听端口`。
+
+四个独立缺陷（`_restart_self` / `guard`），修法：
+
+| # | 缺陷 | 修法 |
+|---|------|------|
+| 1 | 停旧→起新之间**不等端口释放**（`_svc_manage_impl` 有 `_ensure_port_released`，自重启没有） | 自重启改用同一个 `_ensure_port_released`（多轮补杀 + 等待） |
+| 2 | 起新实例失败后**不重试**，空窗要人工救 | 加重试循环（最多 `RESTART_SPAWN_ATTEMPTS`，默认 3；`L_HOMEPAGE_RESTART_ATTEMPTS` 可调）：清 `.solo` 残留 → 清陈旧 guard → 等端口 → 起 → 等就绪 |
+| 3 | **guard 泄漏（风暴根因）**：`guard` 只在"端口一直不通 + 常驻已关"时才退出，正常重启后它永远活着；`_ensure_guard` 只看 pid 文件里那个 pid 是否活着（文件常过期）→ **每次自重启多一个 guard**，多个 guard 同时发现端口 down → 同时 `_restart_self()` → 反复重启 + 熔断 | ① `guard` 每轮先"让位"：pid 文件持有者不是自己就退出（旧 guard ≤15s 自愈）；② 自重启起新实例前 `_kill_stale_guards()` 全清（新实例起来后 `_ensure_guard` 自动补一个） |
+| 4 | 就绪等待用 `_wait_new_pid`（25s）< 冷启动实测 30~38s → 把"还在启动"误判成失败、**再起第二个实例** | 新 `_wait_homepage_up` + `RESTART_READY_TIMEOUT`（默认 75s，`L_HOMEPAGE_RESTART_READY_TIMEOUT` 可调）；**每次重试前先查 8090 是否已被新实例占上**，占上即成功、不再拉第二个；成功时清掉上一轮的 `error` 文本 |
+
+验收（`homepage.log` 留痕）：出现 `第 1/3 次未起来，准备重试` / `清理陈旧 guard 进程 [49500]`；
+修后进程表从「1 server + 2 guard」收敛为「**1 server + 1 guard**」，自重启 38~95s 内必回。
+
+> 另注：主页**自重启**走 `python -m l_homepage.homepage_cli restart_self_cli`（不经 wuwo），
+> 服务操作请一律用 `wuwo svc ...`（见 [Rez_pkg/服务托管与统一启动入口_计划.md](Rez_pkg/服务托管与统一启动入口_计划.md)）。
+
 ---
 
 ## FastAPI 陷阱（本次踩坑）
@@ -426,6 +453,11 @@ def _resolve_src_watch(use_env: bool) -> str:
 | `header`（顶部重启主页） | 10 | 0 | 0% |
 | `restart` | 8 | 0 | 0% |
 | `watchdog`（常驻守护） | 53 | **24** | **45.3%** |
+| `cli`（`wuwo svc`，2026-09-27 新增来源） | — | — | — |
+
+> `cli` = 走统一入口 `wuwo svc ...` 触发的动作（`POST /api/v1/services/{name}/{op}?trigger=cli`）：
+> 与网页按钮（`user`）区分开，事后能查出"这次是谁在什么时候停/重启的"。
+> 诊断页按来源的故障率表会自动带上它；历史匹配同时兼容"老记录写显示名、新记录写标识（slug）"。
 
 失败四类根因：① 服务源码语法错误（`l_agent_chat/attachments.py` 的 `IndentationError` → 退出码 1，7 次）；
 ② `0xC0000142`（`STATUS_DLL_INIT_FAILED`）系统级 spawn 失败，集中在"Model Hub 连续 hotstart + 主页反复自重启"的进程创建风暴（7 次）；
@@ -451,6 +483,11 @@ def _resolve_src_watch(use_env: bool) -> str:
 （`{LPRINT_LOG_BASE_DIR}/{pkg}/{pkg}_{alias}_{YYYYMMDD}.log`）写回，并写一行 `=== 热重载重启 (trigger=…) @ 时间 ===`；
 同时 `PYTHONUNBUFFERED=1`/`PYTHONIOENCODING=utf-8`（stdout 重定向到文件时默认块缓冲 → 日志攒一大块才落盘，
 这是"刷新不及时"的直接原因）。主页托管启动（`_svc_spawn_env`）同样加这两个变量。
+
+> **看得见的日志入口（2026-09-26 增补）**：服务未启动/正在热更时的兜底页（`/homepage/down`）
+> 直接内嵌**该服务自己的日志面板**（`GET /api/v1/services/{name}/log` 的 `offset` 增量轮询 1.5s，
+> 错误行标红、可暂停/下载），不再需要人肉去 `D:/Temp/Log/...` 翻文件；
+> 同一页面还带**热更倒计时进度条**（基准 = 该卡历史成功重启耗时的中位数）。
 
 ### 诊断接口 / 页面
 - `GET /api/v1/watchdog/debug`（`_watchdog_debug_snapshot`）：线程/配置/外围 guard/各卡实时状态与退避/熔断/`watchdog.log` 尾部/重启历史/故障率。

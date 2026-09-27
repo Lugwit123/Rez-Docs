@@ -65,14 +65,33 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 - **token 口径**（2026-09-26 改）：页面带的 token **为空时不再回落托盘自己的会话 token**（`_allowed_roots("")`
   直接回空）——那等于把 `token_override`"用网页登录态替代托盘账号"的语义反过来，让没带登录态的页面
   拿到托盘账号的工作区根。现在空 token 直接拒答「网页没带登录态（cookie 读不到？）…」；有 token 但查不到
-  工作区才报「拿不到你的工作区本地路径（托盘登录态不可用？…）」。所以**浏览器模式要用这几个动作，
-  页面和托盘都得是登录态**；客户端模式的开 / 定位走本地桥（`bridge.revealInExplorer`），不需要托盘，
-  但**新建 / 删除目前只有托盘实现**（客户端桥没有写能力）。
+  工作区才报「拿不到你的工作区本地路径（托盘登录态不可用？…）」。
+  正路是页面自己拿一份凭据：`lugwit_token` cookie 是 HttpOnly，页面 JS 读不到，所以版本库页会调同源端点
+  `GET /api/depot/local_token`（depot 服务把**调用者自己的** token 回给它）再传给托盘 —— 身份不替换、
+  功能也不丢。所以**浏览器模式要用这几个动作，托盘和页面都得是登录态**；客户端模式的开 / 定位走本地桥
+  （`bridge.revealInExplorer`），不需要托盘，但**新建 / 删除目前只有托盘实现**（客户端桥没有写能力）。
 - **变更序号**：`watchdog` 递归监听该 root（事件触发即自增；没装 watchdog 退化为根目录
   `mtime + 条目数`）。`l_tray` 的 `requires` 因此加了 `watchdog`，删除用到的 `winshell` 也显式写进了 `requires`
   （此前只是 Tray.py 在 import，属隐式依赖）。
 - 改了动作不必重启托盘：`POST /run {"module":"l_tray.local_tree","function":"reregister","reload":true}`
   （注意：`web_actions` 只对**带白名单 Origin 的浏览器请求**开放，本机 curl 不带 Origin 会被当成动态 `/run` 而报 unknown action）。
+- **为什么这里用 `watchdog` 而不是 `watchfiles`（2026-09-27 实测）**：两者在托盘环境里都在（`watchfiles` 是
+  `l_app_ready` 的依赖，服务源码热重载用的就是它），但本机变更**即时感知**这件事 watchdog 更合适。同树
+  （真工作区 `D:\Temp\Log`，190 目录 / 1050 文件 / 深度≤3）、各自独立进程实测：
+
+  | 指标 | watchdog | watchfiles `debounce=50,step=50` | watchfiles `1,1` |
+  |---|---|---|---|
+  | 建立 | 45ms | 1ms | 1ms |
+  | handles / threads 增量 | **+21 / +2** | +46 / +5 | +46 / +5 |
+  | 删除检出延迟 p50 | **0.5ms** | 79.5ms | 0.4ms |
+  | 200 文件突发 | 401 次独立回调 · CPU 344ms | 201 项（约 5 批）· CPU 188ms | 222 项 · CPU 141ms |
+  | 5s 空转 CPU | 62ms | **31ms** | 141ms |
+  | 停掉后残留 | 14 handles / 0 threads | 42 / 3 | 42 / 3 |
+
+  三点结论：① `watchfiles` 默认参数慢在**攒批**（它是为防抖重载设计的，库默认 `debounce=1600`），
+  拧到 `1/1` 才追平 watchdog；② 拧快就烧电（空转 141ms vs 62ms/5s）；③ watchdog 资源更省且停掉后基本归还，
+  `watchfiles` 残留 Rust 线程池。我们只需要「seq +1」，`watchdog` 低延迟 + 省资源，保持现状。
+  （CPU 为进程级读数、含探针自身开销、单次采样，只看趋势。）
 
 ## 3. 统一登录（P5）
 
@@ -92,6 +111,7 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | access | 仅进程内存（`depot_bridge.set_session_token` / `token()`） |
 | refresh | `~/.lugwit/lugwit_auth/tray_tokens.json`，Windows 下 **DPAPI 包裹**（按"当前用户+机器"加密）、Linux 退化为 0600 明文；**删掉即强制重登** |
 | 自动登录 | 托盘启动 ~2.5s 后后台 `restore_session()`：读 refresh → `POST /auth/refresh` → 换出可用 access（refresh 轮转后**回写**）→ 登录按钮直接显示 `登出(<用户名>)` |
+| 只在启动时恢复（2026-09-27 实测踩到） | 上面那次 `restore_session()` **只在托盘启动时跑一次**：托盘进程已经跑着的时候才完成的登录，不一定进内存。症状是 `tray_tokens.json` 存在、但 `session_user()` 返回空、`depot_workspace_list` 报 **401 登录态无效或已过期**（于是本机目录树全废）。手动补一次即可，等价于重启托盘：<br>`POST /run {"module":"l_tray.depot_bridge","function":"restore_session"}` → 返回用户名 |
 | refresh 失效 | 清掉落盘文件、安静回到未登录（不会弹错） |
 | 登出 | 撤销服务端会话 + 清内存 + **删落盘文件** |
 
@@ -124,6 +144,9 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | 点「登录」没反应 | 托盘日志里 `[l_tray] 登录模块不可用: attempted relative import…` → 用了 `.` 相对导入（见 §1 约束 1） |
 | 弹「登录失败：No module named 'lugwit_auth'」 | 已改为 stdlib 实现，不该再出现；若出现说明有人把 SDK 依赖加回来了 |
 | 重启托盘后没自动登录 | 看 `~/.lugwit/lugwit_auth/tray_tokens.json` 是否存在；日志里找 `自动恢复登录态失败`（refresh 被撤销/过期会清文件） |
+| **托盘跑着**的时候登录了、但动作还说没登录态 | 见 §3「只在启动时恢复」：进程内存里没有 access。先自省再补一次（都不打印密钥）：<br>`POST /run {"module":"l_tray.depot_bridge","function":"session_user"}` → 空串就是没登录态<br>`POST /run {"module":"l_tray.depot_bridge","function":"restore_session"}` → 用落盘 refresh 补上，返回用户名 |
+| 改了 `local_tree.py` 之类的网页动作**没生效** | 托盘进程里跑的是启动时 import 的**旧模块**（traceback 行号会错位，看着像新代码）。热灌：`POST /run {"module":"l_tray.local_tree","function":"reregister","reload":true}` —— `reload` 是**顶层键**，不是 `kwargs`（后者会 TypeError）。诊断任意模块状态同理：`{"module":"<包.模块>","function":"<函数>"}` 只对**非浏览器**调用方开放 |
+| 症状像"代码变了但行为没变" | 先用上一条热灌一次；还不对再确认改的是不是 `999.0/src` 下的源（不是 `rez-package-3rd` 落地区） |
 | 服务管理里 ExecServer 显示"未启动" | `curl.exe -s http://127.0.0.1:19527/health`；端口被占时 ExecServer 会记 `ExecServer 端口 19527 被占用` |
 | 改了菜单/配置没生效 | 托盘菜单启动时构建 → 重启托盘 |
 | 强制结束程序无效 | 目标进程名不对（下拉里没有时手动输入 `<名>.exe` 的 `<名>` 部分） |
@@ -152,3 +175,4 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | 网页动作 +1（2026-09-26 补） | `depot_local_open`：在资源管理器中打开 / 定位本机文件（`reveal` / `open` 两种），供版本库页工作区树的右键菜单用；路径限工作区 `local_root` 之内 |
 | 网页动作 +3（2026-09-26 续） | `depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`（删除走回收站，不许删根目录本身）；`requires` 显式加 `winshell` |
 | 边界加固（2026-09-26 P0） | ① `_norm()` 加 `realpath`，`_check_path()` 回**解析后**路径 → junction/symlink 逃逸不再能蒙过前缀比对；② 空 token **不再回落托盘会话 token**（新增 `_require_roots()`），没带登录态的页面直接拒答；③ `mode="open"` 挡可执行/脚本/快捷方式扩展名（`_NO_STARTFILE_EXTS`）；④ 删根保护扩到"根本身 **及其上层目录**"。验收：假 `depot_bridge` + 临时工作区探针（含 `mklink /J` 逃逸用例）全绿 |
+| 运维实测（2026-09-27） | ① 托盘**跑着的时候**完成的登录不进内存（`tray_tokens.json` 有、`session_user()` 空、401），补 `restore_session()` 即恢复 → §3；② 改 `local_tree.py` 后进程里仍是旧模块，`reregister` 的 `reload` 是**顶层键** → §5；③ 工作区目录树全链路真机复验：真 token 拉树 294ms / 1352 条目，本机删文件 **27ms 检出**、页面 2.5s 轮询第 1 个 tick 重拉后树里不再有它；④ `watchdog` vs `watchfiles` 性能实测 → §2 那张表 |

@@ -119,9 +119,17 @@ if (isNew) {
 ## 六、后端接口要点
 
 - `GET /api/v1/services/deps`：返回全部服务/链接作为 `nodes`，含 `name, kind, port, depends, url, desc, icon, newtab, packages, run_args, run_cmd, reload_args, reload_cmd`。
-- `POST /api/v1/services`：新建，入参 `_SvcIn`（含 `reload_args`/`reload_cmd`）。
-- `PUT/DELETE /api/v1/services/{name}`：编辑/删除。
-- `GET /api/v1/services/status`：轮询状态（3s），返回 `{name:{up,http,pid,hot}}`。
+- `POST /api/v1/services`：新建，入参 `_SvcIn`（含 `label`/`reload_args`/`reload_cmd`）。
+- `PUT/DELETE /api/v1/services/{name}`：编辑/删除（`name` 是机械标识，**创建后不可改**；改名只改 `label`）。
+- `GET /api/v1/services/status`：轮询状态（3s），返回 `{name:{up,http,pid,hot,restart}}`；
+  加 `?target=<键>` 只探测命中卡片（全量 ~800ms，单卡 ~30ms）——`wuwo svc` 等就绪轮询用它。
+- `GET /api/v1/services/hosted`（**2026-09-27 新增**，`wuwo svc` 与 wuwo 提示层共用）：
+  裸调 = 极简索引 `{count,names,aliases,aliases_of,aliases_by_pkg,packages,labels}`（约 1.2 KB、**不探端口**）；
+  `?status=1` 追加 `services`（同 status 的每卡对象）；`?target=<键>` 收窄到单卡（多义 400 + `candidates`、未命中 404）；
+  `?log=N[&log_offset=M]` 内联该卡日志（**必须与 `target` 同用**，否则 400）。
+  只认 `kind != "link"`：链接卡与宿主服务卡共用同一个 `run_args[0]`，参与解析会假多义。
+- `POST /api/v1/services/{name}/{op}?trigger=cli`：`trigger` 走白名单（`user/cli/card/header/watchdog/src-watch/guard/restart-self/api`），
+  只影响重启历史的来源标注；缺省 `user`。
 
 ---
 # l_homepage 主页卡片 / 热加载 / 局部刷新 开发笔记
@@ -132,11 +140,17 @@ if (isNew) {
 
 - **唯一默认来源**：`src/l_homepage/config/services_builtin.json`（16 张，只读、随包发布；改它等于改所有用户的默认卡）。
 - **用户配置**：`~/.lugwit/l_homepage/runtime/services.json`，只存三类：自定义卡、对默认卡的覆盖（**同名即覆盖**）、删除墓碑 `{"name": "...", "removed": true}`。
-- `ServiceCard`（dataclass）字段：`name, url, origin_url, desc, icon, newtab, port, kind, auto_start, packages, run_args, run_cmd, reload_args, reload_cmd, depends, builtin, overridden, overridden_fields`
-  方法：`from_raw`（校验 + 历史迁移 + 补 `.solo`）、`to_payload`（写盘形状）、`to_builtin_item`（写进包内默认的形状）、`to_dict`（API/模板形状：内容 + `builtin/overridden/overridden_fields/override_tip`）、`differs`、`diff_fields`、`override_tip`（悬停提示文本，后端拼好）。
+- `ServiceCard`（dataclass）字段：`name, label, url, origin_url, desc, icon, newtab, port, kind, auto_start, packages, run_args, run_cmd, reload_args, reload_cmd, depends, builtin, overridden, overridden_fields`
+  方法：`from_raw`（校验 + 历史迁移 + 补 `.solo` + **§4.0 名字拆分**）、`to_payload`（写盘形状）、`to_builtin_item`（写进包内默认的形状）、`to_dict`（API/模板形状：内容 + `builtin/overridden/overridden_fields/override_tip`）、`differs`、`diff_fields`、`override_tip`（悬停提示文本，后端拼好）。
 - `load_services()`：包内默认 + 用户差异合并（内置在前、自定义在后）；`save_services()`：只落「自定义卡 + 与包内不一致的覆盖」——与默认一致时**自动不落盘**，改回默认即消失；列表里缺失的默认卡自动记墓碑。
-- 卡片名是不可变锚点（`PUT` 要求 URL 名 == body 名），故覆盖以 `name` 关联，不需要额外 id 字段。
-- 界面标识：`⚙ 服务 / 🔗 链接`；`📦 默认 / ✎ 覆盖默认`（悬停显示逐字段「原值 → 现值」）；`覆盖为系统设置` 按钮。
+- **卡片有两套名字（2026-09-27，`name`/`label` 拆分）**：
+  - `name` = **机械标识**：ASCII、唯一、**创建后不可改**，进 URL / API / 重启历史 / localStorage / 依赖图 / 日志文件名；缺省从命令别名（`run_args[0]`）派生。
+  - `label` = **显示名**（`L WChat 推送`）：随便改，只影响界面文案；老数据惰性迁移（`label` = 原 `name` 原文）。
+  - 所有"按名字找卡"的入口走 `_find_card()`：先精确匹配 `name`，再按 `label` 归一化兜底（去空白 / 忽略大小写 / `-` `_` `.` 等价）→ 老书签、老 URL 不 404。
+  - `kind=link` 的链接卡**保持原样**（`name` 仍是显示名、无 `label`、不参与目标解析）——它与宿主服务卡共用 `run_args[0]`，参与解析必然假多义。
+  - 标识撞车（两张卡算出同一 `name`，实测「L Model Hub 模型中心」与「L Model Hub 代理」都叫 `l_model_hub_server`）由 `_uniquify_slug` 处理：**先来先得 + `_N` 后缀 + stderr 警告**，绝不静默合并吃掉卡片。
+  - `migrate_cards [--dry-run]`：把拆分结果**落盘**（默认卡文件整份重写、用户文件补 `label` 与墓碑），先备份、**幂等**；包内文件用 `_builtin_cards_unique()`（全部包内卡）重写 —— 用户墓碑只写在用户文件里，不该缩水包内容。
+- 界面标识：`⚙ 服务 / 🔗 链接`；`📦 默认 / ✎ 覆盖默认`（悬停显示逐字段「原值 → 现值」）；`覆盖为系统设置` 按钮；编辑弹窗里「显示名(label)」可改、「标识(name)」只读。
 - `POST /api/v1/services/promote-builtin?name=<卡名>`：把当前卡片写回包内默认文件（同名替换、无则追加），随后该卡即「默认」，用户侧覆盖记录被清掉。
 - deps 页节点也带 `builtin/overridden`（图例「📦 包内默认卡 / ✎ 覆盖默认」）。
 
@@ -150,9 +164,16 @@ if (isNew) {
 - **开关**：`L_SRC_WATCH`（默认 1）+ 运行时切换（`GET/POST /__dev__/src_watch`）；状态持久化到 `runtime/src_watch.json`，**显式 env 优先于存档**（guard、重启执行进程会显式给 0）。
 - `.py`（`restart_exts`）→ 整进程重启；`.html/.j2` 等 → **不重启**（Jinja `auto_reload` 下次渲染即用新版）。
 - **主页自重启链路**：`_spawn_self_restart(trigger)`（独立进程 + `L_SRC_WATCH=0` + 输出写入 `homepage.log`）→ `python -m l_homepage.homepage_cli restart_self_cli` → `_restart_self()`：
-  1) 杀 8090 监听进程 + 其父进程；2) **清掉所有匹配别名的 `.solo` 启动链残留**（`_kill_stale_solo_wrappers`）；3) 等端口真正释放（最多 5s）；4) `wuwor l_homepage .solo -- homepage_start` 起新进程；5) 同步记一条重启历史（等出新 PID 再落盘）。
-- **重启历史**：`runtime/restart_history.jsonl`（上限 400），字段 `ts, name, op, trigger, port, pid_before, pid_after, restarted, ok, error, files, secs`；`trigger` 枚举：`user / card / header / watchdog / src-watch / guard`。
+  1) 杀 8090 监听进程 + 其父进程；2) **清掉所有匹配别名的 `.solo` 启动链残留**（`_kill_stale_solo_wrappers`）
+  与**陈旧 guard**（`_kill_stale_guards`）；3) 等端口真正释放（`_ensure_port_released`，多轮补杀 + 等待）；
+  4) `wuwor l_homepage .solo -- homepage_start` 起新进程；5) 同步等出新 PID 再落盘一条重启历史。
+  - **2026-09-27 加固**：整段可重试（最多 `RESTART_SPAWN_ATTEMPTS`=3，`L_HOMEPAGE_RESTART_ATTEMPTS` 可调）；
+    就绪等待用 `_wait_homepage_up` + `RESTART_READY_TIMEOUT`（默认 75s，`L_HOMEPAGE_RESTART_READY_TIMEOUT` 可调，
+    因为冷启动实测 30~38s > 旧的 25s）；**每次重试前先查 8090 是否已被新实例占上**，占上即成功、不再拉第二个；
+    成功时清掉上一轮的 `error` 文本。触发原因见 `src_hot_reload_源码热重载与主页常驻.md`（§主页常驻守护）。
+- **重启历史**：`runtime/restart_history.jsonl`（上限 400），字段 `ts, name, op, trigger, port, pid_before, pid_after, restarted, ok, error, files, secs`；`trigger` 枚举：`user / cli / card / header / watchdog / src-watch / guard / restart-self / api`（`cli` = `wuwo svc` 触发，2026-09-27 新增）。
   - `GET /api/v1/services/history?name=&limit=` → `{events, file, src_watch, templates_stamp}`。
+  - **历史名字兼容**：新记录写标识（slug）、存量老记录写显示名 → 查询按"名字或 `label` 归一化"两种都匹配；`latest_restart_map` 同样兜底（否则老记录会让 🕘 闪烁提示失配）。
   - 卡片 🕘 弹窗：3 秒自刷 + 展示驱动模式/监视目录/扩展名/兜底周期/记录文件 + 每条事件「PID 旧 → 新」。
 - 卡片状态行**常显** `旧 PID → 新 PID`（数据来自状态接口的 `last_restart`）；检测到新事件时 🕘 闪 5 秒（`src-watch` 另弹 toast）。
 - 🕘 图标随驱动模式换样式：`⚡watchfiles / 👁watchdog / ⏳poll / 🕘关闭`（数据来自状态接口的 `src_watch`，零额外请求）。
@@ -351,7 +372,8 @@ if (isNew) {
 
 - 代码/模板：`homepage_cli.py`、`templates/home.html`、`templates/_grid.html`、`templates/deps.html`、`templates/_log_viewer.html`、`templates/login.html`、`config/services_builtin.json`。
 - 运行时目录（`~/.lugwit/l_homepage/runtime`，可用 `L_HOMEPAGE_RUNTIME` 覆盖）：`services.json`、`src_watch.json`、`restart_history.jsonl`、`homepage.log`、`watchdog.log`、`.homepage.pid`、`.homepage.guard.pid`、`.homepage.port`、`deps_layout.json`。
-- 环境变量：`L_SRC_WATCH`、`L_SRC_WATCH_BACKEND`、`L_SRC_WATCH_INTERVAL`、`L_HOMEPAGE_PORT`、`L_HOMEPAGE_SERVICES`、`L_HOMEPAGE_RUNTIME`、`L_HOMEPAGE_BASE_URL`、`L_HOMEPAGE_NGINX_PORT`、`L_HOMEPAGE_WATCHDOG_INTERVAL`、`L_HOMEPAGE_WATCHDOG_WAIT_READY`、`L_HOMEPAGE_RESTART_TRIGGER`（内部：标记重启来源）。
+- 环境变量：`L_SRC_WATCH`、`L_SRC_WATCH_BACKEND`、`L_SRC_WATCH_INTERVAL`、`L_HOMEPAGE_PORT`、`L_HOMEPAGE_SERVICES`、`L_HOMEPAGE_RUNTIME`、`L_HOMEPAGE_BASE_URL`、`L_HOMEPAGE_NGINX_PORT`、`L_HOMEPAGE_WATCHDOG_INTERVAL`、`L_HOMEPAGE_WATCHDOG_WAIT_READY`、`L_HOMEPAGE_RESTART_TRIGGER`（内部：标记重启来源）、**`L_HOMEPAGE_RESTART_ATTEMPTS`**（自重启最多尝试次数，默认 3）、**`L_HOMEPAGE_RESTART_READY_TIMEOUT`**（自重启等新实例就绪超时，默认 75s）。
+  - 顺带：主页拉起被管服务时会注入 **`L_HOSTED_BY=homepage`**（wuwo 提示层据此不提示"请用 `wuwo svc`"，见 [服务托管与统一启动入口_计划.md](服务托管与统一启动入口_计划.md)）。
 
 ## 日志窗口：增量渲染 + 性能显示（`_log_viewer.html`）
 
@@ -579,6 +601,20 @@ nginx `error_page 502 504 = @svc_down` → `GET /homepage/down?from=<原始URL>`
 
 `down.html` 按 `op`/`restart_trigger` 显示标题：`start`→服务正在启动；`reload`/`hotstart`/`trigger=src-watch`→
 **服务正在热更新**；其余→服务正在重启。三态都自动轮询，就绪后 302 回原地址；已 up 直接 302；无锁且掉线才显示「▶ 启动服务」。
+
+### 兜底页增补：热更倒计时 + 服务自身日志面板（2026-09-26）
+
+热更期间页面只有一句话，用户/AI 都看不出"还要等多久、现在到哪一步"。补了三样：
+
+- **倒计时进度条**：服务端在 `_svc_restart_progress(card)` 里算 `{op, trigger, age, est, est_source, remain}`，
+  随 `/api/v1/services/status`（每卡 `restart` 字段）下发；`est` = 该卡历史**成功**重启耗时的中位数
+  （无历史取 `WATCHDOG_WAIT_READY`=20s），`age` 的基准取"主页第一次看见这把锁"的时刻
+  （锁在等就绪时会被 `renew` 重写 `at`，直接用会把"已等待"算小）。
+  页面据此画进度条 + 「已等待 12s · 预计还需 ~8s（基准：历史中位 22.6s）」，超过基准转琥珀色提示。
+- **服务自身日志面板**：走 `GET /api/v1/services/{name}/log?offset=` 增量轮询（1.5s），错误行标红、
+  `Started server/Uvicorn running` 标绿、自动滚底、可暂停/下载。
+- **就绪判定与跳转**：`up && http` 才算就绪（只 `up` 不 `http` 时最多再等 `est*2+30s` 兜底）；
+  就绪后自动跳回原地址（`from`）。加载时若端口已通，服务端直接 302。
 
 ## 卡片新标签打开：改用 window.open（2026-09-23）
 

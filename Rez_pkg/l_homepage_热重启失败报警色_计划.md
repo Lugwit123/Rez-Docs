@@ -72,6 +72,12 @@ L Agent Chat 启动慢（rez 解析 + uvicorn 约 5–20s），空窗更宽，�
 **遗留**：`LOCK_TTL` 仍 30s（靠 renew 续期）；`l_homepage` 自身的 `_spawn_self_restart` 是独立
 实现，未走此路径（主页不 watchdog 自己，影响小）。
 
+> **更新（2026-09-27）**：主页自重启这条路已单独加固（连改源码触发连续自重启时曾整段空窗）：
+> 等端口释放改用 `_ensure_port_released` + 最多 3 次重试（`L_HOMEPAGE_RESTART_ATTEMPTS`）
+> + 就绪超时 75s（`L_HOMEPAGE_RESTART_READY_TIMEOUT`）+ 重试前先查是否已被新实例占上
+> + 清陈旧 guard（`_kill_stale_guards`）+ guard "让位"。细节见
+> [src_hot_reload_源码热重载与主页常驻.md](../src_hot_reload_源码热重载与主页常驻.md) §主页常驻守护。
+
 ## 五、阶段 2：覆盖"服务自热重载失败（熔断）"
 
 **现状缺口**：服务自己的源码热加载重启（`src-watch`）不写进主页 `restart_history.jsonl`，

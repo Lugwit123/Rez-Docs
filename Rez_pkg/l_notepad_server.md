@@ -57,7 +57,9 @@ requires = [
 ```
 
 - **不直接依赖 `lugwit_baidu_netdisk` 包**——cloud_sync（云端镜像/网盘链接）经其 Web 服务 HTTP 接口接入
-  （同机 127.0.0.1 自动授权，服务端复用其持有的百度 token），避免拉入服务端重依赖
+  （百度 token 在服务端侧；notepad 侧凭 env `LUGWIT_ACCESS_TOKEN` / 登录态调它 ——
+  `depot_map.py` 的 `require_token()` 取不到就直接报错，**同机自动授权自 P0 起默认关、不再是取 token 途径**），
+  避免拉入服务端重依赖
 - `watchfiles` 为 `SrcWatchService` 的可选监视后端；服务不再使用 uvicorn `--reload` 作为现行机制。
 - **重要**：截至 2026-09-17，`l_notepad_server` 的 `L_SRC_WATCH` 对 `.py` 改动实测不可靠。Python 改动后必须手动重启；模板是否刷新仍按现行热重载文档核验。
 

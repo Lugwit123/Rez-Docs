@@ -266,6 +266,7 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 | 接口 | 参数 | 返回 |
 |------|------|------|
 | `/api/depot/status` | — | `{owner, db, apps_root, depot_root, changes:[最近1条]}` |
+| `/api/depot/local_token` | — | `{token, owner}`。把**调用者自己的** lugwit token 回给页面：cookie 是 HttpOnly，页面 JS 读不到，而托盘的 `depot_local_*` 必须拿到真实用户 token（**不许**回落托盘会话）。`Cache-Control: no-store`；只可能返回你自己的 token |
 | `/api/depot/list` | `dir=/` | `{dir, owner, items:[...]}` 见下（**目录是隐含的**：只有下面还有存活文件才列出，整目录搬走/删光后不会留空目录） |
 | `/api/depot/tree` | `dir=/` | `{dirs:[子目录名]}`；库根（`/lib`）只校验登录，**库根之下按 owner 判读权**（与 `/list` 同口径，越权 403） |
 | `/api/depot/list_recursive` | `dir=/&depth=6&limit=4000` | 递归列该目录下全部内容（页面「⤢ 展开」视图用）；超 `limit` 截断并回 `truncated:true` |
@@ -531,6 +532,12 @@ window.addEventListener("depot-api", function (ev) {
 `local_root`），并用 `depot_local_version`（watchdog 变更序号）每 2.5s 轮询、**变了才重拉**，
 切走标签页即停。见 `Rez_pkg/l_tray.md` §2。
 
+**两种模式的刷新差异（2026-09-27 真机实测）**：浏览器模式是**事件驱动 + 2.5s 轮询** —— 本机删掉文件后
+树里最迟 2.5s 消失（托盘侧检出 3–27ms，页面第 1 个 tick 就重拉，实测 1352 条目的树首次拉取 294ms）；
+**客户端模式是纯快照、不会自动刷新**（`loadWorkspace()` 走完桥就 `stopWsPoll()`，全页无第二个定时器），
+要右键「🔄 刷新本地树」。另外**边界不对称**：托盘 `depot_local_*` 强制 root 落在工作区 `local_root` 内，
+而客户端桥的 `treeDir` 只判 `p.is_dir()`、**没有根限制**（只受深度≤3 / 条目≤2000 约束）。
+
 **本机路径的右键：在资源管理器中打开 / 新建 / 删除**（2026-09-26 加）：左树 Workspace 标签里
 - **文件行**右键 → `📂 在资源管理器中打开`（打开所在文件夹并选中）、`▶ 用默认程序打开`、
   `🗑 删除文件（回收站）`、`📋 复制路径`、`🔄 刷新本地树`
@@ -542,11 +549,13 @@ window.addEventListener("depot-api", function (ev) {
 目录会提示「内容一起进回收站」）。落地在 `localOpen()` 与 `localFsCall()`：打开走本地桥
 （`revealInExplorer` / `openExternal`，浏览器模式回落托盘 `depot_local_open`）；
 **新建 / 删除目前只有托盘实现**（`depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`，
-客户端桥没有写能力），删除用 `winshell` 送**回收站**、可还原，且**拒绝删除工作区根目录本身**。
+客户端桥没有写能力），删除用 `winshell` 送**回收站**、可还原，且**拒绝删除工作区根目录及其上层目录**。
 
-⚠️ **浏览器模式要托盘已登录**：页面 cookie 是 HttpOnly 时 `pageToken()` 读到空串，托盘会回落到
-**自己的会话 token**；托盘没登录就拿不到工作区列表，动作会拒答并提示「托盘登录态不可用？在托盘里点
-「登录」后重试」。客户端模式的开 / 定位（本地桥）不需要托盘，新建 / 删除仍需托盘在线。
+⚠️ **浏览器模式要「页面 + 托盘」都是登录态**：cookie 是 HttpOnly，`pageToken()` 读不到，
+页面会先向同源端点 `GET /api/depot/local_token` 取一份**自己的** token（内存缓存）再传给托盘；
+托盘侧对空 token 一律拒答，**不再回落托盘自己的会话 token**（2026-09-26 P0）；托盘没登录就拿不到
+工作区列表，动作会拒答并提示「拿不到你的工作区本地路径（托盘登录态不可用？…）」。客户端模式的开 / 定位
+（本地桥）不需要托盘，新建 / 删除仍需托盘在线。
 
 ---
 
@@ -568,6 +577,7 @@ window.addEventListener("depot-api", function (ev) {
 | `GET /api/vision/credentials` | 读图像识别 AK/SK（脱敏）+ 存储说明（权威在 auth 中心存储，经 hub 的 `/v1/keys`） |
 | `POST /api/vision/credentials` | 写图像识别 AK/SK（`{api_key, secret_key}`，传 `****` 保留旧值）→ 落 auth 的中心密钥存储（经 hub `POST /keys`，需登录态） |
 | `POST /api/vision/tag` | **图片 AI 打标**：`{content_key, image_base64}` → `{tags, raw, model, cached}`。走**百度智能云图像识别**（另一套 AK/SK，见 §19），结果按 `content_key` 缓存进 `vision_tag` 表；额度/QPS 超限返 **429**（`code=vision_quota`） |
+| `GET /api/depot/tags` | **相册标签（只读）**：`?dir=` / `?path=` / `?recursive=0` / `?refresh=1` → `{rev, rows, count, tags:{depot路径:[标签]}, src:{depot路径:{标签:"ai"｜"manual"}}, manual:[…]}`。数据来自 depot 里的 `/l_wchat/album/_tags.json` 快照（l_WChat 改标签时提交），**60s 内存缓存**；`src` 决定页面上的 🤖（AI 给的才有），标签的编辑入口在相册页 |
 | `POST /api/files/upload` | `{local_path, remote_dir, remote_name, auto_mkdir, overwrite}` 传**服务端本地**文件 |
 | `POST /api/files/upload_stream` | `?dir=&name=` + body 原始字节，浏览器直传；响应含 `rapid`（秒传命中＝零上行；**当前实测不命中**，见 §14.4）与 `md5_real` |
 | `POST /api/upload/prepare` | **客户端直连百度的第一步**：`{dir, name, size, block_list}` → 秒传探测 / 直传票据（见 §14） |
@@ -776,10 +786,10 @@ Postgres 连不上。检查 `chatroom` 库连接串（和 `lugwit_auth` 用同�
 
 **401 未登录 lugwit_auth**
 非本机请求必须带 cookie `lugwit_token` 或环境变量 `LUGWIT_ACCESS_TOKEN`。
-本机请求会自动换 token —— **但本机自动授权 2026-09-17 实测静默失败**（见 §2.3），
+本机请求**也不再自动换 token**（`/api/v1/auth/auto` 自 2026-09-20 起默认关、全仓调用方已清，见 §2.3），
 所以三处调用方（note server / 托盘 `depot_bridge` / 客户端本地桥）改为**自带凭据 + 401 换新 token 重试一次**；
-若仍 401，先查调用方 token 来源（托盘会话 token / env `LUGWIT_ACCESS_TOKEN` / 账号密码登录 ——
-`/api/v1/auth/auto` 已默认关、相关调用已全清），再看 `lugwit_auth` 是否起来。
+若仍 401，先查调用方 token 来源（托盘会话 token / env `LUGWIT_ACCESS_TOKEN` / 账号密码登录），
+再看 `lugwit_auth` 是否起来。浏览器模式下工作区本地树那批动作另需页面自己的 token，见 §6.2 与 §20。
 
 **列表能通、下载 500 / 经 nginx 502（内容取不到）**
 depot **元数据在 PostgreSQL**（`/api/depot/list`、`/api/kb/{kb}/depot/list` 离线可用、返回 200），
@@ -1182,6 +1192,11 @@ if known is None: 才 ensure_blob(...)
 - 缓存表 `vision_tag(content_key PK, tags text[], raw jsonb, model, created_at)`：**键是原图 sha256**，
   同内容只调一次 API。表建在 depot 同一个 Postgres 里（`depot_store.py` 的 `_SCHEMA_SQL` 幂等加表）。
 - 调用方现在是相册（手动批量打标，缩图在浏览器做）：见 `Rez-Docs/相册功能与数据模型.md` §7。
+- **标签进版本库（2026-09-27）**：相册侧改标签后把 `/l_wchat/album/_index.json`（索引本体）与
+  `/l_wchat/album/_tags.json`（扁平映射：depot 路径 → 标签，`tags_manual` 标记）提交进 depot；
+  本包只读不写：`GET /api/depot/tags` 取 `_tags.json` 最新版解析（60s 缓存）→ 版本库页面
+  （文件行 / 缩略图 / 展开行 / 预览工具条）显示标签 chip，**AI 给的带 🤖、人加/改过的没有**（接口 `src` 字段）。
+  **红线：识别调用只从本包出**，l_WChat 一律经本包 `POST /api/vision/tag` 转发，AK/SK 不落 l_WChat。
 
 **注意**：百度没有"查剩余额度"的开放接口，额度用尽只能靠 error_code 17 探测 → 调用方应当**停下来**，
 不要为了跑完而自动转按量付费（当前实现：前端 429 即停）。
@@ -1197,7 +1212,7 @@ if known is None: 才 ensure_blob(...)
 | 跨用户元数据泄露：`GET /api/depot/changes`、`/change/{cl_id}`、`/tree` 三个 GET 没有 P6 判定（`/list`、`/history` 都有），任何登录用户能枚举别人的 CL 列表、**CL 里别人的全部文件路径**、以及任意目录的分支 | `changes`：`store.changelists(limit, owner=本人)`（非管理员）；`change/{cl_id}`：`store.changelist_owner()` 不符 → 403，不存在 → 404；`tree`：库根只校验登录、库根之下 `_depot_perm(...,'depot.read')`（与 `/list` 完全同一口径） | `web_server.py`、`depot_store.changelists/changelist_owner` |
 | `submit_stream` 与 `/api/files/upload_stream` 用 `await request.body()` **整包读进内存**（无上限）—— 一个大上传能把整个服务打爆 | 改成 `async for chunk in request.stream()` 边收边落盘（与 `mark_add_stream` 同一写法），空体仍 400；`_remember_session_title` 改收**临时文件路径**，只对 `session_*.json` 且 ≤2MB 才回读算标题 | `web_server.py` 两个上传端点 + `_remember_session_title` |
 | 托盘本地动作的边界是"字符串前缀"，**不解析 symlink / junction** → 工作区里放一个指向 `C:\Windows` 的 junction 就能越界读写删 | `_norm()` 改用 `os.path.realpath`（含 normcase/normpath）；`_check_path` 返回**解析后的路径**，后续动作落在已校验的真实目标上 | `l_tray/local_tree.py` |
-| 网页 token 为空时 `depot_bridge._http` 回落**托盘自己的会话 token** → 没带登录态的页面拿到托盘账号的工作区根（与 `token_override`"用网页登录态替代托盘账号"的语义相反） | `_allowed_roots("")` 直接回空，新增 `_require_roots()` 抛"网页没带登录态" | `l_tray/local_tree.py` |
+| 网页 token 为空时 `depot_bridge._http` 回落**托盘自己的会话 token** → 没带登录态的页面拿到托盘账号的工作区根（与 `token_override`"用网页登录态替代托盘账号"的语义相反） | `_allowed_roots("")` 直接回空，新增 `_require_roots()` 抛"网页没带登录态"；**同时**给页面补上正路：新端点 `GET /api/depot/local_token`（§5.1）把调用者自己的 token 回给它（cookie 是 HttpOnly，页面 JS 本来读不到），页面内存缓存后传给托盘 → 身份不再被替换，功能也不丢 | `l_tray/local_tree.py`、`web_server.py::api_depot_local_token`、`web_depot.html::ensurePageToken/wsTrayCall` |
 | `depot_local_open(mode="open")` 对工作区内**任意**文件 `os.startfile` → 同步目录里丢个 `.exe/.bat` 就是网页一键在本机执行 | 按扩展名挡可执行/脚本/快捷方式（`.exe .com .scr .pif .msi .msp .cpl .jar .bat .cmd .ps1 .psm1 .vbs .vbe .js .jse .wsf .wsh .hta .lnk .url .reg`）；目录走 `explorer` 不受影响 | `l_tray/local_tree.py::_NO_STARTFILE_EXTS` |
 | 删根保护只比"根本身"，多工作区根嵌套/重叠时删父目录会连带另一个工作区 | 改为"目标等于任何 allowed root，**或**是任何 root 的上层目录"即拒 | `l_tray/local_tree.py::depot_local_delete` |
 

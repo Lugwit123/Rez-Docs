@@ -104,6 +104,9 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 | `offset` | int | 0 | 偏移（分页） |
 | `sources` | str | 全部 | 逗号分隔来源过滤：`note`（个人笔记）/ `kb`（知识库工作区）/ `code`（本机代码库，见 §1.5） |
 | `mode` | str | `hybrid` | `lex` 纯词法 / `hybrid` 词法+语义 / `sem` 纯语义 / `auto` 先 `lex`、零命中回退 `hybrid`（返回多一个 `mode_used`） |
+| `packages` | str | 默认范围 | 逗号分隔的 rez 源码包名，只保留这些包的**代码**命中（见 §1.6）。**不传 = 默认范围**：全部本机库减去 `index_skip.json` 的 `libs`（默认不搜的噪声库）；显式传（哪怕只传一个）就完全按传的来 |
+| `rerank` | int | 配置值 | `0` 本次不重排 / `1` 使用（受全局配置约束） |
+| **`zh_en`** | int | `0` | `1` = **中文提问 → 英文改写 → 两路加权 RRF 融合**（跨语言，见 §5.4）。**默认关**：要访问外部免费翻译接口，而本服务是本地优先。译文缓存到 `app_settings`，失败/超时静默退回纯中文；返回多一个 `zh_en` 字段 |
 
 ### 1.2 知识库（`routers/kb.py`）
 
@@ -196,11 +199,19 @@ curl -s "http://127.0.0.1:8765/api/search/route?q=%E4%B8%80%E6%AE%B5%E5%A4%8D%E6
 | `GET /api/search/index_libs` | 登录 | 可建索引的本机库：`label/kind/name/root/exists/docs/scan`，附 `exts` / `max_files` / `max_bytes` |
 | `POST /api/search/index_lib` | 管理员 | **手动建索引**：`{"label":"l_notepad_client","embed":true}` → 只扫该库，返回 `files/touched/duration_ms/capped`，`embed=true` 时随后台嵌入向量 |
 | `GET /api/search/code/file?root=&file=` | 登录 | 只读查看（`root` = 库标签，代码库根与知识库工作区都可）；路径限定在库根内 |
+| ↳ 追加参数 | — | **`start` / `end` / `context`**（2026-09-27）：按**行范围**读（1 起算闭区间，`context` 两端各多带几行）。配合命中项的 `chunk_line`，agent/LLM 可以只取"命中块那一段"，不必整文件塞上下文 |
 | `GET /web/code?root=&file=&hl=` | 登录 | 网页只读查看页：行号 + `hl`（逗号分隔词）高亮，超 `5000` 行只渲染前 5000 行 |
 
 **代码块的「上下文头」**（2026-09-26）：每个代码文件的索引文本前会拼一段头
 （`search_index.code_head`）= `[包名] 相对路径` + `符号: 顶级 def/class 清单` + 模块首行说明。
 `.py` 用标准库 `ast` 抽取（**零新依赖**），其它语言按行首 `def/class/function/…` 正则兜。
+- **头恒为 3 行，逐行各自封顶**（`CODE_HEAD_L1/L2/L3`）——**不要**改成整体截断：那会把第三行整行砍掉，
+  "头几行"随文件而变，块的第一内容行就不确定了（实测因此测出过两次假数字）
+- **中文锚点**（2026-09-27）：嵌入文本 = `头 + 该文件的中文症状句 + 代码`。原来嵌入文本里
+  几乎没有中文，而提问是中文 → 向量空间里没有对应文本可匹配。实测跨语言差距（中文−英文）
+  从 +0.075 收到 **0.000**，评测集 MRR 0.667 → **0.722**
+  （⚠️ 往**倒排**里塞更多词是走不通的，实测净负，见"接线事故"）
+- ⚠️ 改这几样（切块 / 头 / 锚点）都要**全量重嵌**，配方版本见 §6
 - 检索侧写进 `search_fts.title` 列（bm25 权重 6），向量侧 `search_vec.embed_doc` 给**每个块**冠头
 - 只对"查询里提到包名/符号名"的场景有效；实测 8 条口语症状查询里名次**逐条不变**（没人提名字）
 - 想单独关掉做对照：进程内 `search_index.code_head = lambda *a: ""`（`title` 会退回 `rel`），别改数据目录
@@ -232,6 +243,41 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 - **参与向量语义（2026-09-25 起）**：代码库文件按本机文件内容嵌入（键 `code:<label>:<rel>`，与笔记/知识库共用分块与模型），所以"口语症状"（"程序卡很久"）也能语义召回代码（实测 `vec≈0.63`）；单篇嵌入失败只跳过并计数（`_EMBED_RETRY_MAX=3` 后放弃），不阻塞其余文档。
 - **知识库工作区为什么不走归档**：`.py` 进 depot 会连带体积/配额问题，且自动上传与"手动创建索引"的预期相反。工作区走本机索引后，`workspace_sync` 的上传白名单（`WORKSPACE_EXTS`）仍是文档类型，**`.py` 只进本地索引、不会被动上传**；代价是工作区索引需手动重建（手动全量重建也会带上它们）。
 
+### 1.7 MCP 服务端（给 agent / LLM 当工具用，2026-09-27 新增）
+
+`mcp_server.py` 把检索暴露成 **MCP server**（stdio，一行一个 JSON-RPC）：任何支持 MCP 的 agent
+都能直接调本机检索，**不需要 l_notepad 服务在跑、不需要 token、不联网**（直连同一个 SQLite）。
+
+| 工具 | 用途 |
+|---|---|
+| `search` | 自然语言/关键词检索（笔记+知识库+本机库代码），返回**带行号**的片段 + 「读全文」提示 |
+| `read_file_range` | 按行范围读库内文件（配合 `search` 给的行号，别整文件塞上下文）|
+| `index_status` | 索引体检（文档数 / 向量覆盖 / 症状锚点覆盖 / 本机库清单）|
+
+⚠️ **配置要点（实测）**：**不要用 `wuwor.bat` 当 `command`** —— `wuwor < args` 时 stdin 收不到内容
+（`sys.stdin.read()` 长度 0），而 MCP 的 stdio 全靠它。要**直接指便携 python + 显式 env**：
+
+```json
+{
+  "mcpServers": {
+    "l_notepad": {
+      "type": "stdio",
+      "command": "<trayapp>\\wuwo\\py_312\\python.exe",
+      "args": ["-m", "l_notepad_server.mcp_server"],
+      "env": {
+        "PYTHONPATH": "<trayapp>\\rez-package-source\\l_notepad_server\\999.0\\src",
+        "L_NOTEPAD_ROOT": "<trayapp>\\rez-package-source\\l_notepad_server\\999.0",
+        "L_NOTEPAD_PKG_ROOT": "<trayapp>\\rez-package-source",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}
+```
+
+少一个环境变量就会报 `no such table: search_docs`（数据目录没指对）或"未知库标签"（货架根没指对）。
+手测：`python -m l_notepad_server.mcp_server < reqs.jsonl`（一行一个请求，EOF 结束）。
+
 ### 1.6 「要搜索哪些包」（本机库勾选，2026-09-25 新增）
 
 搜索页可勾选「要搜索哪些包」= **全部本机库的并集**（本机实测 54 项）：
@@ -250,16 +296,35 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 | 端点 | 权限 | 说明 |
 |------|------|------|
-| `GET /api/search/code_packages` | 登录 | `root`（货架目录）+ `packages[]`（`label/kind/root/exists/docs/indexed/scan`） |
+| `GET /api/search/code_packages` | 登录 | `root`（货架目录）+ `packages[]`（`label/kind/root/exists/docs/indexed/default_off/never_index/scan`） |
 | `GET /api/search?packages=a,b` | 登录 | 只保留 `source=code` 且 `kb_name ∈ {a,b}` 的命中 |
 
 - **货架位置**：`L_NOTEPAD_PKG_ROOT`（`package.py` 里按 `{root}/../../../rez-package-source` 给，即 `<trayapp>/rez-package-source`）；
   页面设置 `code_pkg_root` 可覆盖。
-- **默认不勾选 = 不限**（搜全部已建索引的库）；勾选后只搜勾选的包。
+- **默认范围 = 全部库 −「默认不搜」名单**（`data/index_skip.json` 的 `libs`：`postgresql / ChatRoom /
+  l_comfyui_frontend / l_comfyui_ai / l_mayaPlug / conemu`，第三方 vendored 内容）；不传 `packages` 时服务端
+  自动 `kb_name NOT IN (名单)`，勾选面板也默认不勾它们并标「默认不搜」。
+  **想搜它们就显式勾上**（勾上后 `packages=` 带上它即可；勾选面板 = 所见即所搜）。
+- **名单语义**：`libs` = 默认不搜（**索引照建**）；`files` = 真不索引（生成物/测量夹具，防"夹具自指"）；
+  `never_index` = 连索引都不建（默认空）。`index_all --purge` 只摘 `never_index`。
 - **每个包要先建索引**：`POST /api/search/index_lib {"label":"l_agent_chat"}`（`kind=pkg`，手动，不参与 TTL 自动刷新）；
   没建过的包在列表里显示「未建索引」，搜不到。实测 `l_agent_chat`：133 文件 / 0.7s。
 - **不要指望一次建全部**：货架全量是 3 万+ 文件 / ≈1.9GB（单 `ChatRoom` 就 1.3 万文件 / 656MB），
   逐个建、按需建；体量上限（`CODE_MAX_FILES` / `CODE_MAX_BYTES`）仍逐包生效。
+- ⚠️ **默认不搜 ≠ 不参与打分**：BM25 的 `df/avgdl` 是**全库**统计（过滤是 SQL `WHERE`），
+  把这 6 个库灌进索引后即使默认不搜，词法分尺度仍会被拉偏。
+  **A/B 实测**（唯一变量 = 6 库在不在 FTS 里；症状列两边都先 force 重灌）：
+
+  | 症状用例（mode=lex） | A：6 库在索引（17,239 篇） | B：6 库摘掉（2,528 篇） |
+  |---|---|---|
+  | 真实原话「ctrl+中键呼出 l_notepad_client…整机卡很久」 | 第 8 | 第 9 |
+  | 「点了按钮没反应，像死住了一样」 | 第 44 | 第 12 |
+  | 「笔记窗口弹出来…鼠标要等好几秒」 | 漏 | 第 40 |
+  | seen MRR / held_out MRR | 0.049 / 0.256 | 0.073 / 0.257 |
+
+  → 稀释**真实但幅度小**（seen −0.024）；「真实原话」8 vs 9 几乎没差 ⇒ 掉名次主要是 17k 篇语料的尺度，
+  不是这 6 库。代价可接受，换来"勾上就搜得到"。改语料规模后仍要重跑 `tools/quality_report.py`。
+  另注：`drop_lib` 会连带删这些库的向量行，A/B 之后要补 `vec_rebuild`。
 - **记住选择**：浏览器 `localStorage['ln_search_packages']`（换设备/换浏览器要重选）；
   从顶栏进搜索页时会自动把记住的包补进 URL（`pkgs_saved=1` 防循环）。
 - **包名过滤框**（2026-09-25 新增）：54 个包的列表上方有「过滤包名…」输入框，只隐藏不匹配的项，
@@ -483,6 +548,69 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   已**停用**：它是唯一"依赖查询"的产物（`data/synonyms_extra.proposed.json` 未启用，内容是同一条
   查询内部 bigram 互映射的噪声）
 
+#### 5.3.1 中↔英标识符别名（`term_families_en.json`，2026-09-27）
+
+**动机（实测）**：同一份索引、同一批查询，只换提问语言 —— **英文 MRR 0.708 vs 中文 0.633**。
+原因：词法通道是**中文 bigram 倒排**，中文查询词匹配不到英文标识符，只能靠 AI 生成的中文症状句搭桥，
+桥太窄。补一层"中文词 → 代码里真出现的英文标识符"的等义词族，让中文提问也能命中
+`clipboard` / `hotkey` / `render`。
+
+- **产物**：`data/term_families_en.json`，与手写的 `term_families.json` **分文件**（出处可分、可单独回滚），
+  运行时合并加载（`search_index._term_families` 读 `FAMILY_NAMES` 两个文件，缺一个不致命）
+- ⚠️ **生效范围只有选库路径**（`route_terms`）：把别名接进**文档检索**的 FTS 召回表达式
+  （`parse_query`/`build_match_expr`）试过，实测**净负收益**（症状 seen 0.172→0.138、
+  代码库 MRR 0.750→0.708），**已回退**。原因：OR 扩展是"给所有命中别名的文档一起加分"，
+  `面板→window/panel/pane/tab` 这类别名在 Qt 库里遍地都是，把目标文件的相对优势拉平。
+  **跨语言不该在倒排的 OR 表达式上解决**——下次走向量侧或"改写后两路各查一次再融合"
+- **产出**：`tools/term_translate.py`（离线、版本化）
+  ```bash
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.term_translate --probe   # 测后端
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.term_translate --dry-run # 只看结果
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.term_translate --write    # 落盘
+  ```
+- **引擎**：默认 `--engine ollama`（本地 7B，问法是"代码里会出现的英文标识符"，**不是词典翻译**）；
+  `--engine mt` 走免费翻译链（`baidu`（需 `BAIDU_TRANSLATE_APPID/SECRET` 环境变量，默认值见
+  `l_agent_chat/config.py:960`）→ `google` 免注册端点 → `mymemory`）。全程 stdlib urllib，不加依赖
+- **两道质量闸门**（都是实测教训）：
+  1. **换口径**：孤立词直译会拿词典义项当标识符（`卡→card`、`死住→live/death`、`假死→animation`）；
+  2. **语料校验**（默认开）：别名**必须出现在索引语料里**才保留——不出现的别名永远匹配不到文档，
+     留在表里只会撑大 OR 项、稀释覆盖率（`--no-corpus-filter` 可关）
+- ⚠️ **语料校验按"存在"筛、不按"意思"筛**，所以**必须在写盘后人工复核**：实测它放过了
+  `向量→point`（QPoint）、`两份→two/parts`；复核决定存档在文件的 `_meta._review` 里
+  （整族删 10、别名修剪 35 → 89 族 / 182 别名）
+- 生效范围：**只追加召回词**（`route_terms`），不参与打分；改文件按 mtime 热加载，**无需重扫索引**
+
+### 5.4 中英改写 + 两路 RRF 融合（`zh_en=1`，2026-09-27）
+
+**问题**：索引主体是英文代码/标识符，而提问是中文——中文提问只能靠 AI 生成的中文（症状句、
+模块说明）搭桥，桥太窄。**在倒排里塞中英别名是走不通的**（实测净负，见 §5.3.1），
+正确做法是**把问题本身翻成英文再查一遍，两路融合**。
+
+```
+q(中文) ──检索──► 结果A ─┐
+        └─translate.zh2en─► q'(英文) ──检索──► 结果B ─┴─加权RRF(中文2:英文1)─► 最终排序
+```
+
+- 实现：`search(zh_en=True)` → `translate.zh2en()`（0.8s 超时、`app_settings` 持久缓存、
+  **任何失败返回 ""** → 静默退回纯中文）→ 再查一遍 → `_rrf_fuse()`（`Σ w/(k+rank)`，k=10）
+- **为什么用 RRF 而不是把两路的分加起来**：两路是不同查询、不同量纲，原始分不可比；RRF 只看名次
+- **为什么要给中文路加权（2:1）**：等权时另一路会把它自己的高分文档顶上来——那些文档从两路都拿分，
+  压过只有一路得分的目标（实测 `todo-track` 中文第 1 被拉成第 3）。2:1~3:1 是平台，4:1 回落
+- 实测（17 条用例，`tools/quality_report.py --zh-en`）：
+
+  | 指标 | 关 | 开 |
+  |---|---|---|
+  | 评测集 recall@1 / MRR | 3-of-6 / 0.722 | **5-of-6 / 0.889** |
+  | 症状 seen / held_out | 0.172 / 0.291 | **0.361** / 0.169 |
+  | 代码库中文 MRR | 0.611 | **0.778** |
+  | 跨语言差距（中文−英文） | 0.000 | **−0.167**（中文反超） |
+
+  **代价**：`快捷键按下去要愣两秒` 从第 1 掉到第 2（中文路本来已排第 1，融合后另一路的文档挤上来）。
+  这是加权 RRF 的固有代价，不是 bug
+- 复现/调参：`wuwor l_notepad_server -- python -m l_notepad_server.tools.zh_query_probe --cases all --sweep "1,1;2,1;3,1"`
+  （翻译只做一次、本地算多组权重）。⚠️ 开 `zh_en` 后每次检索跑两遍，**内存紧张的机器请分层跑**
+  （`quality_report --section 23`）
+
 ---
 
 ## 6. 索引维护与状态
@@ -512,6 +640,26 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   再回查 `SELECT title, symptom FROM search_fts WHERE rowid=?` 确认落库，否则量到的是旧列（踩过，见增强文档 §7.2）
 - **`GET /api/search/stats` 的 `families` / `symptom.tagged`**：分别显示现象词族表（族数与注入上限）
   和带族标注的症状条目数
+- **改了「嵌入配方」必须全量重嵌**：切块规则 / 块头 / 中文锚点任一变，`vec_docs` 都看不出来
+  （它只比 `size/mtime/rev/model`）。配方版本 = `search_vec._embed_sig()`（`ck<CHUNKER_REV>-sym<症状文件 mtime>`），
+  与 `app_settings.vec_chunker_rev` 不一致时 `refresh()` 自动清空 vec 表并全量重嵌
+  （`embed_state.rechunked`、`stats.vec.chunker_rev` 可见）。**手动重嵌用包内工具**（可中断续跑）：
+  ```bash
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.vec_rebuild
+  ```
+  几千个块的重嵌很容易被系统杀掉（内存紧张），`refresh()` 只处理"还没有 `vec_docs` 记录"的文档，
+  所以**崩了直接重跑就是续跑**，不会重复劳动
+- ⚠️ **跑重嵌/批量生成前先停服务**：`l_notepad_api` 带 **src-watch 热更**——改 `l_notepad_server`
+  的源码就会重启它，重启时若嵌入配方变化会**清空向量并开始重嵌，全程持有 SQLite 写锁**，
+  于是 CLI 侧只会看到 `database is locked`（实测：80 轮全失败，`vec_docs` 在 247↔280 之间来回）。
+  正确姿势：
+  ```bash
+  wuwo svc stop l_notepad_api                      # 让出写锁
+  wuwor l_notepad_server -- python -m l_notepad_server.tools.vec_rebuild --default-scope
+  wuwo svc start l_notepad_api                     # 跑完再起
+  ```
+- 🧭 **只嵌默认范围**：`vec_rebuild --default-scope` 跳过 `index_skip.json` 的 `libs`
+  （那 14.7k 篇 vendored 默认不搜，嵌它们要几小时）
 
 ```bash
 # 后台重建（管理员）→ 轮询进度

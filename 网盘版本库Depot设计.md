@@ -246,9 +246,14 @@ reconcile  sync_done
 **托盘现在只负责本机能力**：本地目录树（`depot_local_tree` / `depot_local_version`）、
 在资源管理器中打开 / 定位本地文件（`depot_local_open`）、新建目录 / 新建文件 / 删除到回收站
 （`depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`）、选本地路径 —— 以上都只作用于
-**工作区 `local_root` 之内**（删除额外禁止删根目录本身，走回收站可还原）。工作区树与工作区卡片的
-右键菜单用它们；浏览器模式下工作区标签页的本地树由托盘读，并用变更序号轮询自动刷新。
-（浏览器模式要求托盘已登录：页面 HttpOnly cookie 读不到 token 时托盘回落自己的会话 token，没登录就拿不到工作区列表。）
+**工作区 `local_root` 之内**（比对的是解析 symlink/junction 之后的真实路径；删除额外禁止删根目录
+**及其上层目录**，走回收站可还原）。工作区树与工作区卡片的右键菜单用它们；浏览器模式下工作区标签页
+的本地树由托盘读，并用变更序号（watchdog）每 2.5s 轮询、变了才重拉 —— **客户端模式是进程内快照，
+不自动刷新**，要右键「🔄 刷新本地树」；客户端桥的 `treeDir` 也没有 `local_root` 限制（与托盘不对称）。
+（浏览器模式要求**页面和托盘都是登录态**：cookie 是 HttpOnly，页面 JS 读不到，所以页面会向同源端点
+`GET /api/depot/local_token` 取一份**自己的** token 传给托盘；托盘对空 token 一律拒答，
+**不再回落托盘自己的会话 token**（2026-09-26 P0），详见 `Rez_pkg/l_tray.md` §2 与
+`Rez_pkg/lugwit_baidu_netdisk.md` §20。）
 
 <details>
 <summary>历史方案（2026-09-17，已被上面取代，留档看取舍）</summary>

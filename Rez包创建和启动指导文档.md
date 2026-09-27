@@ -440,6 +440,12 @@ def commands():
 
 ### 9.1 开发模式 --reload（自动重载，勿手动重启）
 
+> ⚠️ **历史机制（2026-09 起已弃用）**：现行热重载改为**进程内 `SrcHotReload`**（`L_SRC_WATCH*`，
+> 事件只负责叫醒、重启由 mtime diff 判定），**不再用 uvicorn `--reload`** —— 后者会留下 reloader
+> 孤儿 worker、与 `.solo` 守卫抢进程。本节保留作历史背景与"如何踩的坑"记录，正文见
+> [src_hot_reload_源码热重载与主页常驻.md](src_hot_reload_源码热重载与主页常驻.md)。
+> `.dev_mod` 的语义**没变**：它仍是"热重载/热更开关"（`L_DEV_MOD=1`），只是实现换了。
+
 ```python
 def main():
     parser.add_argument("--reload", dest="reload", action="store_true", default=True)
@@ -494,16 +500,19 @@ wuwor l_tray -- start_tray
 > ⚠️ **只对"卡片外的包"直启**（库 / GUI / 工具 / 数据库 / 一次性脚本）。
 > 如果目标是**主页卡片里的服务**（`l_log_backend`、`l_wchat_backend`、`chatroom_backend`、
 > `l_notepad_api`、`homepage_start`…），**不要**用 `wuwor` 直启 —— 会绕过重启锁 / 常驻守护 /
-> 重启历史，卡片状态一片空白。走主页卡片，或用卡片 API：
+> 重启历史，卡片状态一片空白。用统一入口：
 >
 > ```bat
-> curl http://127.0.0.1:8090/api/v1/services/hosted
-> curl "http://127.0.0.1:8090/api/v1/services/status?target=l_wchat_backend"
-> curl -X POST "http://127.0.0.1:8090/api/v1/services/<卡片名>/restart?trigger=cli"
+> wuwo svc list                        :: 卡片清单（第一列 = 命令行用的别名）
+> wuwo svc status l_wchat_backend      :: 状态 + 热更进度
+> wuwo svc restart l_wchat_backend     :: 启停 / 重启 / 热更新（随后等就绪）
+> wuwo svc log l_wchat_backend -n 50   :: 该服务自己的日志（-f 增量跟）
 > ```
 >
+> （底层即卡片 API `GET /api/v1/services/hosted`、
+> `POST /api/v1/services/<卡片名>/<op>?trigger=cli`；`wuwor svc ...` 等价。）
 > 豁免：`l_homepage` 自身（控制面，鸡生蛋）、`.soloignore` 排障、用户明确要求。
-> 规划中的统一入口 `wuwo svc ...` 见 §17.5。
+> 详见 §17.5。
 
 ### 调用 Python 模块
 
@@ -528,11 +537,12 @@ wuwor postgresql -- postgres_stop
 | 修饰符 | 作用 | 识别方 / 行为 |
 |--------|------|--------------|
 | `.script_server` | 设 `L_SCRIPT_SERVER=1` | 标题栏（`L_FramelessMainWindow`）优先识别，**总是启动脚本编辑器 HTTP 远程执行服务**（l_script_editor，默认 8764，被占用时自动向上找可用端口）。端口可用 `SCRIPT_EDITOR_HTTP_PORT` 固定（配合 `SCRIPT_EDITOR_HTTP_PORT_STRICT=1` 不漂移）；服务会发布发现文件 `~/.Lugwit/run/<service>.json` 并提供 IPC 命名管道，调用方无需写死端口 |
-| `.dev_mod` | 设 `L_DEV_MOD=1` | 各后端服务（auth/netdisk/chat/note/agent 等）识别后**启用 uvicorn 热更新**（reload，勿手动重启，见 9.1）；主页卡片可配专用热更新别名（`reload_args`，如 l_notepad_server 的 `l_notepad_api_reload`） |
+| `.dev_mod` | 设 `L_DEV_MOD=1` | 各后端服务（auth/netdisk/chat/note/agent 等）识别后**启用热重载/热更**（现行实现是进程内 `SrcHotReload`，不是 uvicorn `--reload` —— §9.1 是历史机制；详见 `src_hot_reload_源码热重载与主页常驻.md`）；主页卡片可配专用热更新别名（`reload_args`，如 l_notepad_server 的 `l_notepad_api_reload`） |
 | `.comfyui_lite` | 设 `COMFY_LITE=1` | 轻量 ComfyUI 模式 |
 | `.solo` | 动作 | 单实例守卫：已有实例运行时**交互确认**是否结束（5 秒无输入默认 Y=结束旧实例进程树 taskkill /F /T 后继续启动）；选 n 保留旧实例并退出本次启动 |
 | `.soloignore` | 动作 | 设 `L_SOLO_IGNORE=1` + 注入 `L_SOLO_PEER_PID/PIDS/CMDLINE`：**只观测不裁决**（wuwo 检测到旧实例也**不杀**），是否接管由**包自己**按 `L_SOLO_IGNORE` 决定（参考实现 `l_WChat/app.py:_solo_ignore_takeover()`）。托盘「启动管理 / 小工具网格」的启动项已统一用它；详见 `solo_单实例守卫模式.md` §6 |
 | `.update` | 动作 | 强制更新 GitHub 包（fetch + reset --hard） |
+| `.unmanaged` | 提示 | **只静音**"该服务由主页托管，请用 `wuwo svc`"这行提示（wuwo 侧提示层；**只提示不拦截**，剥离开不注入任何 env）。排障直启时用；等价开关是环境变量 `L_SVC_DIRECT=1`。见 `Rez_pkg/服务托管与统一启动入口_计划.md` §4.2 |
 | `.ps` / `.cmd` | 终端 | 在新 PowerShell / cmd 窗口启动 |
 
 示例：
@@ -553,8 +563,9 @@ wuwor l_notepad_server .solo .script_server -- l_notepad_server
 
 - 标题栏：`l_qframelesswindow/.../L_FramelessMainWindow.__init__` 检测
   `L_SCRIPT_SERVER` 后经 `QTimer.singleShot(0, ...)` 总是启动脚本服务
-- 后端服务：各服务入口检测 `L_DEV_MOD` 后给 uvicorn 传 `--reload`
-  （reload 踩坑见 9.1）
+- 后端服务：各服务入口检测 `L_DEV_MOD` 后启用**进程内热重载** `SrcHotReload`（`L_SRC_WATCH*`）
+  —— 现行实现**不再**给 uvicorn 传 `--reload`（那是 §9.1 的历史机制；踩坑见
+  `src_hot_reload_源码热重载与主页常驻.md`）
 
 ## 11. 本仓库常见写法参考
 
@@ -914,7 +925,7 @@ def _http_json(method, path, body=None, token=""):
 | | 卡片外的包 | 主页卡片里的服务 |
 |---|---|---|
 | 例子 | `l_qt_wgt_lib`、`l_muse_backup_viewer`、`l_tray`、`postgresql` | `l_log_backend`、`l_wchat_backend`、`chatroom_backend`、`l_notepad_api`、`homepage_start`… |
-| 怎么起 | `wuwor <包> [修饰符] -- <别名>` | 主页卡片按钮，或卡片 API（现行为 `POST /api/v1/services/<卡片名>/<op>?trigger=cli`；`wuwo svc ...` 为规划中的统一入口） |
+| 怎么起 | `wuwor <包> [修饰符] -- <别名>` | 主页卡片按钮，或统一入口 `wuwo svc start\|stop\|restart\|reload\|log\|list`（`wuwor svc ...` 等价；底层是卡片 API） |
 | 谁来管 | 调用方自己（起完就不管） | 主页 —— 重启锁、常驻守护（watchdog）、重启历史、日志、兜底页都归它 |
 
 **为什么卡片服务不能直启**：`wuwor` 直启会绕过重启锁（`%TEMP%/lugwit_hotreload/<alias>.lock`）、
