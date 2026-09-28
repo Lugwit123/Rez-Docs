@@ -169,6 +169,10 @@ reconcile  sync_done
 - `_depot_ctx()` 一次拿齐 `(store, access_token, apps_root)`，库不可用 → 503
 - `/api/depot/download` 解析 blob 的 `fs_id` → `dlink` → `StreamingResponse`，
   带 `X-Depot-Rev` 响应头
+- **`ws` 必须是"已登记工作区"**：新名字直接 **400「请指定工作区」**（不是 401/404，别往鉴权方向查）。
+  程序化消费方（非页面）第一次推送前要先 `GET /api/depot/workspace?all=true` 找、没有就
+  `POST /api/depot/workspace` 建一个，`maps` 用**库根**做隐式映射 —— 现成实现见
+  `l_model_hub/usage_store.py: ensure_workspace()`（2026-09-28 踩过）。
 
 页面 `web_depot.html`（现为**三栏 + 底栏**：左树 250 / 中栏 / 右栏、底栏 170，中栏 / 右栏 / 底栏的
 标签可拖动换位，布局细节见《Rez_pkg/lugwit_baidu_netdisk.md》§6）：标题栏抄
@@ -254,6 +258,19 @@ reconcile  sync_done
 `GET /api/depot/local_token` 取一份**自己的** token 传给托盘；托盘对空 token 一律拒答，
 **不再回落托盘自己的会话 token**（2026-09-26 P0），详见 `Rez_pkg/l_tray.md` §2 与
 `Rez_pkg/lugwit_baidu_netdisk.md` §20。）
+
+**程序化消费方（不经页面）**：除 `l_agent_chat`（会话/设置镜像，ws=`l_agent_chat`）与 `l_WChat` 外，
+2026-09-28 起 `l_model_hub` 也定时提交一份**调用统计** ——
+
+| 项 | 值 |
+|---|---|
+| 实现 | `l_model_hub/usage_store.py`（`flush()` → `push_to_depot()`；后台线程每 `L_MODEL_HUB_USAGE_FLUSH_S`（默认 60s）一次） |
+| 工作区 | 自动登记：`name=l_model_hub`、`library=/l_model_hub`、`maps` 用库根（`ensure_workspace()`，缺了会 400） |
+| 提交 | `POST /api/depot/submit_stream?ws=l_model_hub&path=/l_model_hub/usage.json`（整份覆盖） |
+| 内容 | `{providers, models, since, daily, daily_models, updated_at}` —— 厂商 + **模型**两维度，各带按天分桶；**保留 30 天**（`L_MODEL_HUB_USAGE_KEEP_DAYS`），落盘时清旧桶 |
+| 凭据 | 走 depot 同一套账号登录（env `LUGWIT_USER`/`LUGWIT_PASSWORD` 或 hub 密钥库 `depot_user`/`depot_password`），本机回环免登录 |
+
+它**不从云端回读**（云那份是历史留档；本机真源在 auth 中心存储的 `model_hub_usage`）。
 
 <details>
 <summary>历史方案（2026-09-17，已被上面取代，留档看取舍）</summary>

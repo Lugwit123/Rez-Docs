@@ -37,6 +37,14 @@
 | 代码 `.py` / 启动期配置（B 类） | `SrcHotReload` 监视线程 | 检测到变化 → 触发 `restart_cb` 自重启 |
 | `__pycache__`、`.pyc`、`.git`、`node_modules`、`logs` | **排除** | 不理会（否则重启自产文件导致**重启死循环**） |
 
+⚠️ **`.html` 永远不改 `restart_exts`（默认 `(".py",)`）—— 也就是说"改模板有没有生效"取决于模板怎么被读**，
+别一律当成"不用重启"：
+
+- **请求时现读文件**（如 `l_model_hub` 的 `_render_page()` 每次 `read_text`）：改完**刷新即变**；
+- **启动时读入 / 走 Jinja 环境缓存**（部分服务在 import 期把模板编进 `Environment`）：**必须
+  `wuwo svc restart <包>`**，否则在改的是内存里那份旧模板 —— 症状是"文件明明改了、页面还是老样子"；
+- 拿不准就 `wuwo svc restart <包>`（三秒的事），比对着旧模板排障便宜。
+
 ### 实现位置与用法
 
 - 文件：`wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/hotreload.py`

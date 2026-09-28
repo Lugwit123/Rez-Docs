@@ -108,6 +108,8 @@ npm run dev:server   rem Vite dev server（127.0.0.1:5174，HMR，/api 代理到
 > 后端不再据此裁剪 `reasoning` 事件（见下表），渲染与否交给前端开关。
 > `mode` 是对话模式（`agent` 默认 / `ask` / `plan` / `review`，见「新版 UI 要点」），
 > 缺省或未知值按 `agent` 处理。
+> `persist: false` = **无状态调用**（不写会话文件、不进侧栏），脚本化/端到端自测用；
+> 缺省 `true`（照常落盘）。
 
 SSE 事件类型：
 
@@ -134,7 +136,15 @@ SSE 事件类型：
 
 - **思考过程**：回答进行中（消息 `running`）思考块**实时展开**，整条回答结束后**自动折叠**，点标题可手动展开/收起。
   判据是**消息级** `status` 而非单个 part 的 `status`——part 流完会先变 `complete`，用它会导致正文还没吐完就折叠。
-- **翻译**：思考块展开后右上角有「🌐 翻译」，调 `POST /api/translate` 翻译整段思考（免费后端优先、失败回退 AI），再点收起译文。
+  **思考按真实位置分段显示**（不再全堆在过程块顶部）：每段思考落在它那次调用之后，`reasoning` part 带 `startedAt`，
+  与工具卡/正文按时间线交错；**每段思考与每张工具卡都显示耗时 chip**（思考=阶段起点到该段结束，工具=客户端 `tool_start`→`tool_result` 实测耗时）。
+- **翻译**：思考块展开后右上角有「🌐 翻译」，调 `POST /api/translate`（带 `lines=true`）**一行英语一行中文**逐行对照，
+  **每行右侧带 🔊 播放**（`POST /api/voice/tts`，`voice` 参数指定音色）；按钮旁的下拉可切语音（`GET /api/voice/voices` 取音色表），
+  翻译失败/朗读失败会显式标 ⚠，不静默。行的原文/译文也可用「读全部原文 / 译文」整段朗读。
+- **语音播报**：思考与回复的 🔊 都走**微软 Edge-TTS 免费服务**（`l_agent_chat.voice`，`/api/voice/tts` / `/api/voice/voices`），
+  不需要额外密钥；音色可选（`EDGE_VOICE_DEFAULT` 中文 / `EDGE_VOICE_DEFAULT_EN` 英文），同一文本+音色走内存缓存。
+- **源码查看弹窗**：消息里的文件路径/行号可点开 `GET /api/source`（读文件 + 上下若干行上下文，单次上限 `SOURCE_MODAL_MAX_LINES=400`），
+  弹窗内可直接「在编辑器中打开」（`web/src/new/sourceView.js`，检测 vscode 可用时按 `path:line` 定位）。
 - **对话模式**（输入框右下角「模式」下拉，全局设置存 `localStorage`）：`agent`=完整能力（默认）；
   `ask`=只读问答；`plan`=只规划不执行；`review`=代码审查。随 `POST /api/chat` 的 `mode` 传后端，
   由 `chat_modes.py` 同时做两件事：注入对应 system 指令 + 按**只读工具白名单**裁剪可用工具
@@ -150,6 +160,8 @@ SSE 事件类型：
   模型**独立于聊天默认模型**（设置页「提示词优化」的 `prompt_optimize_provider` /
   `prompt_optimize_model`，缺省 zhipu / `glm-4-flash` 免费档），不占主力模型额度。
 - **设置页窄屏**：宽 ≤860px 时左侧「设置分组」侧栏变顶部横排，可**按住拖动**横向滚动（桌面仍为竖排）。
+  手机端**模型设置卡片**改为**水平紧凑布局**（`templates/settings.html` 的 `.card.model-compact`：键值对同行、压缩内边距，
+  避免一屏只放得下一项）。
 - **手机端与老内核兼容**：Tailwind v4 把工具类全塞进 `@layer`，而「荣耀自带浏览器」这类老 Chromium
   内核（<99）**不认 `@layer`** —— 未知 at-rule 整块丢弃，工具类一个不剩（侧栏 `hidden`、`truncate`
   全失效，页面塌成无样式单列）。构建期用 `@csstools/postcss-cascade-layers` 把层拍平，且**必须跑在
@@ -400,11 +412,15 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 
 | 命令 | 行为 |
 |------|------|
-| `/tools` | 打开工具选择器（列各工具服务发现的工具），选一个 → 填 `/tools <名称>` |
+| `/tools` | 打开**工具选择器弹窗**：数据源 `GET /api/tools`（含本机/远程服务来源前缀），按**分组与服务**分节、**带搜索框**（输入即过滤）、↑↓/Enter/Esc 键盘操作；弹窗 **portal 到 `body` 并底部对齐**（输入框在带 `backdrop-filter` 的 footer 里，`position: fixed` 会被当成新包含块 → 必须 portal）。选中 → 填 `/tools <名称>` |
 | `/ls` | 打开**目录浏览面板**（可逐级下钻、★ 收藏）→ 选目录 → 填 `/ls <路径>` |
-| `/rez` | 同上，但从 **rez 包名**起（包 → 版本 → 子目录）→ 填 `/ls <路径>` |
+| `/rez` | 同上，但从 **rez 包名**起（包 → 版本 → 子目录）；选中后插入的是 **`rez_pkg <包名>` 文本**（不是 `/ls <路径>`）—— `/rez` 只是"挑一个包发给 AI"，路由由 `rez_pkg` 指令解释 |
 | `/read` `/ws` `/workspace` | 直接把命令名填进输入框，参数自己接着打 |
 
+- **tag/chip 只影响显示**：`/tools <名称>`、`rez_pkg <包名>`、`/ls <路径>` 这类 token 在输入框与消息气泡里渲染成**标签（chip）**，
+  **发送时仍原样保留文本** —— AI 收到的就是真实命令，UI 只是把命令名与参数显示成 chip（`web/src/new/rezTag.jsx`：
+  `renderTags()` + `chipLabel()`，`/rez` 与 `rez_pkg` 同样识别）。
+- **拼写检查**：输入框开 `spellCheck` + `lang="en"`（浏览器原生红波浪线；中文习惯环境误报可忽略，故意不开第三方词库 —— 廉价、零请求）。
 - 触发：输入 `/` 弹命令菜单（↑↓ 选、Enter/Tab 确认、Esc 关闭）；输入 `@` 弹**文件补全**
   （异步查后端、防抖），选中插入 `@相对路径 `。两者的**指令语义都在后端** ——
   例如 `/ls` 由 `agent_tools.py` 解释，客户端只负责补全与插入，不做实现。
@@ -467,7 +483,11 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `POST /api/ask-answer` | 回答 `ask_user` 的提问（SSE `ask_required` 之后调用；`{ask_id, answer}`） |
 | `GET /api/browse` | 浏览目录 |
 | `GET /api/browse_rez` | 多级浏览 rez 包仓库 |
-| `POST /api/translate` | AI / 免费翻译 |
+| `GET /api/tools` | 工具清单（工具选择器数据源：本地内置 + 各工具服务的工具，带来源分组） |
+| `POST /api/translate` | 免费翻译优先、失败回退 AI；`lines: true` → **逐行对照**（返回 `{pairs, source, translated, total}`，只翻含字母的行） |
+| `POST /api/voice/tts` | Edge-TTS 合成（`voice` 指定音色；响应体是音频字节） |
+| `GET /api/voice/voices` | Edge-TTS 音色表（可按 locale 过滤，供语音下拉） |
+| `GET /api/source` | 读源码上下文（`path`/`start`/`end`/`context`，上限 400 行）供源码弹窗 |
 | `POST /api/prompt/optimize` | 提示词优化（草稿 → 更清晰的提示词；独立小模型，见 `prompt_optimizer.py`） |
 | `GET /api/sandbox/status` | 终端沙盒能力探测（仅 Windows，AppContainer） |
 | `GET/POST/DELETE /api/permission-rules` | 权限规则（saved 层）列表 / 追加 / 删除 |

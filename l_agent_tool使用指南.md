@@ -23,7 +23,7 @@
 
 | 工具名 | 功能 | 参数 |
 |--------|------|------|
-| `read_file` | 读取文本文件内容（utf-8 优先，失败回退 gb18030） | `path`（必填）, `max_chars`（可选，默认 6000） |
+| `read_file` | 读取文本文件内容（utf-8 优先，失败回退 gb18030）；返回体含 `line_start`/`line_end`（供 UI 显示"引用行数"） | `path`（必填）, `max_chars`（可选，默认 6000）, `offset`（可选，从第几字符起） |
 | `write_file` | 写入文本文件（自动创建父目录） | `path`（必填）, `content`（必填） |
 | `list_dir` | 列出目录内容 | `path`（必填）, `limit`（可选，默认 120） |
 | `find_files` | 按 glob 模式递归查找文件 | `pattern`（必填）, `path`（可选） |
@@ -63,6 +63,7 @@
 | `upload_file` | 上传本地文件到远程脚本编辑器 HTTP 服务，支持文本和二进制 | `local_path`（必填）, `remote_url`（必填）, `remote_path`（必填）, `is_binary`（可选，默认 False） |
 | `download_file` | 从远程脚本编辑器 HTTP 服务下载文件到本地，支持文本和二进制 | `remote_url`（必填）, `remote_path`（必填）, `local_path`（必填）, `is_binary`（可选，默认 False） |
 | `now` | 返回当前时间（ISO 格式） | 无 |
+| `wait` | 等待 N 秒（轮询/等外部进程用；**上限 `MAX_WAIT_SECONDS=60`**，超出会截断并在返回里给 `capped`/`requested`/`message` 提示改用 `run_background`） | `seconds`（必填）, `reason`（可选，默认 ""，写进日志/卡片） |
 | `get_env_var` | 读取环境变量 | `name`（必填） |
 | `echo` | 原样返回传入的参数（调试用） | `args`（可选） |
 
