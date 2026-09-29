@@ -11,7 +11,7 @@
 | 包名 | `l_agent_tool` |
 | 版本 | `999.0` |
 | 作者 | Lugwit Team |
-| 依赖 | `l_git`, `python-3.12+<3.13` |
+| 依赖 | `python-3.12+<3.13`, `gitpython`（与 `package.py` 的 `requires` 一致） |
 
 ## 主要功能
 
@@ -28,6 +28,7 @@
 | `list_dir` | 列出目录内容 | `path`（必填）, `limit`（可选，默认 120） |
 | `find_files` | 按 glob 模式递归查找文件 | `pattern`（必填）, `path`（可选） |
 | `search_text` | 按正则表达式在文件内容中搜索 | `pattern`（必填）, `path`（可选）, `include`（可选） |
+| `tree` | 按**层级**列出目录结构（BFS）；跳过 `ignore_rules` 命中项与 `__pycache__`；返回 `entries`（path/rel/name/is_dir/depth）+ `text`（缩进树）+ `truncated`/`counts`，超 `limit` 或深度到顶会置 `truncated`（不静默截断） | `path`（必填）, `depth`（可选，默认 2）, `limit`（可选，默认 500）, `dirs_only`（可选，默认 False） |
 
 #### 命令执行
 
@@ -62,6 +63,7 @@
 |--------|------|------|
 | `upload_file` | 上传本地文件到远程脚本编辑器 HTTP 服务，支持文本和二进制 | `local_path`（必填）, `remote_url`（必填）, `remote_path`（必填）, `is_binary`（可选，默认 False） |
 | `download_file` | 从远程脚本编辑器 HTTP 服务下载文件到本地，支持文本和二进制 | `remote_url`（必填）, `remote_path`（必填）, `local_path`（必填）, `is_binary`（可选，默认 False） |
+| `execute_sync` | **异步**把 Python 代码提交到远程脚本编辑器执行（走服务器 `/execute_async` 端点），立即返回 `request_id`、**不阻塞**；结果用 `GET {remote_url}/execute_async/result/{request_id}`（或本包 `http_get`）轮询。注意：与**同步**的 `/execute` 不是一回事 | `remote_url`（必填）, `code`（必填）, `timeout`（可选，默认 300） |
 | `now` | 返回当前时间（ISO 格式） | 无 |
 | `wait` | 等待 N 秒（轮询/等外部进程用；**上限 `MAX_WAIT_SECONDS=60`**，超出会截断并在返回里给 `capped`/`requested`/`message` 提示改用 `run_background`） | `seconds`（必填）, `reason`（可选，默认 ""，写进日志/卡片） |
 | `get_env_var` | 读取环境变量 | `name`（必填） |
@@ -95,7 +97,7 @@
 ### 在脚本编辑器中执行
 
 ```python
-from l_agent_tool import EditorAgent, DEFAULT_TOOLS
+from l_agent_tool import EditorAgent, DEFAULT_TOOLS  # 注意：DEFAULT_TOOLS 是 ToolRegistry 对象，不是 list —— 取工具名用 DEFAULT_TOOLS.names()，取 schema 用 DEFAULT_TOOLS.list()，判断存在用 DEFAULT_TOOLS.has(name)
 
 # 列出所有可用工具
 tools = EditorAgent()

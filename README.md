@@ -41,6 +41,7 @@
 | [lugwit_baidu_netdisk.md](Rez_pkg/lugwit_baidu_netdisk.md) | **使用手册**：Depot 与网盘页面、接口、操作语义；实现模型与计划分别链接主文档/计划台账。**2026-09-26 增补**：页面三栏 + 标签可拖动/可跨面板/条末 `＋`（§6.2、§17）、预览/编辑从底栏挪进右栏、中栏↔右栏可拖宽度、**§5.6 工作区与库接口全表**（页面直连，不再经托盘）、工作区本地树右键（打开/新建/删除，见 §6.2 + `Rez_pkg/l_tray.md`）、**§20 越权与内存加固（P0）**（lock/unlock force/changes·change·tree 的 P6 补判、两个上传端点改流式、托盘 realpath/空 token/open 白名单）。**2026-09-27 增补**：`GET /api/depot/local_token`（HttpOnly cookie 下页面自取 token 调托盘，§5.1/§20）、§6.2 两模式刷新差异（浏览器 2.5s 轮询 vs **客户端快照不自动刷新**）与客户端桥 `treeDir` 无 `local_root` 限制 |
 | [lugwit_baidu_netdisk.md §14](Rez_pkg/lugwit_baidu_netdisk.md) | **客户端直传 / 安卓壳**：`POST /api/upload/prepare|finish`、原生 HTTP 通道、登录 + HTTPS 闸门 |
 | [lugwit_baidu_netdisk.md §16](Rez_pkg/lugwit_baidu_netdisk.md) | **blob 去重必须先验存**：登记行还在、网盘文件没了 → 提交只涨 rev 不写 blob，重传永远修不好（2026-09-22 修复） |
+| [l_agent_chat_技能市场与运行时接线_已完成与未完成.md](Rez_pkg/l_agent_chat_技能市场与运行时接线_已完成与未完成.md) | **已完成**：`l_agent_market` 库包（`gh:`/`http(s)`/本地三种源、Claude Code `marketplace.json` 归一、装到 `~/.lugwit/l_agent_chat/skills\|plugins`、`.market.json` 卸载保护）+ `l_agent_chat` 的 `/api/market*` 三端点与设置页两个市场面板。**未完成（本轮范围外）**：技能进 system 索引 / `skill` 工具 / `/技能名` 斜杠命令 —— 含锚点、方案、验收判据、3 个待拍板项与第三方技能正文的安全提示 |
 
 ## 三、工具使用指南
 

@@ -190,6 +190,25 @@ POST /v1/chat/completions/multi
 30~60s 载模型 → 超时默认 300s）见 `l_indextts2.md`。`/v1/audio/speech` 的
 `speed` 与 IndexTTS2 的 `duration_factor` 是倒数关系（`speed=0.5` → 时长 ×2）。
 
+### 视频生成（Seedance）与「视频专用 Key」
+
+用的 **不是** `volcengine` 那把钥匙：方舟 **Agent Plan** 钥匙在 `plan/v3` 网关下**不支持视频模型**
+（`404 UnsupportedModel`），而标准 `/api/v3` 又不认 plan 钥匙（401）。所以视频优先读**专用字段**
+（`client._video_key`）:
+
+| 途径 | 值 |
+|---|---|
+| 管理台「密钥」页 | `volcengine_video`（存储字段 `volcengine_video_api_key`，2026-09-29 加入） |
+| 环境变量 | `VOLCENGINE_VIDEO_API_KEY`（兼容 `ARK_VIDEO_API_KEY`） |
+| 模型 ID | 管理台「密钥」页 `volcengine_video_model`（或环境变量 `VOLCENGINE_VIDEO_MODEL`），不填用默认常量 `client.VOLCENGINE_VIDEO_MODEL` |
+
+实测判定链（2026-09-29）：`GET /api/v3/models` 200 说明 key 有效；创建任务报
+`ModelNotOpen: Your account <id> has not activated the model ...` = key 没问题、**模型未开通**；
+plan 端点报 `does not support the agent plan feature` = 订阅网关不含视频模型。
+
+填**普通方舟 API Key**（控制台另开通 Seedance 视频模型，按量计费）；都不填就退回 plan 钥匙，
+视频一定失败。`POST /video/task` 会依次试 `api/v3` → `api/plan/v3` 两个地址。
+
 ### 密钥与积分
 
 | 路由 | 说明 |
