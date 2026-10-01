@@ -15,6 +15,10 @@
 | 子进程要剥 Rez 注入的环境 | `l_indextts2/config.py:155-175` | 否则 py3.10 撞 py3.12 stdlib（`SRE module mismatch`） |
 | 不许硬编码外部路径绕依赖治理 | `AGENTS.md`「建包硬规则」 | 路径一律 `L_<PKG>_HOME` > `deploy_home.txt` > `~/.lugwit/<pkg>` |
 
+> **home 阶梯末环的现状（2026-10-01）**：这个顺序不变，但本机模型权重**已不在** `~/.lugwit/` ——
+> 已于 2026-10-01 剪切到 **`E:/lugwit_rez/homes/<pkg>`**，由各包 `deploy_home.txt`（一行绝对路径）声明；
+> 另可用 wuwo 注入的 `LUGWIT_SHARED_HOME`（= config 的 `l_shared_home_dir`，**盘符不存在时不注入**）。
+
 **结论**：每个开源模型 = 一个包（如 `l_wanvideo`）+ 一张卡片；hub 新增一个 tab 做「目录 / 安装 / 监控 / 测试 / 接引擎位」。
 
 ---
@@ -38,7 +42,7 @@
 
 | 用途 | 路径 | 说明 |
 |---|---|---|
-| 模型包运行时根 | `L_<PKG>_HOME` > `{包根}/deploy_home.txt` > `~/.lugwit/<pkg>` | 照 `l_indextts2/config.py:75-80` |
+| 模型包运行时根 | `L_<PKG>_HOME` > `{包根}/deploy_home.txt` > `~/.lugwit/<pkg>` | 照 `l_indextts2/config.py:75-80`；末环现状见 §0 注：2026-10-01 起本机权重已剪切到 `E:/lugwit_rez/homes/<pkg>`（各包 `deploy_home.txt` 声明） |
 | venv | `<home>/venv`（默认 python 3.10） | 独立于 Rez py3.12 |
 | 权重 | `<home>/weights`（或仓库自带 `checkpoints/`） | 不入 git；`.gitignore` 兜底 |
 | 输出小样 | `<home>/runtime/out` | 测试产物，可清理 |

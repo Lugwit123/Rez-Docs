@@ -53,6 +53,12 @@ wuwor l_indextts2 -- indextts2_setup --webui --seed-voices :: 额外装 gradio�
   wheel 是 **CPU 版**，直装会把 GPU 推理变成「跑得动但慢十倍」。
 - 换运行时根目录：`--home D:\Lugwit\indextts2`（会写 `{包根}/deploy_home.txt`，
   部署级文件、**不入库**；也可用环境变量 `L_INDEXTTS2_HOME`）。
+
+  > **home 阶梯末环的现状（2026-10-01）**：阶梯顺序不变（`L_INDEXTTS2_HOME` >
+  > `{包根}/deploy_home.txt` > `~/.lugwit/l_indextts2`），但本机权重**已不在** `~/.lugwit/` ——
+  > 已于 2026-10-01 剪切到 **`E:/lugwit_rez/homes/l_indextts2`**，由本包 `deploy_home.txt`
+  > （一行绝对路径）声明；另可用 wuwo 注入的 `LUGWIT_SHARED_HOME`（= config 的
+  > `l_shared_home_dir`，**盘符不存在时不注入**）。
 - 权重目录：`<home>/checkpoints`（2.5）/ `<home>/checkpoints_2`（2.0）。
   **注意上游仓库里的 `hf_cache/` 是半成品**（`bigvgan` 只有 `config.json`），而官方代码
   「目录存在就跳过补装」→ 我们额外跑一次 `ensure_models_available` 把 bigvgan / w2v-bert /

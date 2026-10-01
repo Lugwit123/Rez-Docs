@@ -71,23 +71,30 @@ requires = [
 
 ## 3. 数据根目录（关键！）
 
-数据根由 wuwo `config.yaml` 的 **`data_dir` 模板** 决定，默认 `{user}/.Lugwit/{pkg}`，由 `paths.py` 解析：
+数据根由 wuwo `config.yaml` 的 **`l_data_dir` 模板** 决定，默认 `{user}/.lugwit/main/{pkg}`，由 `paths.py` 解析：
 
 ```python
 # l_notepad_server/.../paths.py
-def _resolve_data_root():
-    tmpl = _read_data_dir_template()          # 例如 "{user}/.Lugwit/{pkg}"
-    return tmpl.replace("{user}", home).replace("{pkg}", _PKG_NAME)  # 或回退 ~/.Lugwit/<包名>
+def _instance_data_root(pkg):
+    # 解析顺序（第一个能的赢）：
+    #   1. LUGWIT_DATA_ROOT            —— wuwo 注入的实例数据根（优先）
+    #   2. LUGWIT_DATA_DIR_TEMPLATE    —— wuwo 按 config.yaml 展开好的 l_data_dir 模板（留 {pkg}）
+    #   3. 树内 config.yaml 的 l_data_dir 模板（不在 wuwo 环境里跑的进程兜底）
+    #   4. 兜底 ~/.lugwit/<包>
+    ...
 ```
 
+> 这条链只有一处实现：`l_notepad_server/.../paths.py` 的 `_instance_data_root()`
+> （`l_notepad_client` 里有一份同名副本）。
+
 > ⚠️ **包名变化 → 数据根目录变化。** 拆包后服务端包名是 `l_notepad_server`，
-> 所以服务端数据根是 `~/.Lugwit/l_notepad_server/`，**不是** 旧包的 `~/.Lugwit/l_notepad/`。
+> 所以服务端数据根是 `~/.lugwit/main/l_notepad_server/`，**不是** 旧包的 `~/.lugwit/main/l_notepad/`。
 > 两者是不同目录，数据不会自动跟着包名搬家。
 
 数据根下的结构：
 
 ```
-~/.Lugwit/l_notepad_server/
+~/.lugwit/main/l_notepad_server/
 ├── notepad_list/            笔记（.md 等文件，含 _images/）
 ├── favorites/               收藏夹 + 剪贴板历史 + 热键配置
 ├── version_history.sqlite3  笔记版本历史
@@ -178,7 +185,7 @@ for _p in _migrated:
 
 读取优先级：**UI 持久化 > 环境变量 > 默认值**（由 `l_qframelesswindow` 的 `ServerConfigStore` 实现）。
 
-1. **UI 持久化**：`~/.Lugwit/l_notepad_server/server_config.json`（标题栏「服务器设置」写出的配置，会盖过一切）
+1. **UI 持久化**：`~/.lugwit/main/l_notepad_server/server_config.json`（标题栏「服务器设置」写出的配置，会盖过一切）
 2. **环境变量**：`LUGWIT_AUTH_URL` / `LUGWIT_AUTH_ROUTE` / `L_NOTEPAD_API_URL` / `L_NOTEPAD_LOG_SERVER`
 3. **默认值**：`l_notepad_server/server_config.py` 里的 `_DEFAULTS`，**随 `Lugwit_deploy` 自动区分开发/公网机**
 
@@ -287,7 +294,7 @@ depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底
 | 拉取 | 仍按文件列目录，但**跳过 `.versions/` 快照**（那是版本历史，不是笔记） |
 | 「百度云地址」 | `note_browser_link()` → `{files_base}/depot?path=/notes/<rel>`，depot 页面支持 `?path=` 深链（自动定位并落到「📄 预览」标签） |
 
-配置（`~/.Lugwit/l_notepad_server/cloud_sync.yaml` 或环境变量）：
+配置（`~/.lugwit/main/l_notepad_server/cloud_sync.yaml` 或环境变量）：
 
 | 键 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
@@ -324,9 +331,9 @@ depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底
 
 | 现象 | 排查 |
 |------|------|
-| 笔记列表空 | 数据根是否 `~/.Lugwit/l_notepad_server`（非旧包）；`notepad_list/` 是否有文件；是否在拷入后重启过服务 |
+| 笔记列表空 | 数据根是否 `~/.lugwit/main/l_notepad_server`（非旧包）；`notepad_list/` 是否有文件；是否在拷入后重启过服务 |
 | 归属不对/看不到别人笔记 | `notepad.sqlite3` 归属表；`migrate_legacy_notes` 注册为 admin01 且设为共享 |
-| 想改服务器地址 | 标题栏「服务器设置」或 `~/.Lugwit/l_notepad_server/server_config.json` |
+| 想改服务器地址 | 标题栏「服务器设置」或 `~/.lugwit/main/l_notepad_server/server_config.json` |
 | 登录/API 不通 | 见第 6 节排查（Lugwit_deploy、server_config.json 残留、nginx 路由） |
 
 ## 10. 相关文档

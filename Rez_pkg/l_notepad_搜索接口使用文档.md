@@ -87,7 +87,7 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 |------|------|------|------|
 | GET | `/api/search` | 登录 | 检索用户可见的**笔记 + 知识库归档**文档 |
 | GET | `/api/search/route` | 登录 | **快速选库**：一段需求 → 相关知识库排序（毫秒级，见 §1.3） |
-| GET | `/api/search/stats` | 登录 | 索引状态（文档数/分源明细/待处理队列/重建与嵌入进度/向量模型） |
+| GET | `/api/search/stats` | 登录 | 索引状态（文档数/分源明细/待处理队列/重建与嵌入进度/向量模型）；`?deep=1` 全量磁盘校对 + FTS 完整性，`?verify=1` 全源校对（笔记/本机库磁盘 + 知识库归档 rev，跳过 FTS 完整性） |
 | POST | `/api/search/reindex` | 管理员 | **同步**清空并重建全部索引，返回写入行数 |
 | POST | `/api/search/reindex_async` | 管理员 | **后台**重建，立即返回；进度见 `stats.reindex` |
 | GET | `/api/search/models` | 登录 | embedding 模型目录（是否已安装）+ 当前模型 + 下载进度 |
@@ -631,6 +631,12 @@ q(中文) ──检索──► 结果A ─┐
 - **慢查询先看这条**：**无 ollama 时默认 `hybrid` 每次约 6 秒**（反复探测 `127.0.0.1:11434` 超时），
   而 `mode=lex` 约 10ms
 - **`GET /api/search/stats` 字段**：`docs` / `fts_rows` / `fts_consistent` / `db_bytes` / `sources[]`（每源 `root/docs/bytes/last_indexed_at`，本机库行另有 `kind/editable/scan`，`deep=1` 加 `disk_files/missing/changed/extra`）/ `code_libs` / `code_max_files` / `code_max_bytes` / `pending` / `scan_ttl_s` / `last_scan_ago` / `max_index_bytes` / `workspace_exts` / `reindex`（后台重建进度）/ `vec`（模型、块数、维度、按来源 `by_source`、嵌入进度、失败放弃 `dropped`、下载进度、目录）/ `deep` / `fts_integrity`
+  - **`?verify=1`（2026-09-30）**：校对**全部来源** —— 笔记行 / 本机库行（`source=code`，含 Rez 包 /
+    代码库根 / 知识库工作区）加磁盘比对（`disk_files/missing/changed/extra`，过滤条件与 `_scan_code`
+    一致）、知识库行加归档比对（另含 `unavailable/verify_error`），**不做** FTS 完整性检查
+    （这是它比 `deep=1` 省的那一步）；返回 `verify=true` 与 `verify_at`。`never_index` 名单里的库返回
+    `verify_skipped=true`。搜索索引页右上「刷新过期状态」按钮走这个，表格常驻列「是否过期」用它渲染
+    （未比对时显示「未比对」，`never_index` 显示「已跳过」）
 - **相关环境变量（本机库）**：`L_NOTEPAD_CODE_MAX_FILES`（20000）/ `L_NOTEPAD_CODE_MAX_BYTES`（512MB）/ `L_NOTEPAD_VEC_CODE_CHUNKS`（8000，代码块的内存缓存额度）
 - **症状列 `search_fts.symptom`（2026-09-26）**：AI 从代码注释推测的「用户口语症状」写进这一列
   （`bm25(search_fts, 6, 4, 1)`），数据在 `data/symptoms.json`，生成器 `tools/symptom_build.py`。
