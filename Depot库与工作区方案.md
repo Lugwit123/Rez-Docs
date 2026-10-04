@@ -1,8 +1,13 @@
 # Depot 库与工作区方案（对齐 P4 Client View）
 
-> # ⚠️ 状态：**未实施 / 待评审（截至 2026-09-17）**
+> # ⚠️ 状态：**部分落地 / 方案文档（截至 2026-09-26）**
 >
-> 本文是工作区与 client view 的候选方案，不是当前 Depot 实现。当前已实现设计见[网盘版本库Depot设计.md](网盘版本库Depot设计.md)，后续计划见[网盘版本库Depot演进计划.md](网盘版本库Depot演进计划.md)。未完成评审、迁移与验收前，不得把本文字段、接口或数据模型当作已上线事实。
+> 本文是工作区与 client view 的方案设计。**其中"工作区 + 页面直连"这一半已在 2026-09-26 落地**：
+> `depot_workspace` 接口（CRUD / select / owner / maps / have / path / local_path / reconcile / sync_done）与
+> `web_depot.html` 页面直连服务端均已实现，详见[网盘版本库Depot设计.md](网盘版本库Depot设计.md) §6.2
+> 与 `Rez_pkg/lugwit_baidu_netdisk.md` §5.6。**另一半（§4 的 `ws_id` 数据库维度、§11 测试、多工作区隔离）未实施**。
+> 已实现设计见[网盘版本库Depot设计.md](网盘版本库Depot设计.md)，实施台账见[网盘版本库Depot演进计划.md](网盘版本库Depot演进计划.md)。
+> 未落地部分（`ws_id` 维度等）不得当作已上线事实。
 
 涉及包：
 

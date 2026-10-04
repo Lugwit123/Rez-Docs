@@ -59,6 +59,7 @@ wuzu/1.0.1/package.py
 - `l_WChat`
 - `lperforce`
 - `lugwit_auth`
+- `lugwit_auth_client`（认证客户端 SDK，核心零三方依赖；服务端 `lugwit_auth` 反向 requires 它）
 - `lugwit_baidu_netdisk`
 - `Lugwit_Module`
 - `Lugwit_PackageRegistry`

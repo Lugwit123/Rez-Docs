@@ -2,7 +2,7 @@
 
 > 状态口径：**已完成** = 有代码 + 有测试 + 本地跑过；**未完成** = 只有锚点与方案，没有代码。
 > 行号截至 **2026-09-29**，定位以**函数名**为准（行号会漂移）。
-> 相关：市场部分见 `Rez_pkg/l_agent_chat_交接_已修与待办.md`、包内 `l_agent_market/999.0/README.md`。
+> 相关：市场部分见 `l_agent_chat_改造记录.md`（位于 `Rez-Docs/` 根；原《`Rez_pkg/l_agent_chat_交接_已修与待办.md`》已并入该篇）、包内 `l_agent_market/999.0/README.md`。
 
 ---
 

@@ -1132,7 +1132,7 @@ if known is None: 才 ensure_blob(...)
 不一致，别再让用户反复点重传。排查用 `/api/depot/list` 看 `blob_md5` 与登记的 `remote_path`
 是否真的存在于网盘。
 
-**关联**：客户端状态口径与现场记录见《l_agent_chat会话存云与工作区.md》§14。
+**关联**：客户端状态口径与现场记录见《l_agent_chat_改造记录.md》§14（原《l_agent_chat会话存云与工作区.md》，已并入该篇）。
 
 ## 17. 版本库页 2026-09-26 变更汇总
 

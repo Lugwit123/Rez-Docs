@@ -109,15 +109,24 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | 项 | 位置/行为 |
 |---|---|
 | access | 仅进程内存（`depot_bridge.set_session_token` / `token()`） |
-| refresh | `~/.lugwit/lugwit_auth/tray_tokens.json`，Windows 下 **DPAPI 包裹**（按"当前用户+机器"加密）、Linux 退化为 0600 明文；**删掉即强制重登** |
+| refresh | `~/.lugwit/lugwit_auth/tray_tokens.json`，Windows 下 **DPAPI 包裹**（按"当前用户+机器"加密）、Linux 退化为 0600 明文；**删掉即强制重登**。实现走 `lugwit_auth_client.token_store.TokenStore`（2026-10-04 起；与标题栏/笔记客户端**同一份** DPAPI 封装与文件格式，旧文件可直接读回） |
 | 自动登录 | 托盘启动 ~2.5s 后后台 `restore_session()`：读 refresh → `POST /auth/refresh` → 换出可用 access（refresh 轮转后**回写**）→ 登录按钮直接显示 `登出(<用户名>)` |
 | 只在启动时恢复（2026-09-27 实测踩到） | 上面那次 `restore_session()` **只在托盘启动时跑一次**：托盘进程已经跑着的时候才完成的登录，不一定进内存。症状是 `tray_tokens.json` 存在、但 `session_user()` 返回空、`depot_workspace_list` 报 **401 登录态无效或已过期**（于是本机目录树全废）。手动补一次即可，等价于重启托盘：<br>`POST /run {"module":"l_tray.depot_bridge","function":"restore_session"}` → 返回用户名 |
 | refresh 失效 | 清掉落盘文件、安静回到未登录（不会弹错） |
 | 登出 | 撤销服务端会话 + 清内存 + **删落盘文件** |
 
-**为什么不用 `lugwit_auth.client` SDK**：托盘环境只装 Qt + 工具包，**没有 Web 栈**
-（fastapi/uvicorn/sqlalchemy…），为一次登录把整套服务端依赖塞进托盘不划算、也易与托盘既有依赖冲突。
-因此 `depot_bridge.py` 用**标准库**按同一 HTTP 契约实现（与 `l_WChat` / `l_notepad_server` 的做法一致）。
+**为什么仍自带一份 PKCE / 回环登录页**（2026-10-04 对照过；**旧结论已作废**）：旧的写法是
+"托盘没有 Web 栈，把整套服务端依赖塞进托盘不划算" —— 那是针对 `lugwit_auth` **服务端包**说的，
+现在不成立了。两条新理由：
+
+1. **托盘的回环页是特性，不是重复**：`_LoginPageServer` 起的是**自带登录页**，页上同时支持
+   「授权码」与「账号密码」两条路、记录 `via`（走了哪条），成功后还让页面多活 120s 供用户操作。
+   SDK 的 `LocalCallbackServer` 只接 `/callback`。
+2. **依赖已不是问题**：`lugwit_auth_client` 核心是**零三方依赖**的（jose/cryptography 只在
+   离线验签路径上懒加载，托盘从不本地验签），托盘已 `requires` 它，并已用它做登录态落盘。
+
+仍自带的只剩 PKCE 生成与 URL/码交换；其中 `_pkce()` 已委托给 SDK 的 `make_pkce()`（逐字节等价）。
+详见 `Rez-Docs/授权登录代码归属与公共包抽取_计划.md` §5 P1。
 
 **depot 调用取 token 的顺序**（`depot_bridge.token()`）：
 托盘会话 token > `LUGWIT_ACCESS_TOKEN` > `LUGWIT_USER`/`LUGWIT_PASSWORD` 登录。

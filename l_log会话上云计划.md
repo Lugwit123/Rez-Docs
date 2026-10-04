@@ -1,9 +1,15 @@
-# l_log AI 会话上云计划（参考 l_agent_chat 的会话存储）
+# l_log AI 会话上云（已实施 · 参考 l_agent_chat 的会话存储）
 
-> **性质**：**计划文档（未实施）**。先把目标、落点与取舍定下来，再动代码。
-> 关联：[l_agent_chat会话存云与工作区.md](l_agent_chat会话存云与工作区.md)（同构实现，已跑通并验证）、
+> **性质**：**实现记录（已实施）** —— 正文 §阶段 1–8 是当时的实施过程与验收，**保留作实现史**；
+> 末尾「仍待处理」是真正的剩余项。本文原名「l_log会话上云计划.md」，内容即实现史。
+> **核实结论（2026-10-04）**：**已落地，非计划稿** —— 依据：`l_log/999.0` 实有 `backend/chat_sync.py`、`depot_ledger.py`、
+> `ai_chat_store.py`（`chat_root`/`chat_dir_for`/`_chat_identity`/`_cloud_chat_data`）、`workspace_status.py`（`SCOPES` 含 `chats`）、
+> `depot_logs.py`（`have`/`mark_synced`/`history`/`revert`）、`tools/{migrate_ai_chats,fix_chat_identity}.py` 与 4 个测试；
+> `app.py` 有 `/api/ai/chat/{push,pull,status,history,revert}`；`agent_proxy.py:332` 带 `"persist": False`，
+> `l_agent_chat` 的 `/api/chat` 支持 `persist`（`app.py:3861` + `test_agent_endpoint.ChatPersistFlagTest`）。
+> 关联：[l_agent_chat_改造记录.md](l_agent_chat_改造记录.md)（同构实现，已跑通并验证；原《l_agent_chat会话存云与工作区.md》已并入该篇）、
 > [网盘版本库Depot设计.md](网盘版本库Depot设计.md)、[网盘版本库Depot演进计划.md](网盘版本库Depot演进计划.md)。
-> 状态截至 2026-09-21。
+> 实现截至 2026-09-22；核实日期 2026-10-04。
 
 ## 0. 结论先行
 
@@ -103,7 +109,7 @@ depot 客户端与 4 态框架，改动集中在一个包内。
 
 ## 3. 参考 l_agent_chat：7 条硬事实（照抄，别重新踩）
 
-来自 [l_agent_chat会话存云与工作区.md](l_agent_chat会话存云与工作区.md) §4，都是实测结论：
+来自 [l_agent_chat_改造记录.md](l_agent_chat_改造记录.md) §4，都是实测结论：
 
 1. **depot 路径平铺** `<库>/<rel>`，不带 `<user>` 段；`maps` 填**空列表**就是
    `/<库>/... ↔ <local_root>/...` 的隐式映射（l_log 现在填的 `{depot_path: <库>, local_path: ""}` 同义）。

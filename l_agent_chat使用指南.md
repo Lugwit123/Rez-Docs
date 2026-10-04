@@ -169,6 +169,29 @@ SSE 事件类型：
   无层那份 style.css，会把无层/层内优先级算反，反而压掉旧 UI 的 `.btn`。
   手机端输入框高度也在移动端媒体查询里调大（`.composer-input { min-height: 64px }`）。
 
+### 默认智能体（流程图驱动）
+
+默认智能体「无调用收尾」路由由**流程图**驱动（`flow_engine.run_flow`），不再只靠硬编码护栏：
+
+- **图来源**：`<数据根>/l_agent_chat/flows/default_intelligent_agent.json`（2026-10-04 由
+  `default.json` 改名；用户目录优先）→ 内置 `default_flow()` 兜底。
+- **可视化编辑**：用 `l_mindmap_mmd`（:8110）打开 `/flow/default_intelligent_agent` 改图，保存即对
+  `l_agent_chat` 生效（两边共用同一份 flows 目录，见 `Rez_pkg/l_mindmap_mmd.md`）。
+- **开关（三档，可切换）**：
+  - `flow_enabled`（默认开）+ `flow_full`（默认关）= **只驱动「无调用收尾路由」**（旧行为）；
+  - `flow_enabled=1` + **`flow_full=1`** = **图驱动整个工具循环**：每一步路由都由图决定
+    （`branch_calls` 去 tools 还是走收尾路由、`branch_steps` 继续 plan 还是收尾、
+    `branch_goal` + 四道护栏门决定收尾去向）；`plan` / `tools` 两个动作节点仍由 app 的
+    步循环托管执行（规划是 LLM 往返、工具执行要审批/流式/痕迹，引擎侧没给它们注册 handler）。
+  - `flow_enabled=0` = **纯硬编码**（完全不读图）。
+  - 图缺失 / 结构不满足（缺 `has_calls`、`steps_exhausted`）/ 引擎报错 → 逐级自动降级：
+    全流程 → 收尾路由 → 硬编码，并打一条 `⚠️` mark 说明原因。
+- **范围**：不管哪一档，规划与工具**执行**都在 app 里（图决定的是控制流）。
+- **兜底**：图加载/执行失败会**自动回退硬编码护栏级联**（`app.py` 包了 try/except），不会卡死对话，
+  所以旧硬编码护栏仍在（作为兜底而非默认路径）。
+- 默认图结构：`start → plan → branch_calls → branch_goal →（goal_nudge / gate_stall→gate_verify→
+  gate_fact→gate_confirm）→ end`，各 gate `on_pass` 沿链推进、`on_trigger` 回 `plan`（回边虚线显示）。
+
 ### 工具调用
 
 `l_agent_chat` 复用 `l_agent_tool` 的工具集（文件/命令/Git/HTTP），流程分两种：
@@ -195,6 +218,15 @@ SSE 事件类型：
   走 `thread.append` 而不是 `aui.composer`（问答卡不在 composer 子树里，那边的桥没注册）。
   只读模式（ask/plan/review）放行它；**子 agent 一律拿不到**（在 `subagents.DENY_ALWAYS` 里，
   无人值守只会白等到超时）。提问与回答随工具痕迹落盘（`trace` 的 `ask` 字段），刷新后卡片仍在。
+- **`restate_question`（先复述用户问题）**（`agent_client.py` + `app.py`）：**合成元工具**，与
+  `find_tools` / `describe_tool` 一起**始终声明**；要求 planner 在**第 0 步第一个**调用，用模型
+  自己的话把用户问题复述清楚（要什么 / 涉及哪些对象或路径 / 约束与验收点 / 还不确定的地方）。
+  **由 harness 保证、不靠提示词照做**：只认第一个调用（排在别的工具之后不算）、内容为空也算没做
+  → 追一条纠正消息（`RESTATE_RETRY_NUDGE`）**重试一次** → 仍没有就用 `fallback_restate()`
+  从用户原话本地兜底（SSE 事件带 `fallback:true`）。复述经 `compose_reply()` 拼成**答复第一段**
+  （`**问题复述**：…`，函数幂等、重试不叠两遍）；**工具卡也显示复述全文**（后端 `_tool_args_view`
+  对 `restate` 不按 160 字截断，前端用 `.t-restate` 换行整段渲染）。机制与判据见包内
+  `src/l_agent_chat/doc/CHANGELOG.md` 的「先复述用户的问题」条目。
 
 ### 审批与权限模式（`permissions.py` / `chat_modes.py`）
 

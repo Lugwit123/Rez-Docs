@@ -138,11 +138,24 @@ if (isNew) {
 
 ## 卡片配置：包内默认 + 用户只存差异
 
-- **唯一默认来源**：`src/l_homepage/config/services_builtin.json`（16 张，只读、随包发布；改它等于改所有用户的默认卡）。
+- **唯一默认来源**：`src/l_homepage/config/services_builtin.json`（当前 19 张，只读、随包发布；改它等于改所有用户的默认卡）。
 - **用户配置**：`~/.lugwit/l_homepage/runtime/services.json`，只存三类：自定义卡、对默认卡的覆盖（**同名即覆盖**）、删除墓碑 `{"name": "...", "removed": true}`。
-- `ServiceCard`（dataclass）字段：`name, label, url, origin_url, desc, icon, newtab, port, kind, auto_start, packages, run_args, run_cmd, reload_args, reload_cmd, depends, builtin, overridden, overridden_fields`
-  方法：`from_raw`（校验 + 历史迁移 + 补 `.solo` + **§4.0 名字拆分**）、`to_payload`（写盘形状）、`to_builtin_item`（写进包内默认的形状）、`to_dict`（API/模板形状：内容 + `builtin/overridden/overridden_fields/override_tip`）、`differs`、`diff_fields`、`override_tip`（悬停提示文本，后端拼好）。
+- `ServiceCard`（dataclass）字段：`name, label, url, origin_url, desc, icon, newtab, port, kind, auto_start, packages, run_args, run_cmd, reload_args, reload_cmd, depends, machines, builtin, overridden, overridden_fields`
+  方法：`from_raw`（校验 + 历史迁移 + 补 `.solo` + **§4.0 名字拆分**）、`to_payload`（写盘形状）、`to_builtin_item`（写进包内默认的形状）、`to_dict`（API/模板形状：内容 + `builtin/overridden/overridden_fields/override_tip`）、`visible_on`（机器模式过滤）、`differs`、`diff_fields`、`override_tip`（悬停提示文本，后端拼好）。
 - `load_services()`：包内默认 + 用户差异合并（内置在前、自定义在后）；`save_services()`：只落「自定义卡 + 与包内不一致的覆盖」——与默认一致时**自动不落盘**，改回默认即消失；列表里缺失的默认卡自动记墓碑。
+- **机器模式：卡片按开发机 / 公网部署机选择性显示（2026-10-02）**
+  - 卡片可带 `machines: ["dev"]` / `["deploy"]`（**空 = 两台都显示**，绝大多数卡如此）。
+    判定看系统级 `Lugwit_deploy`：`1/true/yes/on` = 公网部署机，`0/缺省` = 开发机
+    （`is_deploy_machine()` / `machine_mode()`；口径同 `l_notepad_client/cloud_sync.py`）。
+  - 过滤在 `load_services()` **最后一步**（合并之后，默认卡与用户覆盖一视同仁）。
+    配套两处，别漏：`save_services()` **不给被过滤掉的卡写墓碑**（写了等于"自动删除"，下次开发机上就没了）；
+    `deleted_builtin_cards()` 也不把它算成「已删除默认卡」（它是**按机器过滤**，不是被删）。
+  - 用户覆盖卡没带 `machines` 时**沿用包内默认卡的**：在开发机编辑一次这张卡，也不会让它跑到部署机上。
+  - `machines` 是内容字段（`_CONTENT_FIELDS`）→ 随写盘 / 覆盖明细 / `to_builtin_item` 一起走，不会因为
+    一次「写回包内默认」或界面保存被静默丢掉。
+  - 首用处：`l_agent_chat_web_dev`（`machines: ["dev"]`，Vite 开发服务器 `:5174`，`depends: ["l_agent_chat"]`）。
+    部署机只有构建模式 `l_agent_chat`（`:1250`，静态 `static/dist`）；开发机在它之外**多这一张**，
+    点开就是热更新的 dev UI（`/api`、`/health`、`/static` 由 vite 代理回后端 `:1250`，所以后端要先起）。
 - **卡片有两套名字（2026-09-27，`name`/`label` 拆分）**：
   - `name` = **机械标识**：ASCII、唯一、**创建后不可改**，进 URL / API / 重启历史 / localStorage / 依赖图 / 日志文件名；缺省从命令别名（`run_args[0]`）派生。
   - `label` = **显示名**（`L WChat 推送`）：随便改，只影响界面文案；老数据惰性迁移（`label` = 原 `name` 原文）。

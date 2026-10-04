@@ -342,3 +342,32 @@ depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底
 - 《标题栏提供的服务.md》— 客户端标题栏能力
 - 《Rez包创建和启动指导文档.md》— rez 包/启动/修饰符/自动下载依赖
 - 《Rez_pkg/lugwit_baidu_netdisk.md》— 云端 Depot 多模式存储与迁移
+
+## 变更记录（2026-10-04）
+
+- **知识库工作区的自动同步节奏：5s 轮询 / 3s 防抖 → 20s / 10s**。改了两处、缺一不可：
+  ① 代码默认（`workspace_sync.WS_SCAN_TTL_S` / `WS_DEBOUNCE_S`，环境变量
+  `L_NOTEPAD_WS_SCAN_TTL_S` / `L_NOTEPAD_WS_DEBOUNCE_S`）；② `app_settings` 的**运行时值**
+  （`ws_autosync_interval_s` / `ws_autosync_debounce_s`，用 `PUT /api/search/ws_autosync` 改）。
+  为什么两处都要改：`_load_settings()` 只在 DB 里的值能解析成 `>0` 时才覆盖默认 —— 只改代码可能**不生效**。
+  影响：文档从保存到"可被搜到"的延迟由 ≈8s 变为 **≈30s**（20s 轮询 + 10s 防抖）。
+  注：该设置端点用 **`PUT`**（`POST` 会 405），且**需要登录**（无 token 是 401）。
+- **`depot_map.list_tree(..., live_only=True)`**：索引侧 3 处列举调用都传了它，用于排除"删除状态"条目。
+  但**实测更正**：归档的 `/depot/list` **本身就排除已删文件**（标删后该库条目 33 → 29），
+  所以这个过滤目前是**冗余但无害**的保险；真正的信号是"列表里没有它"。
+  详见 `知识库归档删除同步与索引清理_计划.md` §2.3。
+- **已删文件的 `depot/file` 回 410**（「该版本已删除…」；blob 与历史版本保留，只是 `rev=0` 不再可读）。
+  → `notepad_read` 的归档兜底在已删文件上会**自然失败**（符合"已删不兜底"的约定）。
+- **索引清旧行（2026-10-04 收尾）**：以前只清**词法侧**，向量侧（`vec_docs`/`vec_chunks`）
+  要等"下一次嵌入"才消失 —— 而嵌入那趟**只由 `tools/vec_rebuild.py` / 显式重嵌触发**，
+  可能几天不跑一次（实测 `last_embedded_at` 停在 2026-10-02，4 篇已删文档仍在语义召回里）。
+  改了三处：
+  ① `search_index._drop()` **两侧同删**（顺手调 `search_vec.drop_doc`，连带把内存块向量缓存标脏）
+  —— 它是一切删除路径的唯一出口（笔记消失 / 代码消失 / `never_index` / kb 清旧行 …），修一处全受益；
+  ② `search_vec.purge_orphan_vec()`：摘"没有对应词法行"的向量行（从 `_pending_docs` 里抽出来，
+  让周期兜底也能调）；
+  ③ `search_index.purge_orphan_index()`：兜底清两类残留 —— **已删知识库**的词法行
+  （`knowledge.delete_base` 不清检索索引，这些行再没机会被重算）+ 上面的向量残留；
+  挂在 **kb 兜底 tick（300s）** 与**启动预热**上，`kb_bases()` 为空时直接返回。
+  核对：`vec_docs` 无词法行 = 0 / `vec_chunks` 无对应文档 = 0 / 已删文档一行不剩。
+  详见 `知识库归档删除同步与索引清理_计划.md` §2.4。

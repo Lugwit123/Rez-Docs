@@ -14,6 +14,15 @@
 >
 > 约定：本文中「现状」= 已实现，附 `包:文件:行` 证据；「新增」= 本文设计，尚未实现。
 > 路径前缀 `R = trayapp/rez-package-source`。
+>
+> ⚠️ **包结构变更（2026-10-04）**：本文成文时，客户端 SDK 与密钥实现都装在 `lugwit_auth` 一个包里。
+> 现已拆出**独立客户端包 `lugwit_auth_client`**（核心**零三方依赖**：`AuthClient` / `verify_token` /
+> `TokenStore` / DPAPI / 闸门原语），由 `lugwit_auth` 服务端反向 `requires` 它。
+> 详见 [授权登录代码归属与公共包抽取_计划.md](授权登录代码归属与公共包抽取_计划.md)。
+> 同期删除的历史物：`l_qframelesswindow/_auth_client/`（内嵌 SDK 副本，含能生成私钥的 `jwt_keys.py`）、
+> `l_tray/lugwit_login/`（死代码栈）、`lugwit_auth/{client,token_store,jwt_service}.py`（已迁出）。
+> **阅读提示**：§1 现状盘点与 §9 各阶段完成记录写的是**当时的史实**（其中引用的旧路径/旧文件可能已不存在）；
+> **现行口径看 §4.3、§8、§9.8**。
 
 ---
 
@@ -85,7 +94,7 @@
 |---|---|---|
 | **Web 登录页**（登录 + 注册双 tab） | ✅ | `templates/login.html`，路由 `GET /login?next=`（`auth_server.py:669`） |
 | 用户中心主页 / 设置页 | ✅ | `templates/home.html`、`templates/settings.html` |
-| **桌面登录窗口** | ⚠️ **不在 auth 包里，各包各抄一份** | `l_qframelesswindow/.../login_dialog.py` + `login_store.py`（token 存 `<data_dir>/auth_token.json`，**记住的密码明文** `remembered_login.json`）；`l_tray/.../lugwit_login/loginUI.py`；`l_WChat/.../templates/login.html` + `/api/lugwit/login` 代理；`l_notepad_client` 用标题栏登录按钮 |
+| **桌面登录窗口** | ⚠️ **不在 auth 包里，各包各抄一份**（**P5 已收敛为 SDK + 标题栏一份 UI**，见 §9 P5 与 §9.8） | `l_qframelesswindow/.../login_dialog.py` + `login_store.py`（token 存 `<data_dir>/auth_token.json`，**记住的密码明文** `remembered_login.json`）；`l_tray/.../lugwit_login/loginUI.py`；`l_WChat/.../templates/login.html` + `/api/lugwit/login` 代理；`l_notepad_client` 用标题栏登录按钮 |
 | 标题栏角色 | 只提供"认证接入能力"（`auth_url`/`auth_route` + `serverConfigChanged` 信号），**不弹登录框、不存账号** | `R/Rez-Docs/标题栏提供的服务.md:37-46` |
 
 ### 1.6 已经沉在 auth 里的"共享能力"
@@ -195,7 +204,7 @@
         │  用户在浏览器/内嵌 WebView 登录（或已登录则直接确认）
         ▼
    auth 302 → lugwit://auth/callback?code=<one-time>&state=<rnd>
-        │  SDK lugwit_auth.client.LocalCallbackServer 接住
+        │  SDK lugwit_auth_client.client.LocalCallbackServer 接住
         ▼
    POST /api/v1/auth/token  {grant_type:"authorization_code", code, code_verifier, client_id:"desktop"}
         ▼
@@ -204,7 +213,8 @@
    refresh 存 DPAPI（Windows Credential Manager），access 只留内存
 ```
 
-- **SDK 职责**（`lugwit_auth.client`，供所有 Python 客户端 import）：
+- **SDK 职责**（`lugwit_auth_client`，供所有 Python 客户端 import；**2026-10-04 从 `lugwit_auth`
+  服务端包里拆成独立包**，核心零三方依赖 —— 见《授权登录代码归属与公共包抽取_计划》D1/D2）：
   `login_via_browser(client_id, scopes)`、`refresh()`、`logout()`、`ensure_token()`（自动续期）、`verify_local(token)`（离线验签）。
 - **UI 职责**（`l_qframelesswindow` 的 `LoginDialog`）：只做两件事 —— 打开授权 URL、显示"已登录为 X / 登出"。**不再自己 POST 密码、不再存密码。**
 - **降级路径**：无浏览器/内嵌 WebView 不可用时，才允许 `POST /auth/login`（用户名+密码），且 SDK 只在**内存**持有密码到拿 token 为止（不落盘）。
@@ -547,7 +557,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 | 能力 | 归属 | 备注 |
 |---|---|---|
 | 身份/令牌/会话/角色/权限/审计/凭据/收藏/偏好/头像/授权码 | **auth** | 本文 §6 |
-| 桌面登录窗口 UI | `l_qframelesswindow`（组件） + `lugwit_auth.client`（逻辑） | UI 一份、逻辑一份 |
+| 桌面登录窗口 UI | `l_qframelesswindow`（组件） + `lugwit_auth_client`（逻辑） | UI 一份、逻辑一份（2026-10-04：逻辑已拆为**独立轻量包** `lugwit_auth_client`，核心零三方依赖） |
 | 业务数据与资源 ACL 存储 | 各业务包（depot/notepad） | **判定**调 auth `/authz/check`，**存储**在业务侧或 auth 的 `acl_grants`（推荐后者的共享列表） |
 | 服务进程监督（start/stop/restart） | **建议移出 auth**（交给 `l_tray` / `l_homepage`） | 现状在 auth 里（`auth_server.py:489-641`），与授权职责无关；若移出需保留 `/api/v1/services/status` 兼容一段时间 |
 | 网页统一入口（nginx 路由）/HTTPS | 基础设施 | 见《Nginx反向代理机制》 |
@@ -860,12 +870,15 @@ wuwor lugwit_auth -- lugwit_auth_rotate_master_key --apply
 
 **已完成：服务端授权码（PKCE）**
 
-- 新增 `oauth_service.py` + 两张表（`schema_upgrade.py`）：`clients`（`client_id`/`redirect_uris`/`is_public`）、
-  `auth_codes`（**只存 SHA-256 哈希**、60 秒过期、原子 `UPDATE … WHERE consumed_at IS NULL` 核销）。
+- 新增 `oauth_service.py` + 三张表（`schema_upgrade.py`）：`clients`（`client_id`/`redirect_uris`/`is_public`）、
+  `auth_codes`（**只存 SHA-256 哈希**、60 秒过期、原子 `UPDATE … WHERE consumed_at IS NULL` 核销）、
+  `user_consents`（2026-10-02 增：用户对客户端的授权记录，存在则 SSO 不再弹确认页）。
   内置客户端种子（幂等）：`desktop`（回环 `http://127.0.0.1`/`[::1]`/**任意端口** + `lugwit://auth/callback`）、
   `web`（浏览器 SSO）。
 - 新增 `GET /api/v1/auth/authorize`：校验 client + `redirect_uri`（回环允许任意端口）→ 未登录 302 到
-  `/login?next=<本 URL>` → 已登录发一次性 code 并 302 回 `redirect_uri?code&state`。
+  `/login?next=<本 URL>` → 已登录**首次授权**渲染授权确认页（consent.html），用户点允许后才发一次性
+  code 并 302 回 `redirect_uri?code&state`；已授权（`user_consents` 有记录）直接发码（见下方
+  「2026-10-02 授权确认页」）。
 - `POST /api/v1/auth/token` 扩展 `grant_type=authorization_code`（+ `code_verifier` PKCE S256 校验），
   password 授权（Swagger/CLI）保持原样。
 - `templates/login.html`：`next` 改用 `| tojson` —— 否则带 query 的 authorize URL 会被 HTML 转义成
@@ -925,6 +938,28 @@ refresh，无感续期）、`logout()`（撤销 refresh + 清本地）、`access
 
 **剩一件可选收尾**：access TTL 仍 30 天 —— SDK 的 `ensure_token()` 与三处 UI 都已就位，
 可按 §7 收短到 15 分钟（消费方会自动续期）。
+
+#### 2026-10-02 授权确认页（consent）✅ 已实现并实测
+
+为 SSO 补上显式授权确认环节（此前已登录即静默发码，用户无感知；与"每个包体验一致"诉求对齐）：
+
+- 新模板 `templates/consent.html`：展示应用名（`clients.name`）、当前登录身份（可"切换账号"）、
+  授权能力清单、"记住此授权"勾选（默认勾）、允许/拒绝双按钮；视觉与 login.html 一致。
+- `GET /api/v1/auth/authorize` 新增 `prompt` 参数：未授权或 `prompt=consent` → 确认页；
+  已授权 → 直接发码。新增 `POST /api/v1/auth/authorize/confirm`：表单参数**重新全量校验**
+  + 必须本人登录 → 允许（勾记住则 upsert `user_consents`）发码 / 拒绝 302 回
+  `redirect_uri?error=access_denied[&state]`。
+- scope 文案表 `SCOPE_LABELS`（openid/profile/email/offline_access）；业务站不传 scope
+  时展示默认两项（基本信息 + SSO 登录）。
+- 依赖：package.py requires 补 `python_multipart`（FastAPI 表单解析必需，不装 POST 直接 500），
+  wuwo 自动落地 0.0.32。
+- 踩坑：未登录跳 `/login` 时 next 只能 `quote(safe='/')` —— 用 `safe='/?=&'` 会让 `&`
+  不编码，登录页把 next 在第一个 `&` 处截断（"切换账号"链接同此坑）。
+- Playwright 实测三条路径全通：首次登录 → 确认页 → 允许 → `/agent_chat/` 正常落地；
+  再次登录（记住授权）→ 无确认页直达；拒绝 → 回调收到 `error=access_denied&state=TESTDENY`
+  （agent_chat 显示"统一登录失败：access_denied"）。
+- 影响面：desktop 出站 PKCE 首次授权也会经过同一确认页（设计上本就有人在浏览器前，授权一次
+  记住；refresh 续期不走 authorize，不受影响）。
 
 ### P6 — 业务接入与 owner 强校验（按包推进）🟡 读侧+写侧+l_agent_chat 分区已完成；两个次级调用方待清
 
@@ -987,8 +1022,8 @@ refresh，无感续期）、`logout()`（撤销 refresh + 清本地）、`access
 
 **验收实测（新增）**：三处各 3–4 项断言全绿
 （env token 生效 / 账号登录拿到 RS256 token / 无配置时明确失败而非静默匿名请求）。
-ChatRoom 侧用 AST 抽出 `_auth_env_login` 原样执行验证（ChatRoom 的 rez 环境本身缺 `l_notepad`
-包族、`ChatRoom -- python` 起不来，与本改动无关）。
+ChatRoom 侧用 AST 抽出 `_auth_env_login` 原样执行验证（当时 ChatRoom 的 rez 环境缺 `l_notepad`
+包族、`ChatRoom -- python` 起不来；**2026-10-02 已从 ChatRoom `package.py` requires 删除该死依赖并重启验证，可正常 resolve**）。
 
 ### P7 — 备份与灾备（1~2 天，依赖 Depot 侧前置）✅ 已完成（含 Depot 侧前置脚本）
 
@@ -1080,6 +1115,13 @@ asyncpg 报 `can't subtract offset-naive and offset-aware datetimes` → **新�
 
 **已有的定时/触发与旧物理备份**：`db_backup.py`（整库 `pg_dump`）仍在跑，与本节的**逻辑 dump** 互补：
 物理备份恢复快但要 postgres 工具，逻辑 dump 可读、可校验、可跨版本搬。
+
+---
+
+## 9.8 各包登录接入现状与 SSO 一致性差距（2026-10-02 盘点）
+
+> §9.8 各包登录接入现状已拆为独立台账：[各包登录接入台账.md](Rez_pkg/各包登录接入台账.md)（随各包改动频繁变化）。
+> 本节保留结论摘要：8 个包已统一、netdisk/匿名模型服务/script_editor 有意保留。
 
 ---
 
@@ -1299,5 +1341,5 @@ Postgres(chatroom) → lugwit_auth(1027) → lugwit_baidu_netdisk(1028) → 业�
 | netdisk depot **写侧**（submit/delete/move/revert/…）接 `depot.write` | ✅ **已接**（本轮；`submit_pending` 落库前逐路径判、取不到待提交列表即拒绝） | §9 P6 |
 | 仍调 `/auth/auto` 的次级调用方 | ✅ **已全清**：`ChatRoom/.../auth_facade.py`（改 `_auth_env_login`）、`l_notepad_client/account_favorites_widget.py`（不再自取 token）、`lugwit_baidu_netdisk/tests/bench_depot.py`（env/登录）；全仓 `auth/auto` 仅剩端点定义与注释 | §9 P6 |
 | access TTL 收短到 15 分钟 | **有意保留 30 天**（P5 SDK 未落地，收短会打断所有现存客户端） | P5 落地后随 SDK 一起收短（§7） |
-| `gate.py` 的 RS256 公钥缓存 | ✅ 通过 `lugwit_auth.client.verify_token`（读本机 jwks.json，缺失才联网） | §9 P2 |
-| legacy 消费方本地 HS 验签 | `ChatRoom/backend/app/main.py:192-194` 自建 `JwtService`（验的是自己的 `chatroom_token`，不受影响）；其余消费方走 HTTP `/auth/verify` 或 `client.verify_token` | 已确认无 RS256 破口 |
+| `gate.py` 的 RS256 公钥缓存 | ✅ 通过 `lugwit_auth_client.verify_token`（读本机 jwks.json，缺失才联网；2026-10-04 起该函数在独立客户端包里） | §9 P2 |
+| legacy 消费方本地 HS 验签 | ✅ **已升级统一验签**：`ChatRoom` 后端 JWT 改走 `app_structure.create_jwt_service()`（1027 私钥 RS256 验签 + HS256 存量兼容，2026-10-02）；其余消费方走 HTTP `/auth/verify` 或 `client.verify_token` | 已确认无 RS256 破口 |
