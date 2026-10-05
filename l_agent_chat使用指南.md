@@ -192,6 +192,20 @@ SSE 事件类型：
 - 默认图结构：`start → plan → branch_calls → branch_goal →（goal_nudge / gate_stall→gate_verify→
   gate_fact→gate_confirm）→ end`，各 gate `on_pass` 沿链推进、`on_trigger` 回 `plan`（回边虚线显示）。
 
+**在对话里怎么看它的专属特性**（2026-10-05 补齐的四层，否则"图驱动"在界面上看不出来）：
+
+| 层 | 在哪 | 内容 |
+|---|---|---|
+| 路线条 | 每条回答的「过程」流水里，`🧭 控制流` 那一行 | **这一轮实际走了哪些节点**（`plan → branch_calls → gate_stall⁴ → …`），被护栏拦的门**标红**（带次数）；点标题展开全路径，点 `脑图 ↗` 直接开编辑器那张图。**数据落盘**，刷新后还在 |
+| 常驻徽标 | 顶栏第二行 `🧭 <图名> · <档位> · N 门` | 当前智能体用哪张图、哪一档；纯硬编码时显示 `🧭 硬编码`（标黄）。切智能体即变 |
+| `/flow` 面板 | 点顶栏徽标，或输入框 `/flow` | 档位 + 说明、命中文件（**用户目录 / 包内置**）、节点数、门清单、一键开脑图编辑器；并提示 `/youhua_agent` 可做沙箱回放自查 |
+| 策略建议 | 收尾前可能有 `🔧 策略建议（改图后下一轮生效）：…` | 规则式诊断（`flow_spec.diagnose`），只在有建议时出现 |
+
+实现要点（改这块先读）：引擎调用是 `emit_nodes=True`，节点事件 `flow_node` / 护栏事件
+`flow_gate` 直接进 SSE；轮末再发一条带 `flow={name,path,gates}` 的**终版** status ——
+它落进 steps，前端按同 key 原地更新那一行，所以**刷新/换端后路线条仍能重建**。
+后端在 `app.py`：引擎吐 dict 而生成器吐 `_sse(...)` 字符串，转发处必须包装，别退回去 `yield _ev`。
+
 ### 工具调用
 
 `l_agent_chat` 复用 `l_agent_tool` 的工具集（文件/命令/Git/HTTP），流程分两种：
@@ -436,7 +450,19 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `/api/session/delete` | POST | 删除会话 |
 | `/api/session/rename` | POST | 重命名会话 |
 
-会话文件存储于 `<工作区>/.l_agent_ws/sessions/session_<id>.json`。
+会话文件存储于 `<存储根>/.l_agent_ws/sessions/<工作区 key>/session_<id>.json`。
+
+**对话按 `.code-workspace` 工作区隔离**（2026-10-05）：
+
+| | |
+|---|---|
+| 隔离键 | **工作区身份**（`workspace.workspace_identity()`）：**归属自动判定** —— 请求带 `X-Lugwit-Host: vscode`（扩展 webview）用 VS Code 窗口报的文件夹；`browser` / 没声明（浏览器、托盘、脚本）用 agent 自己的 `.code-workspace` 工作区文件。key = `<标签>-<路径哈希8>`（如 `l_rez_src_ws-7201b69c`），直接做目录名。**没有"切换来源"这回事**（2026-10-05 删了两个按钮）—— 扩展就老实做扩展、独立就用自己的。⚠ 判据是**请求声明**，不是"服务端能否连上 VS Code 桥"：网页与扩展共用同一个服务，只看桥会让浏览器也被判成扩展（会话列表凭空换一套） |
+| 目录 | `sessions/<工作区 key>/` 一套会话 + 一份 `current.txt`（"当前会话"指针）；换工作区 = 换一整套列表，互不可见 |
+| 不隔离的 | 存储根不变：**记忆 / 附件 / 待办 / 检查点 / 事件 / cassette 仍共用一套**（它们按会话 id 或全局落盘） |
+| 不等于 | **会话基准（base_folder）**：那是"每个对话各自的视野根"（环境 → 工作区），改它**不会**换列表 |
+| 旧数据 | 升级时把平铺在 `sessions/` 下的会话**搬进当前工作区**（一次性、幂等）—— 旧版本所有工作区共用一份，无从分辨归属，只能归到迁移那一刻的工作区 |
+| 云同步 | 老条目（`sessions/session_x.json`）拉回来会落到当前工作区；**别的工作区**的云端会话不会出现在当前工作区的"仅云端"里 |
+| 界面 | 顶栏 `🗂 <工作区名>` 标出当前在哪个工作区；`/api/session/list` 返回 `workspace:{key,label,source}`，`/api/workspace` 返回 `identity` 与 `sessions_dir` |
 
 ### 输入框命令（`/` 与 `@`）
 
@@ -508,8 +534,8 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /health` | 健康检查 |
 | `GET /api/models` | 模型列表 |
 | `GET/POST /api/settings` | 读取/更新运行配置 |
-| `GET /api/workspace` | 工作区信息（含 `workspace_file`：agent 自己那份 `.code-workspace`） |
-| `POST /api/workspace` | 设置工作区 |
+| `GET /api/workspace` | 工作区信息（`workspace_file` = agent 自己那份 `.code-workspace`；`source` 是**自动判定**的，`source_auto: true`；`identity` / `sessions_dir` 见「会话管理」） |
+| `POST /api/workspace` | 设置工作区文件根（`POST /api/workspace/source` 已随"来源自动判定"删除） |
 | `GET/POST /api/workspace/root` | 工作区根目录管理 |
 | `POST /api/workspace/root/activate` | 激活根目录（= 把该项移到 `folders` 首位） |
 | `POST /api/ask-answer` | 回答 `ask_user` 的提问（SSE `ask_required` 之后调用；`{ask_id, answer}`） |

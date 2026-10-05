@@ -278,7 +278,7 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 | `/api/depot/sync_plan` | `prefix=/` | `{prefix, plan:[...]}` 相当于 `p4 sync -n` |
 | `/api/depot/download` | `path=/a/b.png&rev=0&inline=1` | 文件字节流，`rev=0` 取最新。**支持 `Range`**（回 206 + `Content-Range`，视频/音频可拖进度条）；`rev>0` 回 `Cache-Control: private, max-age=31536000, immutable` + `ETag`，`rev=0` 回 `no-cache` + `ETag`（重验证命中即 304，不碰百度） |
 | `/api/depot/library` | — | `{libraries:[{root, name, description, owner, mode, status, …}]}` 库清单（每个库的存储模式 / 文件数 / 工作区数） |
-| `/api/depot/sessions` | `dir=/sessions&limit=200` | 列会话目录并带**对话名**（标题来自 `depot_session_meta`，**不读内容**——blob 在网盘上，逐个下不现实）；`l_agent_chat` 侧栏「仅云端会话」用 |
+| `/api/depot/sessions` | `dir=/sessions&limit=200` | 列会话目录并带**对话名**（标题来自 `depot_session_meta`，**不读内容**——blob 在网盘上，逐个下不现实）；`l_agent_chat` 侧栏「仅云端会话」用。**下探一层子目录**（会话按 `.code-workspace` 工作区放在 `sessions/<工作区 key>/`，只列一层会一条都看不到） |
 | `/api/depot/workspace` | `all=1` | `{owner, admin, scope, selected_workspace_id, workspaces:[…], libraries:[…]}`。默认只回**自己的**，`all=1` 回**所有人的**（带 `owner`，只读视图；改/删仍按 owner 校验）。**页面「工作区」标签就调这一个** |
 | `/api/depot/workspace/{ws_id}` | — | 单个工作区：`{workspace, maps, pending, locks}` |
 | `/api/depot/workspace/{ws_id}/have` | `prefix=/` | 该工作区的 have 清单（执行机 reconcile 的比对基准） |

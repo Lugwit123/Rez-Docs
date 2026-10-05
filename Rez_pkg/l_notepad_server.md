@@ -260,6 +260,29 @@ for _p in _migrated:
 Depot 支持多存储模式（blob / 目录镜像），按逻辑根登记，详见
 《Rez_pkg/lugwit_baidu_netdisk.md》第 13 节。222
 
+#### 7.3.0 归档文件的四个 kb 端点（2026-10-05 起含删除）
+
+| 接口 | 方法 | 说明 |
+|------|:---:|------|
+| `/api/kb/{kb}/depot` | GET/PUT | 读 / 改归档映射（library / subpath / ws 名 / 本机工作区根） |
+| `/api/kb/{kb}/depot/list?rel=&recursive=1` | GET | 列归档目录（递归时给全部文件 + `rev`/`action`/`excluded`） |
+| `/api/kb/{kb}/depot/file?rel=&rev=` | GET | 读归档文件（`rev=0` 最新；已删文件 **410**） |
+| `/api/kb/{kb}/depot/submit?rel=&description=` | POST | 提交新版本（body = 原始文本） |
+| `/api/kb/{kb}/depot/delete?rel=&description=` | POST | **标记删除**（blob 与历史保留、可 revert），随即重索引该库 |
+
+**删除入口（2026-10-05 新增，`depot_map.delete_file` + 路由薄包装）**：把「算映射 →
+带 `ws` → 拼 depot 逻辑路径 → 带登录态 → 通知重索引」收进服务端一处，调用方只说
+「哪个库、哪个文件」（`rel` 相对知识库子路径）。要点：
+
+- `rel` **为空直接 400** —— 空 rel 折算出的是整个库的 `base_path`（等于把整库标删）；
+- 走 depot 的 `POST /api/depot/delete`（**JSON body** `{"paths": [...], "description": ...}`，
+  `ws` 在 query）；已删的文件再删一次是**幂等**的（`cl_id 0`，不写新版本）；
+- **8765 自己的闸门读 `Authorization: Bearer` 或 cookie `l_notepad_token`**（不是 `lugwit_token`）
+  —— 只有 **GET/HEAD 且本机直连**才免 token，POST 一律要登录态；
+- 返回带 `warning`：本机工作区里还有同一文件时提醒"自动同步会把它重新传回来"
+  （`_needs_upload` 对"归档取不到（含已删）"一律视作需要上传）。要真删得同时处理本机那份。
+- 删完 `notify_kb_change` 立即重索引 → 旧行（词法 + 向量）走同一套清旧行。
+
 #### 7.3.1 depot 登录态（服务端，2026-09-20）
 
 depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底已按 P0 关闭，
@@ -343,7 +366,17 @@ depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底
 - 《Rez包创建和启动指导文档.md》— rez 包/启动/修饰符/自动下载依赖
 - 《Rez_pkg/lugwit_baidu_netdisk.md》— 云端 Depot 多模式存储与迁移
 
-## 变更记录（2026-10-04）
+## 变更记录（2026-10-04 / 10-05）
+
+- **新增归档删除入口 `/api/kb/{kb}/depot/delete`（2026-10-05）**：以前要删归档只有一个办法 ——
+  拿 cookie `lugwit_token` 直打 depot 1028 的 `POST /api/depot/delete`，自己算逻辑路径与工作区名。
+  现在收进 8765 一处（`depot_map.delete_file` + `routers/kb.py` 薄包装）：`rel` 必填（空 → 400，
+  否则折算出整个库的 `base_path`）、走 JSON body、幂等（已删再删 = `cl_id 0`）、删完
+  `notify_kb_change` 即时重索引。实测闭环：提交临时文档 → 列表可见 → 删 → 列表 56→55、
+  `depot/file` 410、索引三张表零残留、搜索 0 命中。**踩到的坑**：8765 的闸门认
+  `Authorization: Bearer` 或 cookie **`l_notepad_token`**（不是 `lugwit_token`，那是 1028 的口径），
+  且只有本机直连的 GET/HEAD 免 token。
+  详见 §7.3.0。
 
 - **知识库工作区的自动同步节奏：5s 轮询 / 3s 防抖 → 20s / 10s**。改了两处、缺一不可：
   ① 代码默认（`workspace_sync.WS_SCAN_TTL_S` / `WS_DEBOUNCE_S`，环境变量

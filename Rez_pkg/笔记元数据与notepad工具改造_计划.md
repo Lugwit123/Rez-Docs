@@ -150,7 +150,7 @@ notepad_modify(rel, kb="", *, content=None, note="", patch=None, expect_rev=None
 | 2 | 读侧归档兜底（标 `source`） | ✅ 已实施，端到端验过（`SOURCE archive`，读到已删文档全文） |
 | 3 | `notepad_modify`（含 §4.5 的 `target`） | ✅ 已实施（**写路径未做真实端到端**：会写真实工作区/共享归档，只验到"写入前中止"的分支） |
 | 4 | 权限门（§4.6） | ✅ 已加 `ask` 规则并实测 |
-| 5 | 显式删除入口（kb 路由补 delete） | ⬜ 未做（当前用 depot 的 `/api/depot/delete` 手工做，见另一篇计划） |
+| 5 | 显式删除入口（kb 路由补 delete） | ✅ 已实施（2026-10-05）：`POST /api/kb/{kb}/depot/delete?rel=&description=` 薄包装（`depot_map.delete_file`），删完即时重索引；见另一篇计划 §5.1 |
 | 6 | 索引清旧行 | ✅ 已实施（2026-10-04 收尾：**词法侧早就在跑**，漏的是**向量侧** —— `_drop` 只删 `search_docs`/`search_fts`，`vec_docs`/`vec_chunks` 要等下一次嵌入才消失。已改成 `_drop` 两侧同删，并补 `purge_orphan_index` 兜底。见另一篇计划 §2.4） |
 
 
