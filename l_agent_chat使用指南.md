@@ -111,6 +111,13 @@ npm run dev:server   rem Vite dev server（127.0.0.1:5174，HMR，/api 代理到
 > `persist: false` = **无状态调用**（不写会话文件、不进侧栏），脚本化/端到端自测用；
 > 缺省 `true`（照常落盘）。
 
+两个**特殊负载**（都只带容器字段，历史以服务端会话文件为准，见「消息操作与发送队列」）：
+
+| 字段 | 说明 |
+|------|------|
+| `regen: {mid, guide?}` | **重新生成**那条回复：结果作为**新版本**追加（= 同层新分支），不新开消息；`guide` 是这次的临时要求（只进本轮 wire，不落盘） |
+| `edit: {mid? \| index?, original?, content}` | **重新编辑**某条提问：定位（`mid` → `index` → 按 `original` 原文从后往前找）→ 建树 → 当前分支截到那条之前 → 落盘时新提问成为旧提问的**兄弟节点**。定位失败 / 原文对不上 → 报错**不下笔**。两个都不能与 `persist: false` 同用 |
+
 SSE 事件类型：
 
 | 事件 | 说明 |
@@ -168,6 +175,42 @@ SSE 事件类型：
   `generateBundle`**（见 `web/vite.config.js` 的 `cascadeLayersPlugin`）：逐 CSS 模块跑时它看不见
   无层那份 style.css，会把无层/层内优先级算反，反而压掉旧 UI 的 `.btn`。
   手机端输入框高度也在移动端媒体查询里调大（`.composer-input { min-height: 64px }`）。
+
+### 消息操作与发送队列（2026-10-06）
+
+**每条消息底部的操作**：助手回复 = 复制 / 重新生成 / 讲解 / 朗读；用户提问 = 复制 / 重新编辑。
+「重新生成」「重新编辑」都不是覆盖，而是**开分支**：
+
+| | 重新生成 | 重新编辑 |
+|---|---|---|
+| 触发 | 回复底部 `↻`（可附一句本次要求） | 提问底部 `✎ 重新编辑`（气泡原地变编辑框，Ctrl+Enter 发送 / Esc 取消） |
+| 结果 | 那条回复多一个版本，旧版本**带着它自己的后续**留着 | 从那题起开新分支重新回答，旧提问 + 后续整段留在隔壁 |
+| 请求 | `POST /api/chat` 带 `regen:{mid, guide?}` | `POST /api/chat` 带 `edit:{mid?/index?, original?, content}` |
+| 切回 | 底部 `◀ 第 i/N 版 ▶`（= `POST /api/session/version/final`，**切的是分支**，下面的对话跟着换） | 同左（提问版本走同一套控件） |
+
+- 会话文件里就是一棵**分支树**（`session_branches`：`nodes` / `path` / `roots`，`messages` 是当前分支的扁平投影）；
+  没分叉过的会话不写 `nodes`（**懒建**，第一次重新生成 / 重新编辑才建树）。
+- 会话**标题**跟着当前分支的第一条提问走（`session_store.title_from`）：改了第一条再切回原版，标题也回去。
+- 本轮还在跑时「重新编辑」禁用（那题还没落盘）；服务端 `session_busy` 也会兜底。
+
+**发送队列**（`web/src/new/NewApp.jsx` 的 `QueueBar` + `unstable_enableMessageQueue`）：
+agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，本轮结束**依次自动发出**（不是丢弃、也不挡人）。
+
+| 按钮 | 语义 |
+|------|------|
+| `↑` `↓` | 只调顺序（`queueItem.move`），**不打断当前轮** |
+| `↪` 引导 | 登记「下一处模型调用时插进去」（`POST /api/session/steer`；ON 后服务端广播 `steer`，那条随即从队列撤下）；再点撤回 |
+| `⚡` | **立即发送**：打断当前轮，马上发它。库里 `move/steer` 只做到「下个发」，所以实现是「先 `POST /api/session/interrupt` 掐断，再把这条直接发出去」 |
+| `✎` | 库里没有就地改队列项的接口 → 撤下 + 文本塞回输入框，改完再发 |
+| `×` | 从队列删除 |
+
+- **停止**（`ComposerPrimitive.Cancel`）= `POST /api/session/interrupt`：**服务端**也真的停 —— 规划步循环、
+  工具循环、作答循环三处都有检查点，停下后照常收尾落盘（若还没进作答，落一句「已停止」说明，不留空回复）。
+- 按过停止之后队列会**暂停**：点某条的 `⚡` 或再发一条消息即恢复。
+- **队列非空时不重挂对话**：队列活在 assistant-ui 的运行时里，重挂 = 换运行时 = 队列清空 + 当前轮被 abort
+  （`runtime.readQueuePending`，见 `session_changed` / `workspace_changed` 的处理）。
+- 端到端自测：`wuwor l_agent_chat -- python web/e2e/run_queue_e2e.py [--headed] [--delay 0.8]`
+  （真服务 + 慢速假 provider + Playwright，验排队/排序/引导/编辑/删除/停止后恢复）。
 
 ### 默认智能体（流程图驱动）
 
@@ -444,11 +487,17 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/session/current` | GET | 当前会话 + 消息 + 会话列表 + token 统计 |
+| `/api/session/current` | GET | 当前会话 + 消息 + 会话列表 + token 统计；`?session=<id>` = **只读**要那一条（不动"当前会话"指针，多端各看各的用） |
 | `/api/session/new` | POST | 新建会话 |
 | `/api/session/switch` | POST | 切换会话 |
 | `/api/session/delete` | POST | 删除会话 |
 | `/api/session/rename` | POST | 重命名会话 |
+| `/api/session/interrupt` | POST | **停止本轮**（置中断标记，服务端在规划 / 工具 / 作答三处检查点退出并收尾落盘） |
+| `/api/chat/attach` | GET | 附着到**正在跑的那一轮**（刷新 / 重挂后把续写实时接回来；`_live_turn` 现拼在 `/api/session/current` 里） |
+| `/api/session/steer` | POST | 「引导」：登记一条消息，在**下一处模型调用**时插进本轮（`/api/session/steer/cancel` 撤回） |
+| `/api/session/version` | GET | 取某条回复 / 提问某个版本的正文快照（切换前预览） |
+| `/api/session/version/final` | POST | **切分支**：把某版本设为当前落点（它下面的对话随之换成那条分支） |
+| `/api/session/version/delete` | POST | 删掉某个版本（连同它的子树） |
 
 会话文件存储于 `<存储根>/.l_agent_ws/sessions/<工作区 key>/session_<id>.json`。
 
@@ -463,6 +512,17 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | 旧数据 | 升级时把平铺在 `sessions/` 下的会话**搬进当前工作区**（一次性、幂等）—— 旧版本所有工作区共用一份，无从分辨归属，只能归到迁移那一刻的工作区 |
 | 云同步 | 老条目（`sessions/session_x.json`）拉回来会落到当前工作区；**别的工作区**的云端会话不会出现在当前工作区的"仅云端"里 |
 | 界面 | 顶栏 `🗂 <工作区名>` 标出当前在哪个工作区；`/api/session/list` 返回 `workspace:{key,label,source}`，`/api/workspace` 返回 `identity` 与 `sessions_dir` |
+
+**实时保存 / 多端各看各的 / 同名会话**（2026-10-06）：
+
+| 事 | 规则 |
+|---|---|
+| **实时保存** | 整轮跑完才写一次的老行为改了：提问一发出就把「提问 + 目前攒到的回复/过程」写进会话文件（独立键 `live`，**不进 `messages`** —— 半截助手进了 messages 会在正式落盘时长成多余的分支版本），跑的过程中每 ~3s 节流更新（`LIVE_SAVE_INTERVAL`，工具步之间 + 作答阶段的半截正文）。收尾时清掉快照、写正式消息对 |
+| **被打断也留得下** | 进程重启 / 被强杀留下的 `live`：刷新时（`/api/session/current`）超过 `LIVE_STALE_SEC=30s` 没更新就**定格**成正式消息（提问 + 半截回复 + `interrupted` 标记）；30s 内的当"还在跑"照常回给前端（同工作区可能另有一个进程在跑） |
+| **多端各发各的** | 落盘一律按请求带来的 `session_id`（`save_messages(sid=...)`），**不再**因为"当前会话指针被别人挪走"就报 `session_switched`「会话已在别处切换」（那是老代码的误报，用户报障"无法继续回答"）。指针只用于"这条工作区当前在看哪条会话"，**不影响**谁往哪条会话写。目标会话已不在 → 报 `session_missing`（明确） |
+| **深链只读** | `/chat/<id>` 打开时走 `/api/session/current?session=<id>`（不动指针）：多开窗口时 B 端切走会话，A 端刷新后仍留在自己那条 |
+| **同名会话** | 标题 = 第一句提问，问同样的话开两条会重名 → `list_sessions` 给同名的第 2 条起标 `dup`（1 起），界面显示成「标题 (2)」（侧栏 / 标签 / 更多下拉）。只改显示，落盘标题与云端元数据不动 |
+| **id 不再撞车** | 会话 id 从"毫秒时间戳"改成"毫秒 + 4 位随机后缀 + 存在性检查"：同一毫秒连建两条（删当前会话会自动新建一条）以前会互相覆盖 |
 
 ### 输入框命令（`/` 与 `@`）
 
@@ -576,6 +636,11 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 - **权限模式**：三档合成（`deny` 永远拦 / `allow_all` 全放行 / `autopilot` 保受保护路径的
   `ask`）、`normalize_mode` 回退（`test_permissions.py`）
 - **对话模式**：受限模式裁掉写 / 执行工具、与权限模式正交（`test_chat_modes.py`）
+- **消息版本分支 / 重新编辑**：`tests/test_message_versions.py`、`tests/test_regenerate_turn.py`（重新生成
+  = 追加版本 + 切回旧分支）、`tests/test_edit_user_message.py`（改提问 = 开新分支，旧提问与后续都在；
+  拒绝错目标时会话不动；标题跟随当前分支）；浏览器端到端见 `web/e2e/run_queue_e2e.py`
+- **会话隔离 / 工作区归属**：`tests/test_workspace_isolation.py`、`tests/test_workspace_file.py`、
+  `tests/test_depot_workspace.py`（会话按 `.code-workspace` 工作区隔离、云端老条目落当前工作区）
 - **终端沙盒**（仅 Windows；默认批**跳过**，`set LAC_SANDBOX_TESTS=1` 才跑真跑用例）：
   AppContainer 内执行、授权目录可写、**未授权路径写入被拒**、超时可杀、管道收发
   （`test_sandbox.py`）

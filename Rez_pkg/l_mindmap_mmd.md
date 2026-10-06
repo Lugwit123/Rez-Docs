@@ -56,6 +56,12 @@ wuwo svc open l_mindmap_mmd
 - **侧边设置面板**：工具栏「⚙ 设置」打开主页**右侧占位列**（不悬浮、不遮挡画布/顶栏/节点检查栏），
   拖动参数**画布实时预览**（边组件用 `useSyncExternalStore` 订阅）。
 - **智能体护栏**：start/end 节点显示由 `_ui.show_start_end` 控制（默认隐藏，仅流程语义）。
+- **节点/图参数表单（2026-10-05 补）**：门节点（`gate_*`）的属性面板多一张「护栏参数」表，图属性面板多一张
+  「图级参数」表 —— 写的就是节点 `params` 与图 `params`（拦几次 / 阈值 / 提示词、熔断与节奏等），
+  存进 JSON 后运行端 `flow_engine` 直接读（改这些**改图即可**，不必动代码；详见
+  `流程图智能体_图驱动控制流.md` §3.0）。表单键表在 `web/src/flowSchema.js` 的 `GUARD_PARAMS` / `FLOW_PARAMS`。
+- **保存前校验会拦下引擎才会炸的坑**：谓词不在表里、`branch` 缺 `always` 兜底、guard 名没注册、
+  指向装饰节点；`PUT /api/flows/{name}` 在能 import `l_agent_chat` 的环境里还会跑权威 `parse_flow`。
 
 ## 设置持久化（settings.yaml）
 
@@ -95,23 +101,26 @@ wuwo svc open l_mindmap_mmd
 
 ## 与 l_agent_chat 的联动
 
-`l_agent_chat` 默认智能体有两档「图驱动」（`config.py` 的 `flow_enabled` / `flow_full`）：
+`l_agent_chat` 默认智能体有三档「图驱动」（`config.py` 的 `flow_enabled` / `flow_full` / `flow_name`，
+**档位也可以是智能体属性** —— `agents/<名>.json` 的 `flow:{enabled,full,name}`，优先级高于全局）：
 
 | 档 | 谁决定控制流 | 说明 |
 |---|---|---|
 | `flow_enabled=1`（`flow_full=0`） | 图只决定**无调用时的收尾路由** | goal 判定 + `stall/verify/fact/confirm` 四道护栏门的顺序与去向 |
-| `flow_enabled=1` + `flow_full=1` | 图决定**每一步路由** | 外加 `branch_calls`（去 tools / 走收尾）与 `branch_steps`（继续 plan / 收尾）；`plan`、`tools` 两个动作节点由 app 步循环**托管执行** |
+| `flow_enabled=1` + `flow_full=1` | 图决定**每一步路由** | 外加 `branch_calls`（去 tools / 走收尾）、`branch_steps`（继续 plan / 收尾 / `end_abort`）与 `gate_idle`（只看不改的提醒门）；`plan`、`tools` 两个动作节点由 app 步循环**托管执行** |
 | `flow_enabled=0` | 纯硬编码 | 完全不读图 |
 
-图默认名 = `config.FLOW_NAME`（空则智能体名），当前工作区为 `default_intelligent_agent`
-（存在 `<数据根>/l_agent_chat/flows/`，用户目录优先 → bundled `default_flow()` 兜底）；
-图缺失 / 结构不满足 / 引擎报错 → 逐级降级（全流程 → 收尾路由 → 硬编码）并打 `⚠️` mark。
-改图走本编辑器（:8110）可视化编辑，即改即生效。
+图默认名 = `flow_name`（空则智能体名），当前 `default` 与 `default_intelligent_agent` **共用**
+`default_intelligent_agent` 这张图（存在 `<数据根>/l_agent_chat/flows/`，用户目录优先 → bundled
+`default_flow()` 兜底）；图缺失 / 结构不满足 / 引擎报错 → 逐级降级（全流程 → 收尾路由 → 硬编码）
+并打 `⚠️` mark。改图走本编辑器（:8110）可视化编辑，即改即生效（2s 内热生效）；
+运行端权威状态看 `GET :1250/api/flow/status`。
 
 ## 环境变量
 
 | 变量 | 作用 |
 |------|------|
-| `L_MINDMAP_MMD_RUNTIME` | 覆盖 flows 目录（默认 `~/.lugwit/l_agent_chat/flows`） |
+| `L_MINDMAP_MMD_RUNTIME` | 覆盖本包的 runtime 目录（`_runtime_dir()`：热更/守卫的运行时目录，默认 `~/.lugwit/l_mindmap_mmd/runtime`） |
+| `L_AGENT_CHAT_FLOWS_HOME` | 覆盖 flows 目录（**与 l_agent_chat 运行端同源**，默认 `<实例数据根>/l_agent_chat/flows`，即 `~/.lugwit/main/l_agent_chat/flows`；`L_AGENT_MARKET_HOME` 亦可） |
 | `L_MINDMAP_MMD_SETTINGS` | 覆盖 settings 目录（默认 `~/.lugwit/l_mindmap_mmd`） |
 | `L_MINDMAP_HOST` / 端口 env | 监听地址 / 端口（默认 8110，`PORT_ENV` 亦可） |
