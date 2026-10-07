@@ -29,7 +29,7 @@
 |---|---|
 | `src/l_agent_market/paths.py` | 安装根。`home()` / `skills_dir()` / `plugins_dir()` / `kind_dir()` / `cache_file()`；根默认 `~/.lugwit/l_agent_chat/`，`L_AGENT_MARKET_HOME` 可整体替换 |
 | `src/l_agent_market/sources.py` | 源读取层。`open_source()`（实例缓存）、`parse()` 规则、`join_rel()` / `_rel()` 路径归一；三个实现 `GhSource`（api.github.com tree+blob）、`HttpSource`（只读清单）、`FileSource`（本地目录/文件）。`Source.reset()` 丢目录缓存 |
-| `src/l_agent_market/market.py` | 清单归一。`parse_frontmatter()`（SKILL.md 头部）、`list_items()`、`find_item(key)`、`refresh()`、`parse_sources()`；条目 key = `<源>|<kind>|<名字>` |
+| `src/l_agent_market/market.py` | 清单归一。`parse_frontmatter()`（SKILL.md 头部）、`list_items()`、`find_item(key)`、`refresh()`、`parse_sources()`；条目 key = `<源> | <kind> | <名字>` |
 | `src/l_agent_market/store.py` | 装/卸。`install(item, force)`、`uninstall(kind, name, force)`、`installed(kind)`、`installed_names(kind)`、`safe_name()`；写 `.market.json`；`.tmp` 再改名；上限 `MAX_FILES=500` / `MAX_TOTAL_BYTES=50MB` / 单文件 5MB |
 | `src/l_agent_market/cli.py` | `list / installed / install / uninstall / refresh`（alias `l_agent_market`） |
 | `tests/` | `test_market.py` / `test_install.py` / `test_gh_source.py` / `fixtures.py` / `run_all.py`——**64 用例，不打网络** |
@@ -41,8 +41,8 @@
 | 写法 | 例 | 能力 |
 |---|---|---|
 | `gh:<owner>/<repo>[@<ref>][#<subdir>]` | `gh:anthropics/skills` | 浏览 + 安装。走 `api.github.com`（本机 `raw.githubusercontent.com` 不可达）；未鉴权 60 次/小时，`L_AGENT_MARKET_GITHUB_TOKEN` 提到 5000 |
-| `http(s)://…/marketplace.json` | | 只浏览（无目录列举/下载能力，`install` 明确拒绝） |
-| 本地路径 / `file://D:/market` | | 浏览 + 安装（离线、内网自托管） |
+| `http(s)://…/marketplace.json` |  | 只浏览（无目录列举/下载能力，`install` 明确拒绝） |
+| 本地路径 / `file://D:/market` |  | 浏览 + 安装（离线、内网自托管） |
 
 **安装落点**（本产品自己的目录，不碰 CodeMaker / Claude Code）：
 

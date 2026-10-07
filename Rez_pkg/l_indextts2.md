@@ -11,9 +11,9 @@
 |---|---|
 | 包名 / 版本 | `l_indextts2` / `999.0` |
 | 服务卡 | 别名 `l_indextts2_server`，显示名「L IndexTTS2 本机语音」，端口 `8470` |
-| 网关 | nginx `/indextts2/` → 剥前缀 → `127.0.0.1:8470`（页面/接口全用相对路径）|
-| 模型版本 | IndexTTS-2.5（默认，`checkpoints`，多语言 + 语速）/ IndexTTS-2（`checkpoints_2`）|
-| 推理环境 | **独立 uv venv（python 3.10）**，不是 Rez 环境（见 §2）|
+| 网关 | nginx `/indextts2/` → 剥前缀 → `127.0.0.1:8470`（页面/接口全用相对路径） |
+| 模型版本 | IndexTTS-2.5（默认，`checkpoints`，多语言 + 语速）/ IndexTTS-2（`checkpoints_2`） |
+| 推理环境 | **独立 uv venv（python 3.10）**，不是 Rez 环境（见 §2） |
 | 数据 | 全在 `L_INDEXTTS2_HOME`（默认 `~/.lugwit/l_indextts2`）：venv / index-tts / 权重 / 音色 / runtime |
 | 许可 | **bilibili Model Use License —— 非商用**；本包定位本机自用，商用需联系 indexspeech@bilibili.com |
 
@@ -89,13 +89,13 @@ wuwo svc open l_indextts2              :: 开页面
 
 | 路由 | 说明 |
 |---|---|
-| `POST /v1/audio/speech` | **OpenAI 兼容**：`{model:"indextts2", input, voice, response_format:"wav", speed}` + 本机扩展 `lang / emotion / emo_alpha / emo_vector / emo_text / use_emo_text / duration_factor`。`speed` 与 `duration_factor` 是倒数关系（`speed=0.5` → 时长 ×2）|
-| `POST /tts` | l_model_hub 的既有形状（`text / voice / emotion` + 同样扩展字段）→ 返回 `audio_base64`（wav）|
+| `POST /v1/audio/speech` | **OpenAI 兼容**：`{model:"indextts2", input, voice, response_format:"wav", speed}` + 本机扩展 `lang / emotion / emo_alpha / emo_vector / emo_text / use_emo_text / duration_factor`。`speed` 与 `duration_factor` 是倒数关系（`speed=0.5` → 时长 ×2） |
+| `POST /tts` | l_model_hub 的既有形状（`text / voice / emotion` + 同样扩展字段）→ 返回 `audio_base64`（wav） |
 | `GET /speakers` · `POST /speakers` · `DELETE /speakers?id=` | 音色档案：查 / 注册（`{name, audio_base64}`，wav 或 mp3，≤30MB）/ 删 |
-| `POST /speakers/seed` | 把 index-tts 的 `examples/*.wav` 注册成音色（幂等）|
+| `POST /speakers/seed` | 把 index-tts 的 `examples/*.wav` 注册成音色（幂等） |
 | `GET /healthz` · `POST /load` · `POST /worker/restart` | 状态（**不载模型**）/ 预热 / 重启 worker |
 | `GET /` | 极简页面：试听、注册音色、看运行时状态 |
-| `GET/POST /__dev__/src_watch` | 统一热重载开关（**只有 `.dev_mod` 启动才可能开**）|
+| `GET/POST /__dev__/src_watch` | 统一热重载开关（**只有 `.dev_mod` 启动才可能开**） |
 
 `voice` 的语义（与云端 TTS 不同，重点）：
 
@@ -132,13 +132,13 @@ l_indextts2 服务侧：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `L_SRC_WATCH_PORT` | `8470` | 端口（所有服务共用这一个名）|
-| `L_INDEXTTS2_HOME` | `~/.lugwit/l_indextts2` | 运行时根目录（venv / 仓库 / 权重 / 音色）|
+| `L_SRC_WATCH_PORT` | `8470` | 端口（所有服务共用这一个名） |
+| `L_INDEXTTS2_HOME` | `~/.lugwit/l_indextts2` | 运行时根目录（venv / 仓库 / 权重 / 音色） |
 | `L_INDEXTTS2_VERSION` | `2.5` | 模型版本（`2.5` / `2`）；也可写 `<home>/version.txt` |
 | `L_INDEXTTS2_RUNTIME` | `<home>/runtime` | pid / 热重载状态 / 输出 wav |
 | `L_INDEXTTS2_WARMUP` | 关 | `1` = 启动即载模型 |
-| `L_INDEXTTS2_QWEN_EMO` | 关 | `1` = 初始化时带 `use_qwen_emo=True`（2.5 用 `use_emo_text` 必须开，代价是多占显存）|
-| `L_INDEXTTS2_LOAD_TIMEOUT` / `_SYNTH_TIMEOUT` | `900` / `600` | 载模型 / 单次合成超时（秒）|
+| `L_INDEXTTS2_QWEN_EMO` | 关 | `1` = 初始化时带 `use_qwen_emo=True`（2.5 用 `use_emo_text` 必须开，代价是多占显存） |
+| `L_INDEXTTS2_LOAD_TIMEOUT` / `_SYNTH_TIMEOUT` | `900` / `600` | 载模型 / 单次合成超时（秒） |
 | `L_INDEXTTS2_START_TIMEOUT` | `120` | worker 启动握手超时 |
 
 l_model_hub 侧：`L_INDEXTTS2_URL`（默认 `http://127.0.0.1:8470`）、`L_INDEXTTS2_TIMEOUT`（默认 `300`）。
@@ -147,15 +147,15 @@ l_model_hub 侧：`L_INDEXTTS2_URL`（默认 `http://127.0.0.1:8470`）、`L_IND
 
 | 症状 | 先看 |
 |---|---|
-| 合成返回 503「运行时缺失」 | 没跑过 `indextts2_setup`；或 `L_INDEXTTS2_HOME` 指到了别处（`indextts2_doctor` 一眼看出）|
+| 合成返回 503「运行时缺失」 | 没跑过 `indextts2_setup`；或 `L_INDEXTTS2_HOME` 指到了别处（`indextts2_doctor` 一眼看出） |
 | 合成返回 502「IndexTTS2 合成失败」 | `wuwo svc log l_indextts2 -n 100`：worker 的 stderr 在这里；`/healthz` 的 `last_error` 是最后一条原因 |
 | 首次调用等很久 | 正常：冷启动 30~60s 载模型。要避免就 `L_INDEXTTS2_WARMUP=1` |
 | 显存不足 / CUDA OOM | 2.5 默认 bf16、2.0 默认 fp16 已省显存；还不行就关掉别的占卡程序，或降到 `L_INDEXTTS2_VERSION=2` |
 | 报「未知音色」 | 还没注册音色档案：`POST /speakers`，或 `indextts2_setup --seed-voices` |
-| `speed` 方向反了 | `speed` 与 `duration_factor` 是倒数：`speed=0.5` 表示**变慢一倍**（时长 ×2）|
+| `speed` 方向反了 | `speed` 与 `duration_factor` 是倒数：`speed=0.5` 表示**变慢一倍**（时长 ×2） |
 | 服务 /healthz 通但 worker 反复重启 | 看 `last_error`：多为权重半截、CUDA 版本不匹配、venv 被删 |
 | 报缺 `hf_cache/bigvgan/bigvgan_generator.pt` | 上游 `hf_cache` 半成品，官方代码不补 → `wuwor l_indextts2 -- indextts2_fetch_weights` |
-| 装 sdist 报 `SRE module mismatch` | Rez 的 py3.12 `PYTHONPATH` 泄漏给 3.10 子进程 → 子进程一律走 `config.child_env()`（已修，别再往子进程塞 `os.environ` 的 PYTHONPATH）|
+| 装 sdist 报 `SRE module mismatch` | Rez 的 py3.12 `PYTHONPATH` 泄漏给 3.10 子进程 → 子进程一律走 `config.child_env()`（已修，别再往子进程塞 `os.environ` 的 PYTHONPATH） |
 | 页面在 `/indextts2/` 打不开接口 | 页面用相对路径，必须带**尾斜杠**访问（`/indextts2/`）；nginx 已配 `location = /indextts2` 302 补斜杠 |
 
 ## 9. 关键源文件
@@ -165,10 +165,10 @@ l_model_hub 侧：`L_INDEXTTS2_URL`（默认 `http://127.0.0.1:8470`）、`L_IND
 | `src/l_indextts2/server.py` | FastAPI 路由（`/v1/audio/speech`、`/tts`、`/speakers`、`/healthz`）+ 极简页面 + 热重载接入 |
 | `src/l_indextts2/engine.py` | worker 进程管理：拉起 / 保活 / 串行锁 / 超时兜底 / `status()` |
 | `src/l_indextts2/worker.py` | **venv(3.10) 里的真推理**：版本选择、infer kwargs 过滤、情绪→8 维向量 |
-| `src/l_indextts2/speakers.py` | 音色档案（参考音频注册/解析，零样本克隆的 `spk_audio_prompt`）|
-| `src/l_indextts2/config.py` | 路径/端口/版本解析（`deploy_home.txt` 约定同 l_model_hub 的 `deploy_auth_url.txt`）|
+| `src/l_indextts2/speakers.py` | 音色档案（参考音频注册/解析，零样本克隆的 `spk_audio_prompt`） |
+| `src/l_indextts2/config.py` | 路径/端口/版本解析（`deploy_home.txt` 约定同 l_model_hub 的 `deploy_auth_url.txt`） |
 | `tools/setup_runtime.py` · `tools/fetch_weights.py` · `tools/start_service.py` | 安装 / 拉权重 / 启动入口 |
-| `tests/smoke.py` | 无 GPU 自检（路径 / 音色 / 情绪映射 / kwargs 过滤 / 未就绪报错）|
+| `tests/smoke.py` | 无 GPU 自检（路径 / 音色 / 情绪映射 / kwargs 过滤 / 未就绪报错） |
 
 l_model_hub 侧改动：`client.py`（`indextts2_tts` / `openai_speech` / `indextts2_url`）、
 `server.py`（`TTSBody` 扩展 + `/tts` 的 indextts2 分支 + `/v1/audio/speech`）、

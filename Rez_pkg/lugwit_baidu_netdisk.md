@@ -20,7 +20,7 @@
 三块功能，互相独立：
 
 | 功能 | 页面 | 说明 |
-|------|------|------|
+|---|---|---|
 | **版本库（Depot）** | `/depot` | 主功能。P4 式版本管理 |
 | 云盘文件管理 | `/files` | 网盘原始视图，不带版本 |
 | 目录推送同步 | `/`（首页） | 本地目录 ↔ 网盘目录，watchdog 实时同步 |
@@ -45,7 +45,7 @@ requires = ["python-3.12+<3.13", "pyyaml", "watchdog",
 三个 alias：
 
 | alias | 干什么 |
-|-------|--------|
+|---|---|
 | `baidu_netdisk_web` | 起 Web 服务 |
 | `baidu_netdisk_auth` | 命令行走 OAuth 授权 |
 | `baidu_netdisk_push_sync` | 命令行跑目录同步 |
@@ -71,7 +71,7 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 ```
 
 | 参数 | 默认 | 说明 |
-|------|------|------|
+|---|---|---|
 | `--host` | `127.0.0.1` | 监听地址 |
 | `--port` | `1028` | 端口 |
 
@@ -167,7 +167,7 @@ wuwor lugwit_baidu_netdisk -- baidu_netdisk_web --port 1028
 ### 4.1 概念对照
 
 | 本系统 | Perforce | 说明 |
-|--------|----------|------|
+|---|---|---|
 | depot 路径 | depot path | 逻辑路径 `/art/char/hero_d.png`，**和网盘物理路径无关** |
 | revision | revision | 某路径的第 N 版，指向一个 blob md5 |
 | changelist (CL) | changelist | 一次提交，原子 |
@@ -202,7 +202,7 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 ```
 
 | 操作 | P4 | 接口 | 效果 |
-|------|----|------|------|
+|---|---|---|---|
 | 签出 | `p4 edit` | `POST /api/depot/checkout` | 加锁 + 进待提交区 |
 | 添加 | `p4 add` | `POST /api/depot/mark_add_stream` | 内容先传进 blob 仓，条目进待提交区 |
 | 删除 | `p4 delete` | `POST /api/depot/mark_delete` | 标记待删 |
@@ -227,7 +227,7 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 不想走待提交区的话，还有一套一步接口，调用即产生版本：
 
 | 接口 | 说明 |
-|------|------|
+|---|---|
 | `POST /api/depot/submit` | 提交**服务端本地**文件（body 给绝对路径） |
 | `POST /api/depot/submit_stream` | 浏览器/脚本直传，body 是原始字节 |
 | `POST /api/depot/delete` | 直接标记删除 |
@@ -241,7 +241,7 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 提交时统计里会看到：
 
 | 字段 | 含义 | 网络开销 |
-|------|------|:---:|
+|---|---|:---:|
 | `dedup` | 数据库里已登记这个 md5 | 零 |
 | `rapid` | 网盘 `precreate` 秒传命中（**当前实测不命中**） | 零上行 |
 | `uploaded` | 真传了 | 有 |
@@ -264,7 +264,7 @@ manifest 是**兜底**：数据库整个丢了，按 CL 号顺序回放这些 js
 ### 5.1 查询（GET）
 
 | 接口 | 参数 | 返回 |
-|------|------|------|
+|---|---|---|
 | `/api/depot/status` | — | `{owner, db, apps_root, depot_root, changes:[最近1条]}` |
 | `/api/depot/local_token` | — | `{token, owner}`。把**调用者自己的** lugwit token 回给页面：cookie 是 HttpOnly，页面 JS 读不到，而托盘的 `depot_local_*` 必须拿到真实用户 token（**不许**回落托盘会话）。`Cache-Control: no-store`；只可能返回你自己的 token |
 | `/api/depot/list` | `dir=/` | `{dir, owner, items:[...]}` 见下（**目录是隐含的**：只有下面还有存活文件才列出，整目录搬走/删光后不会留空目录） |
@@ -350,7 +350,7 @@ curl.exe -X POST "http://127.0.0.1:1027/baidu/api/depot/submit_stream?path=/art/
 ### 5.4 状态码
 
 | 码 | 含义 |
-|----|------|
+|---|---|
 | 400 | 路径非法（含 `..`、空段、以 `.depot` 开头）或参数不合逻辑（含「同名工作区已存在」） |
 | 401 | 没登录 |
 | 403 | 别人的资源（P6 越权；工作区改/删非管理员；`lock` 无写权；`unlock force` 非管理员；`/change/{cl_id}` 非本人） |
@@ -374,7 +374,7 @@ curl.exe -X POST "http://127.0.0.1:1027/baidu/api/depot/submit_stream?path=/art/
 执行机（托盘 / 客户端 / 脚本）做 reconcile 时也用它们：
 
 | 接口 | body / 参数 | 说明 |
-|------|-------------|------|
+|---|---|---|
 | `POST /api/depot/workspace` | JSON `{name, library, local_root, host?, id?, owner?, maps?[]}` | 新建（无 `id`）/ 修改（有 `id`）。`library` 非空时顺带 `library_upsert`。改别人的 / 替别人建：**只有 admin/system**，否则 403；放行时按**目标 owner** 落库 |
 | `POST /api/depot/workspace/select` | `{ws_id}` | 记住「当前工作区」到服务端（跨浏览器 / 桌面端一致），列表接口回 `selected_workspace_id` |
 | `POST /api/depot/workspace/{ws_id}/owner` | `{owner}` | 转移归属。自己的随便转；别人的只有 admin/system（普通用户由 store 按 `from_owner` 校验）。目标名下同名 → 400 |
@@ -433,7 +433,7 @@ curl.exe -X POST "http://127.0.0.1:1027/baidu/api/depot/submit_stream?path=/art/
 目录树 → 文件列表和状态角标 → 待提交区 → 版本历史 → Log → 状态栏。
 
 | 操作 | 键 |
-|------|-----|
+|---|---|
 | 下一步 | `→` / `Enter` / 点「下一步」 |
 | 上一步 | `←` |
 | 退出 | `Esc` / 点「跳过」 |
@@ -564,7 +564,7 @@ window.addEventListener("depot-api", function (ev) {
 网盘原始视图，**不带版本管理**。临时文件、参考图放这，不占版本库。
 
 | 接口 | 说明 |
-|------|------|
+|---|---|
 | `GET /api/files/list` | 列目录 |
 | `GET /api/files/meta` | 按路径查 fs_id / 大小 / 类型 |
 | `POST /api/files/mkdir` | `{dir, name}` 新建文件夹 |
@@ -603,7 +603,7 @@ window.addEventListener("depot-api", function (ev) {
 用户只看到一个 3.5 秒的 toast，无从判断是证书、路由还是授权。现在：
 
 | 表现 | 现状 |
-|------|------|
+|---|---|
 | 文件类接口遇 errno `-6`/`111` | **401** + `{"detail":"…","code":"baidu_auth_expired","errno":-6}`（前端据 `code` 与「未登录 lugwit_auth」区分） |
 | 所有页面的顶栏 | 红色横幅：写清 errno 与 `errmsg`，带「刷新 Token」「去重新授权」按钮 |
 | 前端 `api()` | 命中 `code=baidu_auth_expired` → 自动用 refresh_token 续期**一次**并重放原请求；失败才把错误抛给调用方（上传类请求体已发完，不重放） |
@@ -622,7 +622,7 @@ window.addEventListener("depot-api", function (ev) {
 `web_server.py::_media_kind()` 按扩展名判定，列表/相册接口每项带 `media` 字段：
 
 | media | 扩展名 | 预览方式 |
-|-------|--------|---------|
+|---|---|---|
 | `image` | jpg/png/gif/webp/bmp/avif/svg | `<img>` + 缩略图 |
 | `video` | mp4/mov/m4v/webm/mkv/avi/ts/flv | `<video>`（Range 拖进度条）+ 缩略图 |
 | `audio` | mp3/flac/m4a/aac/ogg/opus/wav/wma/ape/mka/mid… | 播放器面板 |
@@ -665,7 +665,7 @@ window.addEventListener("depot-api", function (ev) {
 服务重启后实测（`/media`、`/apps` 三层扫描 + stream 接口探针）：
 
 | media | 文件数 | stream 实测 Content-Type |
-|-------|-------:|--------------------------|
+|---|---:|---|
 | video | 195 | `video/x-matroska`（mkv） |
 | file | 89 | `application/zip` |
 | image | 78 | — |
@@ -686,7 +686,7 @@ window.addEventListener("depot-api", function (ev) {
 配置写在 `state_dir()/setting.yaml` 的 `baidu_push` 段：
 
 | 字段 | 默认 | 说明 |
-|------|------|------|
+|---|---|---|
 | `local_root` | — | **必填**，本地根目录 |
 | `remote_subpath` | `lugwit_push` | 网盘上的子目录 |
 | `enabled` | `false` | 总开关 |
@@ -702,7 +702,7 @@ window.addEventListener("depot-api", function (ev) {
 接口：
 
 | 接口 | 说明 |
-|------|------|
+|---|---|
 | `PUT /api/sync/config` | 保存配置 |
 | `POST /api/sync/start` | 起子进程 |
 | `POST /api/sync/stop` | 停 |
@@ -744,7 +744,7 @@ python tests\test_depot_pending.py
 ```
 
 | 参数 | 说明 |
-|------|------|
+|---|---|
 | `--base` | 服务地址，默认 `http://127.0.0.1:1027/baidu` |
 | `--keep` | 跳过收尾清理，留着数据人工看 |
 
@@ -760,7 +760,7 @@ wuwor lugwit_baidu_netdisk -- python tests\purge_autotest.py --yes   真删
 ```
 
 | 参数 | 说明 |
-|------|------|
+|---|---|
 | `--prefix` | 要清的前缀，可重复给。默认 `/_autotest`、`/_autotest_gui`、`/_movetest`、`/_movetest_moved` |
 | `--yes` | 确认执行，不加只打印将要删什么 |
 
@@ -842,7 +842,7 @@ revision 表。blob 本身在网盘上，没丢。
 ## 11. 明确不做的事
 
 | 不做 | 理由 |
-|------|------|
+|---|---|
 | 局域网直连 / WireGuard / Headscale | 组网运维成本 > 收益，网盘 CDN 已够用 |
 | 抽象 `Transport` 层适配多种网盘 | 只有一个百度网盘，抽象是负收益 |
 | blob GC | 孤儿 blob 目前靠人工，量小不值得做 |
@@ -870,7 +870,7 @@ PUT /note/api/kb/{kb_name}/workspace
 ### 12.2 工作区接口（l_notepad）
 
 | 接口 | 说明 |
-|------|------|
+|---|---|
 | `GET /api/kb/{kb}/workspace` | 列出工作区内可预览文本（.md/.txt/.rst/.log，含相对路径/大小） |
 | `GET /api/kb/{kb}/workspace/file?path=<rel>` | 读取单个文档内容（预览） |
 | `PUT /api/kb/{kb}/workspace` | 设置工作区目录 |
@@ -914,7 +914,7 @@ Body: 文件原始字节
 Depot 支持**按逻辑根**（如 `/notes`）切换物理存储模式，各库可各取所需：
 
 | 模式 | 物理存储 | 适用 |
-|------|---------|------|
+|---|---|---|
 | `blob`（默认） | 内容寻址 blob（`version_depot/blob/<md5>`），去重 | 大文件 / 多版本 / 二进制 |
 | `dir` | 按目录结构镜像 + `.versions/vNNN` 版本夹，**人可在百度云客户端浏览** | 小文本笔记 / 文档 |
 
@@ -956,7 +956,7 @@ Content-Type: application/json
 `GET /api/depot/list` 对每个文件项附加：
 
 | 字段 | 说明 |
-|------|------|
+|---|---|
 | `mode` | 该文件所在根的存储模式（`blob` / `dir`） |
 | `remote_path` | `dir` 模式下活文件的真实物理路径（`/apps/<应用>/version_depot/dir_mirror/<逻辑路径>`），`blob` 模式为空串 |
 
@@ -1008,7 +1008,7 @@ Content-Type: application/json
 ### 14.1 两个端点
 
 | 端点 | 入参 | 出参 |
-|------|------|------|
+|---|---|---|
 | `POST /api/upload/prepare` | `{dir, name, size, block_list[], overwrite=true}` | 命中秒传：`{rapid:true, fs_id, path, size, md5_real}`；未命中：`{rapid:false, uploadid, upload_host, parts[], block_size, ticket_enabled[, access_token]}` |
 | `POST /api/upload/finish` | `{dir, name, size, uploadid, block_list[], md5="", overwrite=true}` | `{ok:true, fs_id, path, size, size_match, md5_real, md5_match, md5_comparable}` |
 
@@ -1019,7 +1019,7 @@ Content-Type: application/json
 ### 14.2 环境变量
 
 | 变量 | 默认 | 说明 |
-|------|------|------|
+|---|---|---|
 | `LUGWIT_UPLOAD_TICKET_TOKEN` | **空＝关** | 关时 `prepare` **不下发** `access_token` → 客户端拿不到百度凭据、只能回退"服务器代传"（现状）。开启才会下发（必须已是 HTTPS 入口） |
 | `LUGWIT_UPLOAD_ROOTS` | `/apps/Lugwit/l_wchat` | 直传可写根白名单（`os.pathsep` 分隔）。不限定范围等于开放"往网盘任意路径写" |
 | `LUGWIT_NETDISK_LOCAL_ROOTS` | `~/.lugwit` | **服务端本地文件**上传（`/api/files/upload`）的可读目录白名单（`os.pathsep` 分隔）。越界回 403 |
@@ -1027,7 +1027,7 @@ Content-Type: application/json
 ### 14.3 内容复核规则（实测结论，别想当然）
 
 | 情况 | 实测 | 处理 |
-|------|------|------|
+|---|---|---|
 | 单片（≤4MB） | 百度回的是**加密 md5**，`decrypt_baidu_md5()` 解回来**正好等于**整文件 md5（`create` 与 `file_metas` 一致） | `md5_match` 单片为 True/False，可硬校验 |
 | **多分片（>4MB）** | 百度报的 md5 **不等于**整文件 md5（5MB+ 例：本地 `513641b7…`，百度解出 `d310b6f4…`；不是 slice-md5、也不是块 md5 拼接） | `md5_match=null`、`md5_comparable=false`；**只比 `size`**（各分片 md5 由调用方在直传时逐个核对） |
 | 分片上传响应 | 成功体可能**不带 `errno`**（只有 `md5` + `request_id`） | 判失败只能用 `errno != 0`；并额外核对回的分片 md5 与本地一致 |
@@ -1061,7 +1061,7 @@ python tests\test_upload_direct_client.py --host https://121.196.144.88
 ```
 
 | 参数 | 说明 |
-|------|------|
+|---|---|
 | `--size` | 文件大小，默认 1MB（`test_upload_direct_server_side.py` 默认 5MB+12345，跨 2 片） |
 | `--dir` | 测试目录（默认 `l_wchat/_probe_direct`，不进相册索引） |
 | `--keep` | 保留测试文件（默认删） |

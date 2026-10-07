@@ -5,7 +5,7 @@
 > 真正的活儿交给 `wuwo/py_modules/*.py`，输出实时回显。
 
 | 项 | 值 |
-|----|----|
+|---|---|
 | 包路径 | `wuwo/packages/wuwo_gui/1.0.0` |
 | 依赖 | `python-3.12+<3.13` / `pyside6` |
 | 启动 | `wuwor wuwo_gui -- wuwo_gui` |
@@ -28,7 +28,7 @@ wuwor wuwo_gui -- wuwo_gui
 ## 2. 页签总览
 
 | 页签 | 干什么 | 底层命令 |
-|------|--------|----------|
+|---|---|---|
 | **包说明文档** | 给所有包的 `package.py` / `README.md` 刷统一说明块 | `py_modules/doc_pkg.py` |
 | **包管理** | 按需拉包 + 货架间包同步 | `auto_fetch_packages.py` / `sync_package.py` |
 | **环境** | 解析一次请求，看解出哪些包、各来自哪个货架，并对比两个请求 | `py_312` 里用 rez API |
@@ -110,7 +110,7 @@ pywin32、qtpy…）视为污染物卸载 —— 业务依赖应由货架提供�
 ## 4. 实现约定
 
 | 约定 | 说明 |
-|------|------|
+|---|---|
 | 子进程统一走 `console.CommandConsole` | `QProcess` + `readyRead` 信号（事件循环内读，不开线程），同一时刻只跑一个命令，带终止/清空 |
 | 子进程强制 UTF-8 | 注入 `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1`，否则 wuwo 脚本的中文输出走 GBK 变乱码 |
 | 路径解析 | `paths.py`：先认 `WUWO_DIR`，否则从自身向上找含 `py_modules` 的目录；`config.yaml` 无 `pyyaml` 时退化成「两级缩进」行解析（GUI 跑在 pyside6 的 rez 环境，那儿没有 pyyaml） |
@@ -151,7 +151,7 @@ pywin32、qtpy…）视为污染物卸载 —— 业务依赖应由货架提供�
 ## 7. 排障
 
 | 现象 | 处置 |
-|------|------|
+|---|---|
 | 「找不到解释器 / 脚本」 | 窗口标题里的 wuwo 根不对 → 检查是否从 `wuwor` 启动（`WUWO_DIR` 由链路注入） |
 | 输出中文乱码 | 不该出现（已强制 UTF-8）；若是外部程序自带编码问题，看该程序自身 |
 | 环境页报「解析进程没有输出」 | 子进程连 rez 都起不来 → 用 `ayon_where` 同款方式手跑 `py_312\python.exe` 看 stderr |
@@ -163,7 +163,7 @@ pywin32、qtpy…）视为污染物卸载 —— 业务依赖应由货架提供�
 ## 8. 验证记录
 
 | 项 | 结果 |
-|----|------|
+|---|---|
 | 页签 | 8 个（含条件出现的 AYON）全部构建通过 |
 | 核心包页 | 勾掉 `rez_pip_installer` → 标记文件出现、名单变 `['arch','l_app_ready','platform']`；勾回复原 |
 | 环境页 | 默认展开 → 11 包（core 4 / third_party 7）；`l_folder_favorites` → 9 包；差异表 14 行（仅 A 8 / 仅 B 6） |

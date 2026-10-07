@@ -22,7 +22,7 @@
 原 `l_notepad` 拆成三个 rez 包（旧包 `l_notepad` 保留，仅作历史/迁移参考）：
 
 | 包 | 角色 | 入口 alias | 说明 |
-|----|------|-----------|------|
+|---|---|---|---|
 | `l_notepad_server` | 服务端（FastAPI/uvicorn，8765） | `l_notepad_api` / `l_notepad_api_reload` | 笔记业务 API + Web 页面；两个别名命令相同（热重载改由进程内 `L_SRC_WATCH` 负责，`--reload` 已弃用） |
 | `l_notepad_client` | 客户端（Qt 桌面） | `l_notepad_client` / `l_notepad_ori` | 标题栏、登录、脚本编辑器等；**纯 PC 模式，不再拉起本地后端** |
 | `l_notepad` | 旧单体包 | — | 拆包前的代码，保留供对照/迁移 |
@@ -169,7 +169,7 @@ for _p in _migrated:
 ### 6.1 配置项
 
 | 配置键 | 含义 | 生产默认（公网机） | 开发默认（开发机） |
-|--------|------|--------------------|--------------------|
+|---|---|---|---|
 | `auth_url` | 认证服务地址（nginx 入口） | `https://121.196.144.88` | `http://127.0.0.1:8080` |
 | `auth_route` | 认证路由前缀 | `/api/v1/auth` | `/api/v1/auth` |
 | `api_url` | 笔记/账号 API | `https://121.196.144.88/note` | `http://127.0.0.1:8080/note` |
@@ -222,7 +222,7 @@ for _p in _migrated:
   子目录与文件逐层缩进，便于在多级目录工作区中按文件夹定位笔记。
 
 | 图标 | 状态 | 含义 |
-|------|------|------|
+|---|---|---|
 | ☁ | 云端 | 只在云端（Depot），本机工作区没有 |
 | 📄 | 仅本地 | 本机工作区有，尚未上传 |
 | ✎ | 已修改 | 云端有、本机也有且内容不一致（本机改了未同步） |
@@ -245,7 +245,7 @@ for _p in _migrated:
 ### 7.2 工作区接口
 
 | 接口 | 方法 | 说明 |
-|------|:---:|------|
+|---|:---:|---|
 | `/api/kb/{kb}/workspace` | GET | 列工作区内可预览文本（.md/.txt/.rst/.log，含相对路径/大小） |
 | `/api/kb/{kb}/workspace` | PUT | 设置工作区目录（body `{"workspace": "D:\\..."}`） |
 | `/api/kb/{kb}/workspace/file?path=<rel>` | GET | 读取单个文档内容（预览/编辑加载） |
@@ -263,7 +263,7 @@ Depot 支持多存储模式（blob / 目录镜像），按逻辑根登记，详�
 #### 7.3.0 归档文件的四个 kb 端点（2026-10-05 起含删除）
 
 | 接口 | 方法 | 说明 |
-|------|:---:|------|
+|---|:---:|---|
 | `/api/kb/{kb}/depot` | GET/PUT | 读 / 改归档映射（library / subpath / ws 名 / 本机工作区根） |
 | `/api/kb/{kb}/depot/list?rel=&recursive=1` | GET | 列归档目录（递归时给全部文件 + `rev`/`action`/`excluded`） |
 | `/api/kb/{kb}/depot/file?rel=&rev=` | GET | 读归档文件（`rev=0` 最新；已删文件 **410**） |
@@ -353,7 +353,7 @@ depot（1028）每个请求都过 lugwit_auth 闸门，`/auth/auto` 回环兜底
 ## 9. 排查速查
 
 | 现象 | 排查 |
-|------|------|
+|---|---|
 | 笔记列表空 | 数据根是否 `~/.lugwit/main/l_notepad_server`（非旧包）；`notepad_list/` 是否有文件；是否在拷入后重启过服务 |
 | 归属不对/看不到别人笔记 | `notepad.sqlite3` 归属表；`migrate_legacy_notes` 注册为 admin01 且设为共享 |
 | 想改服务器地址 | 标题栏「服务器设置」或 `~/.lugwit/main/l_notepad_server/server_config.json` |

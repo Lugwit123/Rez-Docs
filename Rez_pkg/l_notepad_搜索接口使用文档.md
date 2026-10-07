@@ -84,7 +84,7 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 ### 1.1 搜索（`routers/search.py`，前缀 `/api/search`）
 
 | 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
+|---|---|---|---|
 | GET | `/api/search` | 登录 | 检索用户可见的**笔记 + 知识库归档**文档 |
 | GET | `/api/search/route` | 登录 | **快速选库**：一段需求 → 相关知识库排序（毫秒级，见 §1.3） |
 | GET | `/api/search/stats` | 登录 | 索引状态（文档数/分源明细/待处理队列/重建与嵌入进度/向量模型）；`?deep=1` 全量磁盘校对 + FTS 完整性，`?verify=1` 全源校对（笔记/本机库磁盘 + 知识库归档 rev，跳过 FTS 完整性） |
@@ -98,7 +98,7 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 `GET /api/search` 参数：
 
 | 参数 | 类型 | 默认 | 说明 |
-|------|------|------|------|
+|---|---|---|---|
 | `q` | str | `""` | 查询串（见 §3 语法） |
 | `limit` | int | 20 | 返回条数，上限 **500** |
 | `offset` | int | 0 | 偏移（分页） |
@@ -111,7 +111,7 @@ Windows `cmd` 里没有 `$B`，直接写全 URL；带 `&` 的 URL 必须整体�
 ### 1.2 知识库（`routers/kb.py`）
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
+|---|---|---|
 | GET | `/api/kb/{kb}/search?q=&mode=&limit=&offset=` | **单知识库范围检索**（作用域下沉到 SQL：`search_docs.kb_name = ?`） |
 | GET | `/api/kb/{kb}/depot` | 归档映射（`library` / `subpath` / `base_path` / `ws_name` / `ws_id` / `local_root` / `remote_url`） |
 | PUT | `/api/kb/{kb}/depot` | 改映射（body `{"library"?, "subpath"?, "ws_name"?}`；`null`=不改，`""`=回默认），改完自动重建工作区 maps |
@@ -131,7 +131,7 @@ curl -s "http://127.0.0.1:8765/api/search/route?q=%E4%B8%80%E6%AE%B5%E5%A4%8D%E6
 ```
 
 | 参数 | 默认 | 说明 |
-|------|------|------|
+|---|---|---|
 | `q` | `""` | 需求原文（可长；内部做关键词抽取，**不走段间 AND**） |
 | `depth` | `1` | `0` 仅库元数据匹配 / `1` 元数据 + 词法按库聚合 / `2` 语义加分（需求嵌一次与**各库摘要向量**比对；语义不可用自动降为 `1`）/ `3` 不处理（分解多查询请调用方自行完成） |
 | `budget_ms` | `300` | 预算；`>0 且 <100` 时 `depth>=2` 自动退回 `1`（`reason_code=budget_downgrade`），并回填 `over_budget` |
@@ -189,7 +189,7 @@ curl -s "http://127.0.0.1:8765/api/search/route?q=%E4%B8%80%E6%AE%B5%E5%A4%8D%E6
 独立搜索页：**一次搜「个人笔记 + 所有知识库归档」**。顶栏搜索框回车即到此页（表单 `action=/web/search`，带 `mode=auto`），弹窗的「查看完整列表」也指向此页。
 
 | 参数 | 默认 | 说明 |
-|------|------|------|
+|---|---|---|
 | `q` | `""` | 关键词；空则显示引导页 |
 | `mode` | `auto` | `auto`（先词法、**没把握**时回退 hybrid）/ `lex` / `hybrid` / `sem`（同 `/api/search`） |
 | `sources` | `""` | `note` / `kb` / `code`（逗号分隔），空 = 全部 |
@@ -213,12 +213,12 @@ curl -s "http://127.0.0.1:8765/api/search/route?q=%E4%B8%80%E6%AE%B5%E5%A4%8D%E6
 把**本机目录**纳入检索——与笔记 / 知识库并列的第三类索引源。2026-09-25 起有两类登记方式：
 
 | `kind` | 是什么 | 何时扫 | 怎么配 |
-|--------|--------|--------|--------|
+|---|---|---|---|
 | `code` | **代码库根** | `SCAN_TTL_S=5s` 自动增量 + 手动重建 | 状态页「本机库索引」卡片 / `PUT /api/search/code_roots` |
 | `kbws` | **知识库工作区** | **只在手动「创建索引」时**（不自动、不上传 depot） | 知识库页设工作区目录 |
 
 | 端点 | 权限 | 说明 |
-|------|------|------|
+|---|---|---|
 | `GET /api/search/code_roots` | 登录 | 读取已配置代码库根（`label/root/exists`）与 `code_exts` |
 | `PUT /api/search/code_roots` | 管理员 | 保存根目录（`{"roots":["D:\\path\\repo"]}`）并**自动后台重建**；传 `[]` 清空 |
 | `GET /api/search/index_libs` | 登录 | 可建索引的本机库：`label/kind/name/root/exists/docs/scan`，附 `exts` / `max_files` / `max_bytes` |
@@ -276,8 +276,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 | 工具 | 用途 |
 |---|---|
 | `search` | 自然语言/关键词检索（笔记+知识库+本机库代码），返回**带行号**的片段 + 「读全文」提示 |
-| `read_file_range` | 按行范围读库内文件（配合 `search` 给的行号，别整文件塞上下文）|
-| `index_status` | 索引体检（文档数 / 向量覆盖 / 症状锚点覆盖 / 本机库清单）|
+| `read_file_range` | 按行范围读库内文件（配合 `search` 给的行号，别整文件塞上下文） |
+| `index_status` | 索引体检（文档数 / 向量覆盖 / 症状锚点覆盖 / 本机库清单） |
 
 ⚠️ **配置要点（实测）**：**不要用 `wuwor.bat` 当 `command`** —— `wuwor < args` 时 stdin 收不到内容
 （`sys.stdin.read()` 长度 0），而 MCP 的 stdio 全靠它。要**直接指便携 python + 显式 env**：
@@ -308,7 +308,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 搜索页可勾选「要搜索哪些包」= **全部本机库的并集**（本机实测 54 项）：
 
 | `kind` | 是什么 | 来源 |
-|--------|--------|------|
+|---|---|---|
 | `code` | **代码库根** | `code_roots`（如 `l_notepad_client`）——TTL 自动刷新 |
 | `pkg` | **rez 源码包** | 货架 `L_NOTEPAD_PKG_ROOT` 下带 `package.py` 的一级目录（53 个） |
 | `kbws` | 知识库工作区 | 知识库页配的工作区目录 |
@@ -320,7 +320,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 > 会被 `packages` 过滤掉却勾不回来（2026-09-25 已修：列表改成全部本机库）。
 
 | 端点 | 权限 | 说明 |
-|------|------|------|
+|---|---|---|
 | `GET /api/search/code_packages` | 登录 | `root`（货架目录）+ `packages[]`（`label/kind/root/exists/docs/indexed/default_off/never_index/scan`） |
 | `GET /api/search?packages=a,b` | 登录 | 只保留 `source=code` 且 `kb_name ∈ {a,b}` 的命中 |
 
@@ -375,7 +375,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 `hits[]` 每项：
 
 | 字段 | 说明 |
-|------|------|
+|---|---|
 | `path` / `rel` | 文档相对路径（笔记 = 相对 `notepad_list`；知识库 = 相对工作区目录） |
 | `source` | `note` / `kb` / `code` |
 | `kb_name` | 知识库名（`source=kb`）/ 本机库标签（`source=code`：代码库根目录名或知识库工作区目录名） |
@@ -432,7 +432,7 @@ score += 1.2×vec                                                            // 
 ## 3. 查询语法
 
 | 输入 | 行为 |
-|------|------|
+|---|---|
 | `创建包` | 中文切二元组（`创建`、`建包`），**段内 OR 召回**、段间 AND —— 宽召回，再按覆盖率/近邻排序 |
 | `创建 rez 包` | 三段：`创建` AND `rez` AND `包`（英文整词、单字前缀） |
 | `"创建包"` | 引号 = **FTS5 短语**，要求 bigram 相邻（精确匹配）；**无结果时自动回退模糊**，响应 `fallback=true` |
@@ -447,7 +447,7 @@ score += 1.2×vec                                                            // 
 ## 4. 检索模式
 
 | 模式 | 行为 |
-|------|------|
+|---|---|
 | `lex` | 纯词法（FTS5 倒排）。最快（本机 3-5ms） |
 | `hybrid` | 词法为主 + 语义**加分**（`+1.2×vec`）；**词法零命中时**用语义结果兜底（纯语义命中的文档才补进结果，避免弱模型带来噪声） |
 | `auto`（**默认**） | 先 `lex`（毫秒级），**词法「没把握」时**才回退 `hybrid`（分数判据；2026-09-28 起为默认档，见 `l_notepad_搜索改造史.md` §6.9） |
@@ -704,7 +704,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/search/stats" | jq '.reinde
 ## 7. 权限模型
 
 | 来源 | 可见条件 |
-|------|---------|
+|---|---|
 | 笔记（`source=note`） | 拥有者（`note_registry`）/ 被共享（`note_shares.shared_with` = 用户或 `*`）/ **管理员全部可见**（含未登记文件） |
 | 知识库工作区（`source=kb`） | 该知识库存在即对**所有登录用户**可见（知识库当前无 owner 概念） |
 | 代码库（`source=code`） | 对所有登录用户可见（本机管理员配置的目录） |
@@ -778,7 +778,7 @@ if (s.vec.download.running) { /* s.vec.download.status/completed/total */ }
 ## 10. 相关代码
 
 | 文件 | 作用 |
-|------|------|
+|---|---|
 | `search_index.py` | FTS5 索引维护、查询解析、打分重排、后台重建、`stats()` |
 | `search_vec.py` | 分块/嵌入/向量存储与检索、模型目录与切换、下载与重嵌 |
 | `depot_map.py` | 知识库 ↔ depot 归档映射（`{library}/{subpath}/{rel}` + 工作区 maps） |

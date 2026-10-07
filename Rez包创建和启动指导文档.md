@@ -536,7 +536,7 @@ wuwor postgresql -- postgres_stop
 对应环境变量，由目标程序识别后启用特定行为：
 
 | 修饰符 | 作用 | 识别方 / 行为 |
-|--------|------|--------------|
+|---|---|---|
 | `.script_server` | 设 `L_SCRIPT_SERVER=1` | 标题栏（`L_FramelessMainWindow`）优先识别，**总是启动脚本编辑器 HTTP 远程执行服务**（l_script_editor，默认 8764，被占用时自动向上找可用端口）。端口可用 `SCRIPT_EDITOR_HTTP_PORT` 固定（配合 `SCRIPT_EDITOR_HTTP_PORT_STRICT=1` 不漂移）；服务会发布发现文件 `~/.Lugwit/run/<service>.json` 并提供 IPC 命名管道，调用方无需写死端口 |
 | `.dev_mod` | 设 `L_DEV_MOD=1` | 各后端服务（auth/netdisk/chat/note/agent 等）识别后**启用热重载/热更**（现行实现是进程内 `SrcHotReload`，不是 uvicorn `--reload` —— §9.1 是历史机制；详见 `src_hot_reload_源码热重载与主页常驻.md`）；主页卡片可配专用热更新别名（`reload_args`，如 l_notepad_server 的 `l_notepad_api_reload`） |
 | `.comfyui_lite` | 设 `COMFY_LITE=1` | 轻量 ComfyUI 模式 |
@@ -620,7 +620,7 @@ shiboken6/6.11.0/.../python/shiboken6/ + PySide6/
 试过但**无效**的做法（勿重复踩）：
 
 | 做法 | 结果 |
-|------|------|
+|---|---|
 | `PySide6.__path__.append(addons_dir)` | 仍 `DLL load failed while importing QtWebEngineCore` |
 | 三个目录都 `os.add_dll_directory()` + 加 `PATH` | import 过了，但启动即 `ERROR:icu_util.cc:227] Invalid file descriptor to ICU data received.` 进程死 |
 | 设 `QTWEBENGINE_RESOURCES_PATH` / `QTWEBENGINE_LOCALES_PATH` / `QTWEBENGINEPROCESS_PATH` | ICU 错误依旧 |
@@ -912,7 +912,7 @@ def _http_json(method, path, body=None, token=""):
 ### 17.4 端口约定汇总
 
 | 端口 | 服务 |
-|------|------|
+|---|---|
 | 1027 | Auth Service（lugwit_auth 统一用户中心） |
 | 1026 | ChatRoom 后端 |
 | 1025 | ChatRoom 前端（Vite） |
@@ -923,7 +923,7 @@ def _http_json(method, path, body=None, token=""):
 
 ### 17.5 服务卡片 vs 普通包：启动入口别搞混
 
-| | 卡片外的包 | 主页卡片里的服务 |
+|  | 卡片外的包 | 主页卡片里的服务 |
 |---|---|---|
 | 例子 | `l_qt_wgt_lib`、`l_muse_backup_viewer`、`l_tray`、`postgresql` | `l_log_backend`、`l_wchat_backend`、`chatroom_backend`、`l_notepad_api`、`homepage_start`… |
 | 怎么起 | `wuwor <包> [修饰符] -- <别名>` | 主页卡片按钮，或统一入口 `wuwo svc start\|stop\|restart\|reload\|log\|list`（`wuwor svc ...` 等价；底层是卡片 API） |

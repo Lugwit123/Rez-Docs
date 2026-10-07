@@ -409,7 +409,7 @@ def _resolve_src_watch(use_env: bool) -> str:
 四个独立缺陷（`_restart_self` / `guard`），修法：
 
 | # | 缺陷 | 修法 |
-|---|------|------|
+|---|---|---|
 | 1 | 停旧→起新之间**不等端口释放**（`_svc_manage_impl` 有 `_ensure_port_released`，自重启没有） | 自重启改用同一个 `_ensure_port_released`（多轮补杀 + 等待） |
 | 2 | 起新实例失败后**不重试**，空窗要人工救 | 加重试循环（最多 `RESTART_SPAWN_ATTEMPTS`，默认 3；`L_HOMEPAGE_RESTART_ATTEMPTS` 可调）：清 `.solo` 残留 → 清陈旧 guard → 等端口 → 起 → 等就绪 |
 | 3 | **guard 泄漏（风暴根因）**：`guard` 只在"端口一直不通 + 常驻已关"时才退出，正常重启后它永远活着；`_ensure_guard` 只看 pid 文件里那个 pid 是否活着（文件常过期）→ **每次自重启多一个 guard**，多个 guard 同时发现端口 down → 同时 `_restart_self()` → 反复重启 + 熔断 | ① `guard` 每轮先"让位"：pid 文件持有者不是自己就退出（旧 guard ≤15s 自愈）；② 自重启起新实例前 `_kill_stale_guards()` 全清（新实例起来后 `_ensure_guard` 自动补一个） |

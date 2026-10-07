@@ -328,7 +328,7 @@ T6 (dir 快照) ─┼─> T5 (blob GC)         [T5 的 live 集依赖 T4/T6 的
 | `tools/depot_blob_gc.py` | T5 | blob 引用计数 GC |
 | `baidu_netdisk_api.py` | T1/T3 | 新增 `remote_meta()`（取 md5）、`copy_remote()`（filemanager opera=copy） |
 | `depot_service.py` | T1/T2 | 上传后回读比对；`register_items()`（只登记不传字节） |
-| `web_server.py` | T2 | `/api/depot/register`、`/api/upload/prepare`、`/api/upload/finish`（l_WChat 侧 `/api/upload/album/prepare|finish`） |
+| `web_server.py` | T2 | `/api/depot/register`、`/api/upload/prepare`、`/api/upload/finish`（l_WChat 侧 `/api/upload/album/prepare | finish`） |
 | 客户端包 | T2-B | 直传实现 + 回执 |
 
 ---

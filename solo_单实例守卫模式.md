@@ -101,7 +101,7 @@ start_orphan_watch()               # worker 孤儿自毁看门狗（仅 Windows�
 - 守卫照跑（与 auto_fetch 并行，同一套 `l_app_ready.find_running`），但**跳过交互与 `_kill_pid_tree`**，只把观测结果注入环境变量后继续启动：
 
   | 变量 | 含义 |
-  | --- | --- |
+  |---|---|
   | `L_SOLO_IGNORE` | 恒 `"1"`：wuwo 检测了但不裁决 |
   | `L_SOLO_PEER_PID` | 旧实例 PID（匹配到的最大 PID，通常即服务本体） |
   | `L_SOLO_PEER_PIDS` | 全部匹配 PID（含 cmd/wuwor/rez 包装链，清残留时有用） |
@@ -172,7 +172,7 @@ l_folder_favorites / wuwo 管理界面）、`Tray.py` 内联 `packages=[...]`（
 
 ## 7. 相关文件
 | 文件 | 作用 |
-| --- | --- |
+|---|---|
 | `wuwo/wuwor.bat` | 入口，转发 `wuwo.bat rez env ...` |
 | `wuwo/py_modules/wuwo_rez.py` | `.solo` 剥离、**注入 `L_SOLO=1`**、守卫异步启动、交互循环（重启/打开网址/保留）、`_kill_pid_tree`；**`.soloignore` 只观测不裁决 + 注入 `L_SOLO_PEER_*`**；**alias→匹配模式推导 `_alias_match_pattern`** |
 | `wuwo/packages/l_app_ready/1.0.0/src/l_app_ready/__init__.py` | psutil 进程命令行匹配（find_running）；**共享防护工具 `port_in_use` / `port_listener_pids` / `start_orphan_watch` / `register_url` / `solo_open_url`**；`find_running/is_ready` 支持显式 `pattern` 覆盖 |

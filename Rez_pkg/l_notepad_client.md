@@ -26,7 +26,7 @@ wuwor l_notepad_client -- python -m l_notepad_client.local_main
 ## 2. 日志位置
 
 | 日志 | 路径 | 说明 |
-|------|------|------|
+|---|---|---|
 | console 日志 | `D:\Temp\Log\l_notepad\notepad_console.log` | 当前这次运行，启动时重建；由 `logger.py::setup` 配置 |
 | 崩溃兜底日志 | `D:\Temp\Log\l_notepad\crash_<YYYYMMDD>.log` | 由 `local_main.py::_install_crash_handlers` 写：**每次进程启动一行 + Python 未捕获异常** |
 | 按天业务日志 | `D:\Temp\Log\rez_pkg_log\l_notepad_client\*.log` | pytracemp 落盘，按天追加 |
@@ -47,7 +47,7 @@ wuwor l_notepad_client -- python -m l_notepad_client.local_main
 ### 已知原生崩溃签名（Windows 事件查看器 / CrashDumps 实测）
 
 | 模块 | 异常码 | 含义 | 出现 |
-|------|--------|------|------|
+|---|---|---|---|
 | `Qt6Core.dll` | `0xc0000409` | fail-fast（C++ 未定义行为/缓冲区） | 2026-09-10 / 09-17 |
 | `Qt6Gui.dll` | `0xc00000fd` | 栈溢出（深递归） | 2026-09-15（多次） |
 | `pyside6.abi3.dll` | `0xc0000005` | 访问违例 | 2026-09-15 |
@@ -94,7 +94,7 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\pyth
 ## 5. 已修复（2026-09-23）
 
 | 位置（函数名） | 问题 | 修复 |
-|------|------|------|
+|---|---|---|
 | `ui.py::_collect_folder_entries` | 方法误标 `@staticmethod`，内部却用 `self._file_entry_marker` → 文件夹悬停弹窗抛 `NameError: name 'self' is not defined` | 去掉 `@staticmethod`，改为实例方法 |
 | `ui.py::_on_selection_changed_inner` | 选中 `__folder__:*` / `__empty__*` 等非数字 id 时 `int(item_id)` 抛 `ValueError` | 先拦截特殊前缀，非数字字符串直接返回，并加 `try/except` 兜底 |
 | `local_main.py::_install_crash_handlers` | `faulthandler.enable(<临时句柄>)` 未持引用，有被 GC 关闭风险 | 用模块级 `_FAULTHANDLER_FILE` 持句柄后再 `enable` |

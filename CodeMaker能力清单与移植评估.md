@@ -40,7 +40,7 @@ m = re.match(r"\[([A-Za-z][A-Za-z0-9 _-]{2,40})\]\s*(.{4,190})", lit)
 ## 1. 包里到底有什么（29 项）
 
 | 条目 | 大小 | 性质 |
-|------|------|------|
+|---|---|---|
 | `dist/node/index.js` | 3.08 MB | **CodeMaker 的 Agent 本体**，单文件、已压缩混淆 |
 | `dist/node/win-ca/roots.exe` | 83 KB | 证书根采集 |
 | `rg/{win32-x64,darwin-x64,darwin-arm64,linux-x64,linux-arm64}/rg[.exe]` | 4.5–5.7 MB | 真 ripgrep 二进制，5 平台齐 |
@@ -63,7 +63,7 @@ size 474189
 ## 2. 运行时骨架
 
 | 项 | 证据 |
-|----|------|
+|---|---|
 | 运行时是第三方框架 **Pi**（`@mariozechner/pi-coding-agent`） | `spawn(piBinary, {systemPrompt, provider, model, sessionFile, initialPrompt})`；`[PiProcess] spawning: ${piBinary} ... (sessionFile=...)`；`failed to write initial prompt to stdin` |
 | 插件装载点 | `{PI_CODING_AGENT_DIR}/extensions/`，用 Pi 的 `registerTool` 注册 |
 | Doctor 会话落盘 | `~/.codemaker/doctor-agent/sessions/<sessionId>.json` |
@@ -83,7 +83,7 @@ size 474189
 `RulesHandler`：`rulesDirectory=".codemaker/rules"`，watcher 默认开，workspace 变更即重init。**六个来源**：
 
 | 来源 | 证据 |
-|------|------|
+|---|---|
 | `.codemaker/rules` | `Loading rules from ${n} - directory:` |
 | 用户级 CodeMaker rules | `User-level CodeMaker rules loaded - count:` / `User-level CodeMaker rules directory not found` |
 | **Cursor rules** | `Found ${n.length} .cursor/rules directories`、`Found mdc files in ${n}/.cursor/rules`、`Reached maximum recursion depth (${n})`、symlink realpath 去重 |
@@ -121,8 +121,8 @@ alwaysApply: true
 ## 4. ignore 治理
 
 | 项 | 证据 |
-|----|------|
-| 文件与 mode 头 | `".codemaker/.codemakerignore"`；`/^#\s*mode\s*:\s*(allowlist|denylist)\s*$/i` |
+|---|---|
+| 文件与 mode 头 | `".codemaker/.codemakerignore"`；`/^#\s*mode\s*:\s*(allowlist | denylist)\s*$/i` |
 | 状态字段 | `localMode` / `remoteRules` / `remoteMode` / `mode="denylist"` / `loadedMtimeMs` / `ruleIgnoreCache` / `remoteLastFetchMs` |
 | 热重载 | `refreshIfChanged()` 按 **mtime** 判断，未变不重算 |
 | 空 allowlist 语义 | `allowlist mode with no rules: all paths will be blocked` |
@@ -134,7 +134,7 @@ alwaysApply: true
 ## 5. Hooks 层（`l_agent_chat` 无）
 
 | 项 | 证据 |
-|----|------|
+|---|---|
 | 四类 handler | `command` / `http` / `mcp_tool` / `prompt`（条件求值） |
 | command shell 探测 | `shell:'powershell' but no PowerShell (pwsh/powershell) found — failing open`、`Git Bash not found — falling back to PowerShell`、`No usable shell (Git Bash / PowerShell) on Windows — failing open` |
 | HTTP 白名单门 | `HTTP hook blocked by allowedHttpHookUrls gate` |
@@ -171,7 +171,7 @@ local   : <workspaceRoot>/.claude/settings.local.json
 ## 7. Skills / Commands / Agents / SubAgent
 
 | 模块 | 证据 |
-|------|------|
+|---|---|
 | `SkillsHandler` | 四张表 `skills` / `pluginSkills` / `commands` / `pluginCommands`；多 source；无 workspace 时只载用户级；`RELOAD_DEBOUNCE_MS=300`；`MAX_SKILL_DIRS_PER_ROOT` 目录预算；`Max scan depth reached`；symlink realpath；`Skipping plugin folder (has manifest)` |
 | `SkillFeature` | `INSTALL_BUILTIN_SKILL` / `UPLOAD_SKILL` / `CHECK_SKILLS_VERSION` / `RELOAD_SKILLS` + skill 模板 |
 | `AgentsHandler` | `agents` / `pluginAgents`；`HUB_REFRESH_TIMEOUT_MS=5000`；hub 刷新超时→**保留旧快照**；`timedOutHubRefreshes` 计数 |
@@ -185,7 +185,7 @@ local   : <workspaceRoot>/.claude/settings.local.json
 ## 8. MCP 层（`l_agent_chat` 最大缺口）
 
 | 项 | 证据 |
-|----|------|
+|---|---|
 | 管理器 | `McpManager`：mutex 串行、`connections`、`reconnectInFlight`、transport 根因/stderr 尾/spawn 路径缓存、env 刷新时间表、`credentialPolicy` |
 | **自愈** | `MCP callTool on disconnected stdio server, reconnecting first: {}`、`MCP callTool self-heal retry: {} on {} -> success`、`spawn ENOENT → refreshed PATH → retrying` |
 | 配置治理 | `McpConfigHandler`：user + project 配置；**plugin server 只读**；`Invalid format, expected "mcpServers" object`；配置不存在则创建；父目录 watcher 兜底 |
@@ -199,7 +199,7 @@ local   : <workspaceRoot>/.claude/settings.local.json
 `SpecHandler` 维护 `knownChanges` / `knownFeatures` / `knownArchives` / `knownPlans`；目录不存在则 watch 其创建。四个 parser：
 
 | parser | 证据 |
-|--------|------|
+|---|---|
 | `OpenSpecParser` | `framework="openspec"`, `rootDirName="openspec"`；`specs/<capability>/spec.md` + `changes/*.md`；`Detected version` / `capabilities` / `activeChanges` |
 | `SpecKitParser` | `constitution.md` + features |
 | `SuperpowersParser` | plans |
@@ -233,7 +233,7 @@ local   : <workspaceRoot>/.claude/settings.local.json
 ## 13. 与 `l_agent_chat` 的差距对照与优先级
 
 | # | 可移植项 | `l_agent_chat` 现状 | 备注 |
-|---|----------|---------------------|------|
+|---|---|---|---|
 | 1 | **RulesHandler 多源** | 零（只有单一全局 `AI_PREFERENCE`） | 不止 AGENTS.md：还吃 Cursor rules 递归 + codebase.md + 用户级；本仓一堆 `AGENTS.md` 可直接当样本 |
 | 2 | **ignore（mode 头 + 远端路由）** | 检索无 ignore 感知 | 字段与语义已取全；`READ_FILE blocked` 证明是工具层强制 |
 | 3 | **Hooks（CC 兼容 schema）** | 无 | 抄 schema 即得 Claude Code 生态兼容；fail-open 语义明确 |
@@ -333,7 +333,7 @@ TaskCreated, TaskCompleted, TeammateIdle, Elicitation, ElicitationResult
 `Handler` 按 `type` 判别：
 
 | type | 字段 |
-|------|------|
+|---|---|
 | `command` | `command: string, args?: string[], name?, timeout?: number, async?: boolean, asyncRewake?: boolean, shell?: "bash"\|"powershell", if?: string, statusMessage?, env?: Record<string,string>, cwd?: string` |
 | `http` | `url: string, name?, timeout?, async?, headers?: Record<string,string>, allowedEnvVars?: string[]` |
 | `mcp_tool` | `server: string, tool: string, input?: Record<string,unknown>, name?, timeout?, async?, if?` |
@@ -371,7 +371,7 @@ TaskCreated, TaskCompleted, TeammateIdle, Elicitation, ElicitationResult
 `hookSpecificOutput` 是**按 `hookEventName` 判别的联合**，逐事件可选字段：
 
 | hookEventName | 可选字段 |
-|---------------|----------|
+|---|---|
 | `SessionStart` | `additionalContext`, `initialUserMessage`, `watchPaths[]`, `sessionTitle`, `reloadSkills` |
 | `SessionEnd` | （无） |
 | `UserPromptSubmit` | `additionalContext`, `suppressOriginalPrompt`, `sessionTitle` |
@@ -399,7 +399,7 @@ TaskCreated, TaskCompleted, TeammateIdle, Elicitation, ElicitationResult
 ### 15.6 配置来源与合并（`HookConfigLoader`）
 
 | 源 | 路径 / 条件 |
-|----|-------------|
+|---|---|
 | `projectSettings` | `<workspace>/.codemaker/hooks.json` |
 | `userSettings` | `~/.codemaker/hooks.json` |
 | CC 各层 | 仅当 `syncCcHooksConfigs` 为真时加载，见 15.7；源名含 `policySettings` |
@@ -468,7 +468,7 @@ x1t = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure",
 ### 16.1 配置位置与合并（`McpConfigHandler`）
 
 | 源 | 路径 |
-|----|------|
+|---|---|
 | user | `~/.codemaker/mcps.json` |
 | project | `<workspace>/.codemaker/mcps.json` |
 
@@ -480,7 +480,7 @@ x1t = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure",
 ### 16.2 传输三型（`McpManager.createTransport`）
 
 | type | 实现要点 |
-|------|----------|
+|---|---|
 | `stdio` | `command` / `args` 做 `${WORKSPACE}` 变量替换；env 由凭据策略合成（见 16.4）；cwd 取 `workspacePath` 否则版本目录；`stderr` 走 pipe 并抓尾巴；`onerror` 区分 **spawn 错误**（有 `syscall`/`errno` 或 message 以 `spawn ` 开头）与 **stderr 错误**，日志前缀不同 |
 | `sse` | EventSource；`max_retry_time: 5000`；仅当有 `Authorization` 头才 `withCredentials` |
 | `streamableHttp` | 专用 client + 自定义 dispatcher；`onerror` 记 `MCP server HTTP error` 并追加到 server.error |
@@ -517,7 +517,7 @@ auth 变更时**重启所有** `enableNeteaseAuth` 为真或 url 含 `netease.co
 ### 16.5 自愈与健康（本清单里最值得抄的部分）
 
 | 机制 | 参数 / 行为 |
-|------|-------------|
+|---|---|
 | 心跳 | 默认 **10s**（可被 server 的 `heartbeatTimeout`（秒）覆盖）；`inFlightRequests > 0` 时**跳过**（busy）；`ping` 成功 → `consecutiveFailures = 0`；迟到回复也忽略 |
 | stdio 发送停滞看门狗 | **15s** 内无 drain → 抛 `McpTransportStalled: stdio send stalled on <server>`，并触发 transport onerror 走自愈 |
 | 连接超时 | `Promise.race` + `unref()`，超时后 `close()` 再抛 |
@@ -561,7 +561,7 @@ maxRetries                = 2
 由诊断打包器 `ZOe` 逐条枚举而来，等于一份权威路径清单：
 
 | 归属 | 路径 |
-|------|------|
+|---|---|
 | user MCP | `~/.codemaker/mcps.json` |
 | user hooks | `~/.codemaker/hooks.json` |
 | user 规则/技能/代理 | `~/.codemaker/rules`、`~/.codemaker/skills`、`~/.codemaker/agents` |
@@ -589,7 +589,7 @@ maxRetries                = 2
 ## 18. 移植进度
 
 | # | 项 | 状态 | 位置 |
-|---|----|------|------|
+|---|---|---|---|
 | 1 | Rules 多源加载 + `.mdc` frontmatter 契约 | **已落地并验证** | `l_agent_chat/999.0/src/l_agent_chat/rules.py` |
 | 1b | 10 个设置开关（6 源开关 + 上限/深度/TTL） | **已落地** | `config.py` 常量与 `_SCHEMA`、`templates/settings.html`「🧭 工作区规则」卡片 |
 | 1c | 注入 system 提示词 | **已接入** | `agent_client.py::_build_messages`（`AI_PREFERENCE` 之后） |
@@ -667,7 +667,7 @@ maxRetries                = 2
 
 ## 附：本次调研的原始产物（临时目录，可重生成）
 | 路径 | 内容 |
-|------|------|
+|---|---|
 | `D:\Temp\Log\_cmagent\` | 解包结果 |
 | `D:\Temp\Log\_cminv2.txt` | 按 Tag 归属的完整日志清单 + 关键词字面量 + 构造器窗口 |
 | `D:\Temp\Log\_cminv.txt` | logger 普查 + 设置键 + fs 路径 + 工具名扫描 |

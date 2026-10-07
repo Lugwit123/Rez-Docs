@@ -28,7 +28,7 @@ wuwo svc open l_mindmap_mmd
 ## URL
 
 | 路径 | 说明 |
-|------|------|
+|---|---|
 | `/` | 编辑器主页（流列表 + 画布） |
 | `/flow/{name}` | 打开指定流程图 |
 | `/settings` | 兼容旧链接：进入编辑器并自动打开右侧「连线显示设置」面板 |
@@ -88,7 +88,7 @@ wuwo svc open l_mindmap_mmd
 - API（`http://127.0.0.1:8110`）：
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
+|---|---|---|
 | GET | `/api/flows` | 流列表 |
 | GET | `/api/flows/{name}` | 取流程图 JSON |
 | PUT | `/api/flows/{name}` | 保存流程图（编辑器自动保存也会 PUT） |
@@ -119,7 +119,7 @@ wuwo svc open l_mindmap_mmd
 ## 环境变量
 
 | 变量 | 作用 |
-|------|------|
+|---|---|
 | `L_MINDMAP_MMD_RUNTIME` | 覆盖本包的 runtime 目录（`_runtime_dir()`：热更/守卫的运行时目录，默认 `~/.lugwit/l_mindmap_mmd/runtime`） |
 | `L_AGENT_CHAT_FLOWS_HOME` | 覆盖 flows 目录（**与 l_agent_chat 运行端同源**，默认 `<实例数据根>/l_agent_chat/flows`，即 `~/.lugwit/main/l_agent_chat/flows`；`L_AGENT_MARKET_HOME` 亦可） |
 | `L_MINDMAP_MMD_SETTINGS` | 覆盖 settings 目录（默认 `~/.lugwit/l_mindmap_mmd`） |

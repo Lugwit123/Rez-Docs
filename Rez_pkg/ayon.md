@@ -5,7 +5,7 @@
 > 只解决「本地把服务器跑起来 + 被本机工具访问」，**不碰依赖解析** —— 依赖仍归 rez / 货架管，AYON 只是被查询的外部系统。
 
 | 项 | 值 |
-|----|----|
+|---|---|
 | 包路径 | `wuwo/packages/ayon/1.0.0` |
 | 依赖 | `python-3.12+<3.13`（仅此一项；容器引擎走外部命令，不引 docker-py） |
 | 启动 | `wuwor ayon -- ayon_start` |
@@ -41,7 +41,7 @@ start http://127.0.0.1:5000
 ## 2. 命令与实现
 
 | 命令 | 作用 | 实现位置 |
-|------|------|----------|
+|---|---|---|
 | `ayon_start` | `compose up -d` + 等 `/api/info` 就绪 | `cmd_start` → `main.py` |
 | `ayon_stop` | `compose stop`（保留数据） | `cmd_stop` |
 | `ayon_down [-v]` | `compose down`；`-v` 连 postgres 命名卷一起删 | `cmd_down` |
@@ -83,7 +83,7 @@ wuwo/packages/ayon/
 原始文件来自 [ynput/ayon-docker](https://github.com/ynput/ayon-docker/blob/main/docker-compose.yml)：
 
 | # | 改动 | 原因 |
-|---|------|------|
+|---|---|---|
 | 1 | 去掉 `/etc/localtime:/etc/localtime:ro` | 官方注释里就写了 Windows 要注掉（本机是 Windows + podman WSL 机器） |
 | 2 | `addons` / `storage` 的 bind mount 改用 `${AYON_ADDONS_DIR}` / `${AYON_STORAGE_DIR}`，默认 `./addons` `./storage` | 部署根由 launcher 决定，不写死在 compose 里 |
 | 3 | 不写死 `version`，沿用官方的三个 tag 变量 | 换版本不用改 compose |
@@ -116,7 +116,7 @@ ayon:
 失败分**两级**，别混：
 
 | 现象 | 含义 |
-|------|------|
+|---|---|
 | 状态列「（连不上）」 | 传输层没通（`ConnectionRefused` 等）—— 服务没跑或端口转发断了 |
 | 有 HTTP 状态码 | 服务活着，只是这个端点不对（`404`）或没权限（`401`） |
 
@@ -211,7 +211,7 @@ vmIdleTimeout=-1
 ```
 
 | 键 | 为什么 |
-|----|--------|
+|---|---|
 | `memory=8GB` | postgres 是内存大头；官方推荐 16G，2G 是贴地板。本机 127GiB 有余。改完需 `wsl --shutdown` 才对已有机器生效 |
 | `vmIdleTimeout=-1` | **禁用 WSL 空闲关停**。本机出现过 VM 被反复重启（`podman info` 的 `Uptime` 多次归零），容器随之被优雅停掉，表现就是 `127.0.0.1:5000` 时通时断 |
 
@@ -228,7 +228,7 @@ vmIdleTimeout=-1
 ## 8. 排障
 
 | 现象 | 原因 / 处置 |
-|------|-------------|
+|---|---|
 | 浏览器 `ERR_CONNECTION_RESET`，`podman ps` 空 | VM 被重启过 → `ayon_start`（§7.2） |
 | `127.0.0.1:5000` 不通但 `172.22.51.89:5000` 通（IP 见 §6.4） | 端口转发没建 → `net start iphlpsvc`，再 `ayon_start` 让它重写规则 |
 | server 容器 `unhealthy`，API 一直 `503`；redis `redis-cli ping` 是 PONG、postgres 能查库 | server 卡在反复重连 redis → `podman restart ayon-server-1`（实测恢复，两地址都回 200） |
@@ -248,7 +248,7 @@ wuwor ayon -- ayon_where
 ## 9. 数据与备份
 
 | 位置 | 内容 | 说明 |
-|------|------|------|
+|---|---|---|
 | 命名卷 `ayon_db` | postgres 数据 | `ayon_down -v` 会删它 |
 | `addons/` | AYON 运行时下载的 addon | bind mount，**不会被 `down -v` 删** |
 | `storage/` | 项目数据 | 同上 |
@@ -263,7 +263,7 @@ wuwor ayon -- ayon_where
 ## 10. 验证记录
 
 | 项 | 结果 |
-|----|------|
+|---|---|
 | 三容器 | `ayon-postgres-1` / `ayon-redis-1` / `ayon-server-1` 全部 `Up (healthy)` |
 | `/api/info` | 200 → `{"version":"1.16.6+202609071331", ...}` |
 | `ayon_status` | 报「就绪（HTTP 200）」，退出码 0 |

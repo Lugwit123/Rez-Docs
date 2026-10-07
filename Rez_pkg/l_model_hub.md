@@ -110,7 +110,7 @@ Authorization: Bearer <token>            ← 首选（模型调用走这条）
 | `POST /v1/gateway/check` | 单厂商自检（`client.check_provider`） |
 | `POST /v1/gateway/disable` · `/v1/gateway/enable` | 手动停用/启用厂商（持久在 auth 中心存储） |
 | `GET /v1/chain?model=` | **降级链预览**（同模型 → 同档 → 相邻档 → 代表模型）；排障先看它，别猜 |
-| `GET /v1/gateway/usage?range=` | 调用统计：**厂商维度** `providers` + **模型维度** `models`（键 = `厂商/模型 id`；口径 = 本服务发出的**所有**模型调用），`range=all|today|7d|30d`（见 §7） |
+| `GET /v1/gateway/usage?range=` | 调用统计：**厂商维度** `providers` + **模型维度** `models`（键 = `厂商/模型 id`；口径 = 本服务发出的**所有**模型调用），`range=all | today | 7d | 30d`（见 §7） |
 | `GET /v1/gateway/usage/flush` | 手动落一次盘（+推 depot） |
 
 > 网关用 litellm `Router`，进程级 `litellm.drop_params = True`：某厂商不认的参数（如
@@ -184,7 +184,7 @@ POST /v1/chat/completions/multi
 | 路由 | 说明 |
 |---|---|
 | `POST /tts` | 引擎选择式：`engine = minimax \| doubao \| indextts2`，返回 `audio_base64`（**多带一个 `format`**：云端两家 `mp3`，本机 IndexTTS2 是 `wav`）；未知 engine → 400 |
-| `POST /v1/audio/speech` | **OpenAI 兼容**：`model=indextts2`（默认）→ 本机服务；`model=<provider>/<model>` → 转发到该厂商（含 BYO）的 `/audio/speech`；未知模型 → 404 并列出可用清单。成功直接回音频字节（`audio/wav`，本机路径带 `X-L-Indextts2-*` 头）|
+| `POST /v1/audio/speech` | **OpenAI 兼容**：`model=indextts2`（默认）→ 本机服务；`model=<provider>/<model>` → 转发到该厂商（含 BYO）的 `/audio/speech`；未知模型 → 404 并列出可用清单。成功直接回音频字节（`audio/wav`，本机路径带 `X-L-Indextts2-*` 头） |
 
 本机 IndexTTS2 的调用细节（`voice` 是**音色档案 id** 而不是音色名、首次调用要等
 30~60s 载模型 → 超时默认 300s）见 `l_indextts2.md`。`/v1/audio/speech` 的
@@ -316,7 +316,7 @@ plan 端点报 `does not support the agent plan feature` = 订阅网关不含视
 | `L_MODEL_HUB_ROOT_PATH` | 空 | 反代没有 `X-Forwarded-Prefix` 时手动指定外部前缀 |
 | `L_MODEL_HUB_MAX_CONCURRENCY` | `0`（不限） | 网关并发上限 |
 | `L_MODEL_HUB_RUNTIME` | `~/.lugwit/l_model_hub/runtime` | 热重载运行时目录（pid/socket） |
-| `L_INDEXTTS2_URL` | `http://127.0.0.1:8470` | 本机 IndexTTS2 服务地址（见 `l_indextts2.md`）|
+| `L_INDEXTTS2_URL` | `http://127.0.0.1:8470` | 本机 IndexTTS2 服务地址（见 `l_indextts2.md`） |
 | `L_INDEXTTS2_TIMEOUT` | `300` | 本机 TTS 超时（秒）：首次要载模型，别用云端那套 30s |
 | `LUGWIT_AUTH_USER` / `LUGWIT_AUTH_URL` | — | 访问 auth 中心密钥存储的服务凭据 / 地址 |
 | `LUGWIT_ACCESS_TOKEN` | — | 本机免登录调用时的登录态 |

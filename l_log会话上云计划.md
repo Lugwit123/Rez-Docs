@@ -17,7 +17,7 @@
 agent 侧不再重复落盘。
 
 | 环节 | 方案 |
-|------|------|
+|---|---|
 | 落点 | `<根>/ai_chats/<sha1(key)[:16]>.json` → depot 路径 `/l_log/ai_chats/<sha1(key)[:16]>.json` |
 | 库 / 工作区 | 复用 l_log 现有：库 `/l_log`、工作区 `l_log`、`local_root` = 根目录（**不新建库**） |
 | 谁同步 | **l_log 自己**（复用 `depot_logs`），agent 不参与 |
@@ -50,7 +50,7 @@ depot 客户端与 4 态框架，改动集中在一个包内。
 ### 2.1 现在有两套 store，各存各的
 
 | 谁写 | 落到哪 | 上云吗 |
-|------|--------|--------|
+|---|---|---|
 | **l_log 自己**（AI 面板 / 独立窗口） | `~/.lugwit/l_log/ai_chats/<sha1(key)[:16]>.json`（`backend/ai_chat_store.py:22`） | **不上云** |
 | **l_agent_chat**（被 l_log 代理时） | `<l_agent_chat 存储根>/.l_agent_ws/sessions/session_<id>.json` | **上云 → `/l_agent_chat`** |
 
@@ -67,7 +67,7 @@ depot 客户端与 4 态框架，改动集中在一个包内。
 `backend/depot_logs.py`：
 
 | 函数 | 作用 |
-|------|------|
+|---|---|
 | `library()` / `ws_name()` | 库（默认 `/l_log`）、工作区名（默认 `l_log`），可用 `L_LOG_DEPOT_LIBRARY` / `L_LOG_DEPOT_WS` 覆盖 |
 | `ensure_library(lib, mode="dir")` | 建库 |
 | `ensure_workspace(local_root, lib)` | 建/复用工作区：`local_root` = 根目录，`maps = [{depot_path: <库>, local_path: ""}]` |
@@ -93,7 +93,7 @@ depot 客户端与 4 态框架，改动集中在一个包内。
 `backend/static/js/ai-agent-client.js`：
 
 | 行 | 调用 |
-|----|------|
+|---|---|
 | 431 | `GET /api/ai/chat/info?key=` —— 面板里显示「对话存在哪」，可点击复制 |
 | 612 / 736 | `POST /api/ai/chat/drop`（删会话） |
 | 724 | `POST /api/ai/chat/save` |
@@ -132,7 +132,7 @@ depot 客户端与 4 态框架，改动集中在一个包内。
 ### 4.1 版本库已经提供的（**白拿，别再造一遍**）
 
 | 能力 | 端点 / 函数 | 说明 |
-|------|-------------|------|
+|---|---|---|
 | 工作区 CRUD + 映射 | `workspace`(GET/POST)、`workspace/select`、`workspace/{id}/maps`(PUT)、`workspace/{id}/owner` | 建/选/改映射/转归属 |
 | **路径互算** | `workspace/{id}/path?local=`、`workspace/{id}/local_path?path=` → `local_to_depot()` / `depot_to_local()` | 本地↔库内，**越界 400**。平铺时与客户端拼串等价，但多根 / 排除 / 子目录挂载只有服务端算得对 |
 | **排除规则** | maps 里的 `exclude: true`（`is_excluded()`） | 命中自身或子树即排除；**只影响 `sync_plan` / `reconcile` 候选集**，不删历史 |
@@ -211,7 +211,7 @@ SCOPES = {
 - 三方判定（照 `depot_status.from_fingerprints` 的语义）：
 
   | 情形 | 结论 |
-  |------|------|
+  |---|---|
   | 只有本地有 | `📄 仅本地`（可提交） |
   | 只有云端有 | `☁ 仅云端`（可拉取） |
   | 都有，指纹吻合且服务端 `have` 的 rev == 云端 head | `✓ 已同步`（**不下载**） |
@@ -232,7 +232,7 @@ SCOPES = {
 ### 5.5 界面入口（白拿的先进来）
 
 | 位置 | 现状 | 加什么 |
-|------|------|--------|
+|---|---|---|
 | `ai-agent-client.js:431`（「对话存在哪」） | 只显示本地路径 | 加一行**云端状态**（四态徽标 + rev + 「⤴ 提交 / ⤵ 拉取」） |
 | AI 面板 | 无 | 会话条目的四态徽标；**变更单**（`pending`：几个、几个文件）与**锁**（`locks`：谁锁的）直接展示 |
 | 批量按钮 | 无 | `☁ 提交`（只推 `local_only` + `broken`）/ `⬇ 拉取`（只拉 `cloud_only`），带 SSE 进度 |
@@ -312,7 +312,7 @@ $ python tools/migrate_ai_chats.py --apply
 ```
 
 | 文件 | 大小 | SHA256(前 16) 迁前 = 迁后 | 校验 |
-|------|------|--------------------------|------|
+|---|---|---|---|
 | `3a0cc23dcb977ddf.json` | 537B | `4EA066A5BD28F7AA` | ✓ |
 | `c0fe984769b093c0.json` | 24112B | `EF8BCC9C8F84D73F` | ✓ |
 
@@ -338,7 +338,7 @@ $ python tools/migrate_ai_chats.py --apply
 **实测**（`GET /api/workspace-status?root=l_log`）：
 
 | 组 | 结果 |
-|----|------|
+|---|---|
 | `logs` | 420 个文件（413 local / 4 cloud / 3 synced），**不含任何 `ai_chats/*`** |
 | `chats` | 正是迁移过来的 2 份（`ai_chats/3a0cc23d….json`、`ai_chats/c0fe9847….json`），均 `local`（云上还没有）；`dir = D:\Temp\Log\ai_chats` |
 
@@ -357,7 +357,7 @@ $ python tools/migrate_ai_chats.py --apply
 **实测**
 
 | 步骤 | 结果 |
-|------|------|
+|---|---|
 | `POST /api/ai/chat/push {root:"l_log"}` | `pushed` 2 份，`failed` 空 |
 | `list_files(..., '/l_log', exts={'.json'})` | `['ai_chats/3a0cc23d….json', 'ai_chats/c0fe9847….json']`，大小 537 / 24112 |
 | 把本地那份挪走 → `POST pull` | `pulled` 1 份；回来后 **sha16 = `EF8BCC9C8F84D73F`**（与迁移前一致）、size 24112；`error` 空（说明盖章成功） |
@@ -384,7 +384,7 @@ $ python tools/migrate_ai_chats.py --apply
   因为几百篇不能逐篇下载）：
 
   | 情形 | 结论 |
-  |------|------|
+  |---|---|
   | 只有本地 / 只有云端 | `📄 仅本地` / `☁ 仅云端` |
   | 都有，台账指纹 == 本地 且 `have` rev == head rev | `✓ 已同步`（**不下载**） |
   | 都有，指纹不符（本地动过）或 rev 不符（云端动过） | `✎ 已修改`（**不下载**） |
@@ -399,7 +399,7 @@ $ python tools/migrate_ai_chats.py --apply
 **实测**
 
 | 检查 | 结果 |
-|------|------|
+|---|---|
 | `depot_logs.have('D:/Temp/Log','/l_log')` | 两份会话都在账上（rev 1）→ 阶段 4 的盖章确实进了服务端 |
 | 删掉台账 → 调状态 | **4069ms**（没台账 → 下载两份比较 → 一致 → 记台账） |
 | 紧接着再调 | **15ms**（台账命中，**不下载**）→ **270×**，这就是「✓ 且不下载」的直接证据 |
@@ -415,7 +415,7 @@ $ python tools/migrate_ai_chats.py --apply
 两端内容一致 → 算出同一把 key。
 
 | 已做 | 位置 |
-|------|------|
+|---|---|
 | **保存即推**：`/api/ai/chat/save` 存成功后 `chat_sync.push_async(key)` | `app.py` + `chat_sync` |
 | **按需读云**：本地没有会话文件时，`_read_chat_data` 算出库内 rel 去库里读 | `ai_chat_store._cloud_chat_data` |
 | `chat_info` 多出 `cloud_rel`（本地没有时也能看出库内位置） | `ai_chat_store` |
@@ -455,7 +455,7 @@ $ python tools/migrate_ai_chats.py --apply
 **一次性修复工具** `tools/fix_chat_identity.py`（默认干跑，`--apply` 真改）：
 
 | 动作 | 说明 |
-|------|------|
+|---|---|
 | 改名 | 老命名（按整把 key）→ 新命名（按 logId），推新名、删库里旧名 |
 | **合并** | 同一份日志的两份文件（历史上 `LogList\…` 与归一的 `@l_log\…` 两种写法）→ 会话按 id 去重合并 |
 | 源文件 | 改名为 `<原名>.merged` **留着**，不静默删 |
@@ -485,7 +485,7 @@ $ python tools/migrate_ai_chats.py --apply
 **后端**
 
 | 项 | 位置 |
-|----|------|
+|---|---|
 | `drop` 后收尾：文件还在 → 推新版本；清空了 → **删云端那份** + 清台账 | `chat_sync.after_drop` |
 | `save` 后自动推这一条（后台线程） | `chat_sync.push_async`（阶段 7 前已做） |
 | 单条状态 / 历史 / 回滚 | `GET /api/ai/chat/status`、`GET /api/ai/chat/history`、`POST /api/ai/chat/revert` |
@@ -502,7 +502,7 @@ $ python tools/migrate_ai_chats.py --apply
 **实测**
 
 | 检查 | 结果 |
-|------|------|
+|---|---|
 | `save` → 10s 后状态 | `cloud_rel=ai_chats/db239211….json`，**`synced`**（没手动推 → 保存即推生效） |
 | `drop` → 12s 后 | 云端那条**消失**（`rel_present=False`）、本地文件也没了 → 不留「仅云端」孤儿 |
 | `revert` 到当前 head | `ok=true`，状态 rev 1→2、仍 `synced`（零流量指向旧 blob） |
@@ -542,7 +542,7 @@ curl -k "https://121.196.144.88/log/api/ai/chat/load?key=trace_log%7C%40l_log%5C
 ### 阶段 8：收尾（本次已完成的部分）
 
 | 阶段 | 内容 | 状态 |
-|------|------|------|
+|---|---|---|
 | 1 | 会话落 `<根>/ai_chats/` | ✔ |
 | 2 | 迁移旧位置（含合并同名日志） | ✔ |
 | 3 | 日志 / 会话两组状态 | ✔ |
@@ -605,7 +605,7 @@ if (resultDiv && resultDiv.style.display !== 'none') self.renderConversation();
 **文件层级**：一份日志 = 一个文件。
 
 | 位置 | 名字 |
-|------|------|
+|---|---|
 | 本地 | `<绑了库的额外根>/ai_chats/<sha1(身份)[:16]>.json` |
 | 云端 | `<库>/ai_chats/<同一个名字>`（如 `/l_log/ai_chats/5418973f5e3dc0eb.json`） |
 | 身份 | `normalize_log_id(logId)` —— **不含 `title`**（换浏览器/换机器/取不到日志全文都能对上） |
@@ -613,7 +613,7 @@ if (resultDiv && resultDiv.style.display !== 'none') self.renderConversation();
 **会话层级**：同一份日志的对话按会话分开存，**最多 `MAX_SESSIONS = 10` 份**（新的在前）。
 
 | 项 | 规则 |
-|----|------|
+|---|---|
 | `id` | `s<毫秒时间戳>`（如 `s1790007562839`），提问时生成；切换/删除都按它 |
 | **显示名** | 该会话**首条用户提问**的前 28 字（`PREVIEW_CHARS`；空白压成单空格，超长加 `…`）；没有提问则为空 |
 | 列表展示 | `名字（本地保存时间 · N 轮[ · 未上传]）`；没名字时只显示括号里那段 |
@@ -698,7 +698,7 @@ curl "http://127.0.0.1:1028/api/depot/history?ws=l_log&path=/l_log/ai_chats/<has
 ## 附：关键代码位置
 
 | 位置 | 说明 |
-|------|------|
+|---|---|
 | `l_log/999.0/backend/ai_chat_store.py` | 会话存取（`chat_dir` / `save_chat` / `load_chat` / `drop_chat` / `chat_info`） |
 | `l_log/999.0/backend/depot_logs.py` | depot 客户端（`library` / `ws_name` / `ensure_*` / `list_files` / `read_file` / `submit_file`） |
 | `l_log/999.0/backend/workspace_status.py` | 现有四态（`EXTS` / `local_files` / `depot_files` / `workspace_status`） |

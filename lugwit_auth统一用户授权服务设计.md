@@ -747,7 +747,7 @@ kek_id        = sha256(KEK)[:12]                     # 记是哪把 KEK 包的
 
 **改动文件**（`lugwit_auth/999.0/src/lugwit_auth/`）：
 | 文件 | 内容 |
-|------|------|
+|---|---|
 | `schema_upgrade.py` | `credentials` 增列 `dek_wrapped bytea`、`kek_id text`（幂等，启动自动补） |
 | `secret_store.py` | **KEK 密钥环**：`kek_id()`、`primary_kek()`、`load_keyring()`（env + `master.key` + `keys/*.key`）、`export_kek()`、`import_kek()` |
 | `credential_service.py` | 信封-only：`_encrypt_row()` 生成 DEK 并整行加密；`_row_dek(row)` 按 `kek_id` 解包 DEK；更新沿用本行 DEK；**无兼容回退**——未迁移行（`dek_wrapped IS NULL`）直接抛 `MasterKeyUnavailable`（fail-closed） |
@@ -820,11 +820,11 @@ wuwor lugwit_auth -- lugwit_auth_rotate_master_key --apply
 
 **新增/改动**：
 | 文件 | 内容 |
-|------|------|
+|---|---|
 | `secret_store.py` | `require_master_key()`（严格模式）、`kek_status()`（自检）；`load_master_key` 在严格模式下拒绝自动生成 |
 | `envelope.py`（新） | 全项目唯一的信封原语：`kek_fingerprint()` / `new_dek()` / `wrap_dek()` / `unwrap_dek()` / `new_wrapped_dek()` |
 | `credential_service.py` | 改用 `envelope.py` 的包/解原语（去掉重复实现） |
-| `auth_server.py` | `/health` 加 `kek`；新增 `/api/v1/secrets/*`、`/api/v1/crypto/wrap|unwrap` |
+| `auth_server.py` | `/health` 加 `kek`；新增 `/api/v1/secrets/*`、`/api/v1/crypto/wrap | unwrap` |
 
 **硬规则（防复发）**：除 `lugwit_auth` 外，全仓**禁止** `import lugwit_auth.secret_store`、
 禁止自造 Fernet/主密钥。共享秘密一律走 auth 的 HTTP（`/secrets` 或 `/crypto`）。
@@ -1280,7 +1280,7 @@ Postgres(chatroom) → lugwit_auth(1027) → lugwit_baidu_netdisk(1028) → 业�
 | 触发 | 每日一次 + 关键变更后（改密 / 角色变更 / 新增用户 / 密钥轮转）；异步、重试 3 次、失败只告警 |
 | 本地副本 | `~/.lugwit/auth_backup/<stamp>/`（与 Depot 双份，互为兜底） |
 | 权限 | 备份库 `/l_auth_backup` 设为 **dir 模式**（可见可人工取回）；仅 auth 的服务身份可写（`/authz/grant` 授权），管理员可读 |
-| 恢复 | 新增 CLI `lugwit_auth_restore --from <dump|latest>`：校验 checksum → 事务内 upsert → 输出差异报告；**不提供 HTTP 恢复端点**（避免"恢复要先登录"的环） |
+| 恢复 | 新增 CLI `lugwit_auth_restore --from <dump | latest>`：校验 checksum → 事务内 upsert → 输出差异报告；**不提供 HTTP 恢复端点**（避免"恢复要先登录"的环） |
 | 演练 | 季度一次：空库 + 新库名，跑完整 ①②③④⑤⑥，记录耗时（写进运维手册） |
 
 ### 13.8 与 §9 路线图的衔接

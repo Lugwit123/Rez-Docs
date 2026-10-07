@@ -49,7 +49,7 @@ View:
 `depot_store.py` 的全部表与键：
 
 | 表 | 主键 / 唯一键 | 关键列 | 有无工作区维度 |
-|----|--------------|--------|---------------|
+|---|---|---|---|
 | `depot_blob` | `md5` | size, remote_path, created_at | — |
 | `depot_changelist` | `id` + 部分唯一 `(owner) WHERE status='pending' AND description=''` | owner, description, status, created_at, submitted_at | ✗ |
 | `depot_file_rev` | 唯一 `(path, rev)` | action, blob_md5, size, cl_id, owner | ✗ |
@@ -92,7 +92,7 @@ root_of_path(dpath)       = "/" + dpath 首段                           # "库"
 `web_server.py` 的 `/api/depot/*` 完整清单（`_owner()` = JWT `sub`；库不可用 → 503）：
 
 | 类别 | 端点 |
-|------|------|
+|---|---|
 | 查询 | `status` `list` `tree` `history` `changes` `change/{cl_id}` `pending` `locks` `sync_plan` `download` |
 | 一步提交 | `submit` `submit_stream` `revert` `delete` `move` |
 | 两步工作流 | `mark_add_stream` `checkout` `mark_delete` `mark_move` `revert_pending` `submit_pending` `cl_description` |
@@ -102,7 +102,7 @@ root_of_path(dpath)       = "/" + dpath 首段                           # "库"
 **本地路径相关**：
 
 | 端点 | 本地路径来源 |
-|------|-------------|
+|---|---|
 | `POST /api/depot/submit` | `files[].local` —— **唯一**由调用方指定"服务端本地绝对路径"的入口 |
 | `POST /api/depot/submit_stream` | body 字节流 → 服务端落 `state_dir()/.depot_<uuid>.bin` |
 | `POST /api/depot/mark_add_stream` | 同上（流式分块写） |
@@ -118,7 +118,7 @@ root_of_path(dpath)       = "/" + dpath 首段                           # "库"
 > 定位代码请按 DOM / 变量名搜。左树那对标签仍在（`#tabDepot` / `#tabWorkspace`，唯一不参与拖动的标签组）。
 
 | 部位 | DOM / 变量 | 行号（快照） |
-|------|-----------|------|
+|---|---|---|
 | 左栏标签 | `#tabDepot` / `#tabWorkspace` | 210 / 211 |
 | 左栏工作区下拉 | `#wsdd`（原 `#wsSelect`） | 217 |
 | 左栏工作区树容器 | `#wsBody` | 223 |
@@ -152,7 +152,7 @@ fileInfo  listDir     treeDir    homeDir           openExternal
 ### 2.6 缺口汇总
 
 | 维度 | 现状 | 缺什么 |
-|------|------|--------|
+|---|---|---|
 | 库的实体化 | 隐式 = 路径首段；模式在 `depot_mode` | 库无名字/描述/属主/默认形态等元信息 |
 | 工作区身份 | `owner` | 需 `owner + 工作区名` 二维 |
 | 本地根目录 | 无 | 需 `local_root` 字段（属于**执行机**，不是服务端） |
@@ -181,7 +181,7 @@ Library {
 `mode` 决定网盘上长什么样：
 
 | mode | 网盘形态 | 适合 |
-|------|---------|------|
+|---|---|---|
 | `blob` | 只有 `version_depot/blob/<md5[:2]>/<md5>`，**没有目录结构** | 程序数据、频繁覆盖的单文件 |
 | `dir` | `version_depot/dir_mirror/<库>/...` 活文件 + `.versions/<名>/vNNN/` | 需要人肉在网盘浏览/下载的文件树 |
 
@@ -232,7 +232,7 @@ depot_path            local_path
 ### 3.4 与 P4 对照
 
 | P4 | 本方案 | 现状 |
-|----|--------|------|
+|---|---|---|
 | depot | 库 `depot_library` | 隐式（路径首段） |
 | client | 工作区 `depot_workspace` | ✗ 用 `owner` 代替 |
 | client Root | `depot_workspace.local_root` | ✗ |
@@ -344,7 +344,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ### 5.1 新增端点
 
 | 方法 | 路径 | 请求 | 响应 | 用途 |
-|------|------|------|------|------|
+|---|---|---|---|---|
 | GET | `/api/depot/library` | — | `{libraries:[{root,name,mode,status,file_count}]}` | 列库 |
 | PUT | `/api/depot/library` | `{root,name?,description?,mode?}` | `{ok,root,mode}` | 建/改库（含 mode） |
 | GET | `/api/depot/workspace` | — | `{workspaces:[{id,name,library,local_root,host,mapped_files}]}` | 列我的工作区 |
@@ -362,7 +362,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 所有以 `owner` 为维度的端点加**可选** `ws=<工作区名或 id>` 参数：
 
 | 端点 | 改动 |
-|------|------|
+|---|---|
 | `pending` `checkout` `mark_delete` `mark_move` `mark_add_stream` `revert_pending` `submit_pending` `cl_description` | `ws` 可选，缺省 → 该 owner 的 `_default` 工作区 |
 | `sync_plan` | 保留旧签名；新增 `ws_id` 版本（5.1 已列） |
 | `list` | item 增加 `ws_pending` / `ws_out_of_date`（该工作区视角的状态角标） |
@@ -414,7 +414,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ### 6.1 三种拓扑
 
 | 拓扑 | 场景 | 谁读写 local_root | 内容怎么传 |
-|------|------|------------------|-----------|
+|---|---|---|---|
 | **A. 本机即服务端** | 网盘服务跑在 `127.0.0.1:1027`（当前 L_WChat 环境） | 服务端进程自己 | `POST /api/depot/submit` 的 `files[].local` |
 | **B. 客户端桥** | `lugwit_netdisk_client`（QWebEngine + bridge） | 客户端 Python（`bridge.py`） | `submit_stream` / `mark_add_stream`（字节流） |
 | **C. CLI 代理** | 无 GUI 的机器 / 脚本 | 独立 CLI | 同 B |
@@ -436,7 +436,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ### 6.3 内容上传的两条路
 
 | 场景 | 接口 |
-|------|------|
+|---|---|
 | 执行机能直接把文件路径给服务端（拓扑 A） | `POST /api/depot/submit` `files[].local` |
 | 执行机与服务端不同机（拓扑 B/C） | `mark_add_stream` / `submit_stream` 逐文件传字节 |
 
@@ -448,7 +448,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 **好消息：骨架大半已在**，改动是"接后端"而不是"重写"。
 
 | 部位 | 现状 | 改动 |
-|------|------|------|
+|---|---|---|
 | `wsList/wsCur`（343） | localStorage `depot_ws_v2` | ✅ 已改为 `GET /api/depot/workspace`（**2026-09-26：页面直连**，不再经托盘；见 `网盘版本库Depot设计.md` §6.2） |
 | `saveWs()`（356） | 只写 localStorage | ✅ 已改调 `POST /api/depot/workspace` |
 | 初始化（344–358） | 读 localStorage | 加**一次性导入**：本地有、后端没有 → 提示"是否导入为后端工作区" |
@@ -463,7 +463,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ## 8. 架构修改清单（按文件）
 
 | 文件 | 改动 | 原因 |
-|------|------|------|
+|---|---|---|
 | `depot_store.py` | 加 3 张表 DDL + 回填 SQL；`have_*` / `pending_*` / `default_cl` / `submit*` / `sync_plan` / `lock` 增加 `ws_id` 维度（默认工作区兜底）；新增 workspace/library CRUD 方法 | 工作区是一等实体 |
 | `depot_service.py` | 新增 `resolve_workspace()`、`map_local_to_depot()`、`map_depot_to_local()`、`workspace_sync_plan()`、`reconcile_items()`；`submit_files` 增加 `ws` 参数 | 映射换算 + 待同步清单 |
 | `web_server.py` | 新增 §5.1 的 11 个端点；既有端点加可选 `ws`；`_ws_ctx()` 辅助（解析工作区+校验归属） | 对外契约 |
@@ -535,7 +535,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ### 11.2 用例清单
 
 | 函数 | 断言 |
-|------|------|
+|---|---|
 | `t_library_crud` | 建库 / 列库 / 改 mode / 重复建幂等 |
 | `t_ws_crud` | 建工作区（owner 内重名 409/400）/ 列 / 改 / 删 |
 | `t_ws_isolation` | **同一 owner 两个工作区**：A 的 pending 不出现在 B；A 的 have 不被 B 推进 |
@@ -555,7 +555,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ## 12. 分阶段实施
 
 | 阶段 | 内容 | 交付标准 |
-|------|------|---------|
+|---|---|---|
 | **P0 库实体化** | `depot_library` 表 + `library` 接口 + `depot_mode` 兼容读写 | `modes` 与 `library` 返回一致；旧脚本不用改 |
 | **P1 工作区（无本地扫描）** | `depot_workspace` / `map` 表 + `ws_id` 回填 + workspace CRUD + `sync_plan`（带 local_path）+ 既有端点加 `ws` | 同一 owner 多工作区互不干扰；`test_depot_workspace.py` 前 7 项绿 |
 | **P2 本地闭环** | `reconcile` 接收端 + `sync_done` + 客户端 `bridge.scanDir` + 前端接后端（状态角标、获取最新、开放 tab） | 端到端走通"扫本地 → 待提交 → 提交 → 另建设备 sync 下来" |
@@ -566,7 +566,7 @@ ALTER TABLE depot_lock ADD COLUMN IF NOT EXISTS ws_id BIGINT;
 ## 13. 明确不做
 
 | 不做 | 理由 |
-|------|------|
+|---|---|
 | P4 完整 View 通配符语法（`//depot/...` 多行 include/exclude 全语义） | 先做"单库 + 单根 + 子目录/排除"，覆盖绝大多数场景；语法爆炸收益低 |
 | 一个工作区跨多个库 | 映射与权限都会复杂化；先限制单库，需要时建两个工作区 |
 | 实时双向自动同步 | 与现有 `baidu_push.propagate_delete=false` 的保守取向一致；且"本地删 → 云端删"风险高 |

@@ -18,7 +18,7 @@
 ## 包信息
 
 | 属性 | 值 |
-|------|-----|
+|---|---|
 | 包名 | `l_agent_chat` |
 | 版本 | `999.0` |
 | 作者 | Lugwit Team |
@@ -45,6 +45,13 @@ wuwo rez env l_agent_chat -- l_agent_chat -y
 带热重载（推荐开发用）：热重载**不是默认开的**，它由 `.dev_mod` **硬门控**
 （wuwo 注入 `L_DEV_MOD=1`）；带 `.dev_mod` 启动时才起 `SrcWatchService`
 （还可被 `L_SRC_WATCH=0` 关掉）。
+
+⚠ **带 `.dev_mod` 时改 `.py` 会打断正在跑的那一轮**：热重启是**进程级**的（不是热替换模块），
+SSE 流随之断开。留下的是实时保存兜底（残留 `live` 快照定格成带 `interrupted` 的正式消息，
+半截回答不丢），**丢掉的是**这一轮的规划/工具进度，以及**等审批 / 等用户回答的 future**
+（`approval_futures` / `ask_futures` 在内存里）。另：反复保存会撞重启锁/熔断（暂时拒重启 →
+表现为"改了不生效"）。所以要**边优化边测**（尤其 A/B，两臂必须跑同一份代码）时，
+请另起端口 + **不带** `.dev_mod`，见 `Rez_pkg/l_agent_chat_隔离实例A_B实测.md`。
 
 ```bat
 wuwo rez env l_agent_chat .dev_mod -- l_agent_chat
@@ -99,12 +106,18 @@ npm run dev:server   rem Vite dev server（127.0.0.1:5174，HMR，/api 代理到
   "stream": true,
   "max_tool_steps": 3,
   "thinking": true,
-  "reasoning_effort": "high",
+  "reasoning_effort": "low",
   "show_reasoning": true
 }
 ```
 
-> 注：`thinking` / `reasoning_effort` 控制是否启用思考；`show_reasoning` **只作记录**，
+> 注：`thinking` 开关思考；`reasoning_effort` 是**思考强度**（`low` / `high` / `max`）。
+> **前端默认档是「低」**（2026-10-07 起）—— 输入框底栏那个下拉去掉了旧的「默认（不指定）」档，
+> 改成**始终下发最低档**（`off` = 关思考，由前端翻成 `thinking:false` 且不带该字段）。
+> 历史上「`thinking` + `reasoning_effort` **同发**会被网关秒回空流」的坑，在当前网关/模型
+> （volcengine / deepseek-v4-1-flash）上**已不复现**（9 次采样全部 200 正常返回）；`stream_chat`
+> 与 `chat()` 两条路的**空流降级重试保留作保险**（依次摘 `reasoning_effort`、`thinking` 再试）。
+> `show_reasoning` **只作记录**，
 > 后端不再据此裁剪 `reasoning` 事件（见下表），渲染与否交给前端开关。
 > `mode` 是对话模式（`agent` 默认 / `ask` / `plan` / `review`，见「新版 UI 要点」），
 > 缺省或未知值按 `agent` 处理。
@@ -114,14 +127,14 @@ npm run dev:server   rem Vite dev server（127.0.0.1:5174，HMR，/api 代理到
 两个**特殊负载**（都只带容器字段，历史以服务端会话文件为准，见「消息操作与发送队列」）：
 
 | 字段 | 说明 |
-|------|------|
+|---|---|
 | `regen: {mid, guide?}` | **重新生成**那条回复：结果作为**新版本**追加（= 同层新分支），不新开消息；`guide` 是这次的临时要求（只进本轮 wire，不落盘） |
 | `edit: {mid? \| index?, original?, content}` | **重新编辑**某条提问：定位（`mid` → `index` → 按 `original` 原文从后往前找）→ 建树 → 当前分支截到那条之前 → 落盘时新提问成为旧提问的**兄弟节点**。定位失败 / 原文对不上 → 报错**不下笔**。两个都不能与 `persist: false` 同用 |
 
 SSE 事件类型：
 
 | 事件 | 说明 |
-|------|------|
+|---|---|
 | `tool_start` | 开始执行工具，附 `tool`/`path`/`command` |
 | `tool_result` | 工具结果文本 |
 | `tool_error` | 工具执行异常 |
@@ -145,6 +158,20 @@ SSE 事件类型：
   判据是**消息级** `status` 而非单个 part 的 `status`——part 流完会先变 `complete`，用它会导致正文还没吐完就折叠。
   **思考按真实位置分段显示**（不再全堆在过程块顶部）：每段思考落在它那次调用之后，`reasoning` part 带 `startedAt`，
   与工具卡/正文按时间线交错；**每段思考与每张工具卡都显示耗时 chip**（思考=阶段起点到该段结束，工具=客户端 `tool_start`→`tool_result` 实测耗时）。
+- **消息底部的身份 / 提问 / 耗时**（2026-10-07，同一行）：`第 3 条回复 · deepseek::… · ↑2.1k ↓430 ·
+  提问：看一下 a.txt ▸ · ⏱ 12.4s · 完成 14:23:05`
+  - **耗时/时钟**：跑的过程中**实时**（`⏱ 12s · 现在 14:23:05`，本地起算的秒表 250ms 一跳），跑完变
+    统计值 `⏱ 12.4s · 完成 14:23:05`（悬停看「起 → 止 · ↑输入 ↓输出」）；报错/被掐断也会冻住。
+    刷新后用后端 `steps` 最后一条的 `t` 当总耗时、消息 `at` 当结束时刻，与实时是同一个量纲。
+    **不报步数**（客户端行数与服务端落盘行数不是一个口径）。
+    **悬停这串 ↑↓** 会弹「本轮 Tokens 消耗详情」——与消息**顶部**那颗是**同一张卡**（同一组件、
+    同一份 `run-meta` 数据、同样的观感；都是 fixed 定位、按各自那一行算位置，移开即收起）。
+  - **第 N 条回复** = 本会话里 assistant 消息的序号；**提问**按钮（原「提示词」）= 从这条往前找
+    最近的 user 消息（点开看全文，本轮 system 提示词收在面板里的二级折叠中）。
+    两者都从 `thread.messages` 推（只返回原始值的 selector，避免流式时每条消息重渲），
+    所以**实时与刷新后一致**，且天然是**当前分支**那一问。
+  - 实现：`runtime.js` 的 `withMeta`（页脚 part 不进 `parts`、每次 yield 拼上，保下标又保证在最末尾）
+    + `NewApp.jsx` 的 `MsgClock` / `useTurnOrdinal` / `useTurnQuestion`；e2e 见 `web/e2e/run_clock_e2e.py`。
 - **翻译**：思考块展开后右上角有「🌐 翻译」，调 `POST /api/translate`（带 `lines=true`）**一行英语一行中文**逐行对照，
   **每行右侧带 🔊 播放**（`POST /api/voice/tts`，`voice` 参数指定音色）；按钮旁的下拉可切语音（`GET /api/voice/voices` 取音色表），
   翻译失败/朗读失败会显式标 ⚠，不静默。行的原文/译文也可用「读全部原文 / 译文」整段朗读。
@@ -176,28 +203,70 @@ SSE 事件类型：
   无层那份 style.css，会把无层/层内优先级算反，反而压掉旧 UI 的 `.btn`。
   手机端输入框高度也在移动端媒体查询里调大（`.composer-input { min-height: 64px }`）。
 
+### 输入框上方的「运行 / 改动」面板（2026-10-07）
+
+输入框**上方**常驻一条可收展的摘要条（`▸ 运行 / 改动 · ⚙ 运行中 N · 📝 改动 M`），点开是两个标签：
+
+| 标签 | 内容 | 数据源 |
+|---|---|---|
+| 正在运行的命令 | 在跑的**置顶**（绿点 + 已运行秒数 + `📄 日志 / ↻ 重启 / ⏹ 停止`），本会话跑过的其它命令标灰排后面 | `GET /api/proc`（权威运行态）+ 前端 activity 里的命令历史，按命令文本合并 |
+| 文件修改记录 | 按文件聚合：时间 · `新建`/`已删除`/`修改` · 相对路径 · `×N`（改过几次）· `+N −Y ~Z`（纯增 / 纯删 / 修改行）· 工具名；**点一行 → diff 视图**（该文件历次改动可逐轮切换，增行绿删行红） | `GET /api/session/checkpoints?stats=1`（落盘、跨服务重启还在；行数与状态由后端拿「改动前内容 vs 当前盘上文件」现算：`_file_changes` / `_diff_stats3`）+ 单文件 diff 走 `GET /api/session/checkpoint/diff?id=&path=` |
+
+- 组件 `web/src/new/RunPanel.jsx`，挂在 Composer 的 `<footer>` 里（附件条与输入框之间），所以窄屏也在输入框上方。
+- 摘要条右端有 **`↻ 刷新`**（一次重拉进程表 + 改动记录；自动轮询是展开看命令 3s / 其它 15s）与 **`✓N`**（已同意条数）。
+- 「同意」过的条目会挪到第三个标签 **「已同意」**（纯本地状态、刷新页面即清；那里把按钮换成「↩ 撤回」放回来）。
+- 文件那栏**每行都有「同意 / 拒绝」**：同意 = 本地确认（改动已落盘，点过变「已同意」，刷新回到未标记）；
+  拒绝 = 真回滚到**这次改动之前**（二次确认 → `POST /api/session/revert`），diff 弹窗底部同两个按钮、
+  作用于当前查看的那一轮（键 = `checkpoint|路径`，同一文件多轮各自标记）。
+- 轮询只在**需要**时走：展开且停在命令标签 3s、其它 15s（只为摘要条上的数字）；有活进程时 1s 心跳续算时长。
+- 命令列表会**过滤掉**"参数 JSON 被塞进 command 字段"的历史噪音（以 `{` / `[` 开头的跳过）。
+
 ### 消息操作与发送队列（2026-10-06）
 
-**每条消息底部的操作**：助手回复 = 复制 / 重新生成 / 讲解 / 朗读；用户提问 = 复制 / 重新编辑。
+**每条消息底部的操作**：助手回复 = 继续 / 复制 / 重新生成 / 讲解 / 朗读 / 复盘；用户提问 = 复制 / 重新编辑。
 「重新生成」「重新编辑」都不是覆盖，而是**开分支**：
 
-| | 重新生成 | 重新编辑 |
+- **继续（`▶`）**：**续写这条回复**（不是发新消息、也不是重新作答）—— 服务端把这条的正文喂回去
+  让模型从断点接着写（`regen: {mid, mode: "continue"}`），落盘**拼成同一条消息的新版本**
+  （原正文 + 续写；旧的那半截留作上一版可切回）。live 期间正文也带着旧内容，所以看到的是
+  这一条在变长。
+
+|  | 重新生成 | 重新编辑 |
 |---|---|---|
 | 触发 | 回复底部 `↻`（可附一句本次要求） | 提问底部 `✎ 重新编辑`（气泡原地变编辑框，Ctrl+Enter 发送 / Esc 取消） |
 | 结果 | 那条回复多一个版本，旧版本**带着它自己的后续**留着 | 从那题起开新分支重新回答，旧提问 + 后续整段留在隔壁 |
-| 请求 | `POST /api/chat` 带 `regen:{mid, guide?}` | `POST /api/chat` 带 `edit:{mid?/index?, original?, content}` |
+| 请求 | `POST /api/chat` 带 `regen:{mid, guide?}` | `POST /api/chat` 带 `edit:{mid?/index?, original?, content}`；**问答卡的「重新回答」**用 `edit:{ask:{ask_id?, question, answer}}`（提问原文不动，只把"这次的选择改了"补在后面 → 重走那一轮；`ask_id` 是定位依据，卡片自己没 mid 时也认得出） |
 | 切回 | 底部 `◀ 第 i/N 版 ▶`（= `POST /api/session/version/final`，**切的是分支**，下面的对话跟着换） | 同左（提问版本走同一套控件） |
 
 - 会话文件里就是一棵**分支树**（`session_branches`：`nodes` / `path` / `roots`，`messages` 是当前分支的扁平投影）；
   没分叉过的会话不写 `nodes`（**懒建**，第一次重新生成 / 重新编辑才建树）。
 - 会话**标题**跟着当前分支的第一条提问走（`session_store.title_from`）：改了第一条再切回原版，标题也回去。
 - 本轮还在跑时「重新编辑」禁用（那题还没落盘）；服务端 `session_busy` 也会兜底。
+- **开分支后会检查「文件改动要不要留」**（2026-10-07，`branch_changes.py`）：**任何**开分支的动作
+  （重新生成 / 重新编辑 / 问答卡重答）之后，被放弃的那条线改过的文件**还在磁盘上**（agent 不会自动
+  回退）→ 弹窗列出「从这条分支点往后改过哪些文件、各自 +N/−M 行」，点文件名看 diff，底部
+  「全部保留 / 全部撤销」，也可以勾选后只撤勾选的。
+  - 怎么算：分支点 = 那一轮的**用户消息发送时刻**；晚于它的 `checkpoints` 就是被放弃那条线的改动
+    （一个工具调用一个快照）；行数/diff 用「运行 / 改动」面板同一套口径（快照内容 vs 当前文件）。
+  - 撤销 = 每个文件取**最早**那个快照写回（= 那些改动之前的样子）。⚠ 破坏性：新分支之后若又改过
+    同一个文件，那些新改动也会一起丢（弹窗里写明了）。
+  - 没改过文件的分支**不弹**（不留标记）；标记落在会话文件的 `branch_check` 键上，`/api/session/current`
+    带回，拍板端点 `POST /api/session/branch-check {action: keep|undo, files?}`。
+- **问答卡（`ask_user`）的「重新回答」**（2026-10-07）：本轮**还在跑**时按选项/输入 = 直接回答案
+  （进那次工具结果，同一轮继续）；本轮**已结束**时改答案 = **开新分支重走那一轮**（回到那条提问，
+  把「这次的选择改了」补在后面重跑；旧那条对话与它已经落盘的改动都留着，可 `◀ ▶` 切回）。
+  只有**本轮被刷新/断线掐掉**的「补答」才作为新一轮消息往下聊（那一轮没跑完，没有"重走"可言）。
+  ⚠ 旧分支**已经落盘的文件改动不会回退**（agent 不自动撤销）：要退用回滚点 —— 输入框上方
+  「运行 / 改动」面板的**文件**标签：每行一个「同意 / 拒绝」（拒绝 = 只回滚**这一个文件**），
+  标签栏右侧「↩ 回滚最近一轮」（= 整轮所有文件，都不传参走 `POST /api/session/revert`）。
+  面板只列本包写工具（`write_file` / `edit_file` / `apply_patch`）的快照，保留最近 20 轮；
+  `run_command` / 外部服务 / MCP 改的文件**不在**快照范围，>512KB 的文件只记标记不回滚。
 
 **发送队列**（`web/src/new/NewApp.jsx` 的 `QueueBar` + `unstable_enableMessageQueue`）：
 agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，本轮结束**依次自动发出**（不是丢弃、也不挡人）。
 
 | 按钮 | 语义 |
-|------|------|
+|---|---|
 | `↑` `↓` | 只调顺序（`queueItem.move`），**不打断当前轮** |
 | `↪` 引导 | 登记「下一处模型调用时插进去」（`POST /api/session/steer`；ON 后服务端广播 `steer`，那条随即从队列撤下）；再点撤回 |
 | `⚡` | **立即发送**：打断当前轮，马上发它。库里 `move/steer` 只做到「下个发」，所以实现是「先 `POST /api/session/interrupt` 掐断，再把这条直接发出去」 |
@@ -211,6 +280,26 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
   （`runtime.readQueuePending`，见 `session_changed` / `workspace_changed` 的处理）。
 - 端到端自测：`wuwor l_agent_chat -- python web/e2e/run_queue_e2e.py [--headed] [--delay 0.8]`
   （真服务 + 慢速假 provider + Playwright，验排队/排序/引导/编辑/删除/停止后恢复）。
+
+**「🧠 复盘」**（每条消息底部，用户消息也有）= 拿**这一轮**的客观证据找问题，并给出**待确认**的改动
+（`session_review.py`；与模型自己调的 `optimize_agent` 共用落地层）：
+
+| 环节 | 做什么 |
+|---|---|
+| 取证 | 从会话文件里那条助手消息取：工具（慢 / 失败 / **同名连调** / **同路径反复读**）、步数、墙钟、工具耗时占比、token、控制流路线与护栏命中（`steps` 里带 `flow` 那条）、图结构与门参数、知识类工具、用问题反向检索知识库（0 命中 = 知识缺口）；另加两块 —— **是否解决**（被中断 / 有没有动手改 / 回答是不是开场白或把球踢回用户 / **结束后用户接着说了什么**）、**验证成本**（测试类命令几条、合计几秒、占墙钟多少、跑没跑整包、带没带 `--headed`、同一条重跑几次） |
+| 结论 | 先出**规则式**结论（不调模型也能用，`use_llm=false`），再让模型补写总评与「下次怎么更快更准」（`faster`）；两类结论合并展示。问题分 `repeated_calls / time_waste / amnesia / guard / **unresolved** / **verification** / other` |
+| **维度** | 每条问题挂一个 `aspect`（"这问题和哪些方面有关"）：`提示词/技能`、`工具与参数`、`知识库/记忆`、`控制流（脑图）`、**`控制流（表达边界）`**（根因在图上**表达不出来**：缺参数化谓词 / 按次数分叉 / 图内变量 / 通用动作等原语）、`验证方式`、`任务设定`、`模型能力`、`会话与存储`；面板顶部给「维度分布」（`提示词/技能×4 验证方式×2 …`） |
+| 待确认改动 | 模型只提**小改动**（`flow_params`：图级/门参数；`notes`；`memory`），由代码拼成合法图 → 过权威校验 + **沙箱路由回放 A/B** → 面板给出**参数级 diff**（原值 → 新值）与 A/B 结论，用户点「应用这些改动」才落地（回放有回归时默认拒收，`force` 才放行，均留痕） |
+
+- 端点：`POST /api/review-turn`（`{mid? | index?, session_id?, use_llm?, provider?, model?}`，同步一次模型往返）、
+  `POST /api/review-apply`（`{edits, why, force?, flow_name?, flow_full?}`）。
+- 「失忆」= 客观计数：同一路径重复读 / 同一句提问在会话里问过 / 知识库 0 命中；「时间浪费」= 步数、工具耗时占比、护栏催了几次。
+- **「提问解决了没有」没有 ground truth**，用四件事拼：① 被中断/中止；② 像要改动却一个字没改；
+  ③ 回答是「没说完的开场白」或把球踢回用户（复用护栏 `stall` 那套判据）；④ **结束后用户接着说了什么**
+  （追问/报错/不满 → 上一轮多半没解决；这条最实在）。
+- **「验证是否臃肿」**：测试类命令（`pytest` / `run_all.py` / `*_e2e` / `--headed` …）几条、合计几秒、
+  占墙钟多少、有没有跑整包、有没有带 `--headed`、同一条重跑几次 —— 建议先跑改动相关的子集。
+- 图改动前自动备份到 `flows/_versions/<图名>/`；日志记 `_traces/_applied.jsonl`。
 
 ### 默认智能体（流程图驱动）
 
@@ -249,6 +338,25 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 它落进 steps，前端按同 key 原地更新那一行，所以**刷新/换端后路线条仍能重建**。
 后端在 `app.py`：引擎吐 dict 而生成器吐 `_sse(...)` 字符串，转发处必须包装，别退回去 `yield _ev`。
 
+**改图之前怎么验**（2026-10-07 补齐第 ⑤ 层，四层机制见
+`Rez_pkg/流程图智能体_图驱动控制流.md` §7.3）：
+
+```bat
+:: 先用 recorder_mode=record 录一轮真实对话（设置页「模型调用录制回放」，或 env AGENT_CHAT_RECORDER）
+:: 再让现状图与候选图各跑一遍同一盘录像
+wuwor l_agent_chat -- l_agent_chat_turn_replay ^
+    --cassette <录像名> --ask "<录像里那句问题>" ^
+    --flow-a <现状图目录> --flow-b <候选图目录> [--strict] [--live-tools]
+:: 等价写法：python -m l_agent_chat.turn_replay（alias 见 package.py）
+```
+
+- 报告给的是**相对结论**：候选是否报错 / 收不了尾 / 让护栏一次都不响 / 多绕几步；命中情况
+  （严格 / 位次对齐 / 未命中）与"哪一段输入变了"逐条落 `<cassette 目录>/_replay.jsonl`。
+- **严格 vs 容错**：指纹要求输入一字不差。改了门上的 `params.prompt`、或工具结果与录像不同
+  （工作区变了 / 演练模式把写类拦了）→ 默认 `recorder_loose=1` 按**位次对齐**跑完并标 drift
+  （结论只对路由类改动有意义）；`--strict` 则直接报错 —— 宁可失败，不假装验过。
+- 回放**不落会话**（`persist: False`）、工具默认走进程级演练模式（`L_AGENT_TOOL_DRY_RUN=1`，只读不改）。
+
 ### 工具调用
 
 `l_agent_chat` 复用 `l_agent_tool` 的工具集（文件/命令/Git/HTTP），流程分两种：
@@ -267,12 +375,23 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 - **工具按需声明**（`tool_router.py`）：默认只把**核心集**（读/写/改/搜/命令/后台/`execute`/
   `task`/`ask_user`/待办）声明给模型，其余靠 `find_tools` / `describe_tool` 按需拉出来
   （过程流水里写「工具清单就绪：声明 N/M 个」）。目的是省掉每轮上万 token 的工具 schema。
+- **工具清单缓存：过期不阻塞**（`agent_client.available_tools_cached`）：清单 = 本地工具 + 各服务
+  探测（并发度 8）+ MCP 握手，每轮重建就是每句先空等几秒，所以进程内缓存（`tools_cache_ttl`，
+  默认 300s）。流水里写「缓存命中」还是「现场构建 Xs」就看它。**TTL 一到只后台重建**、本轮先用
+  旧清单（显示「缓存命中（后台刷新中）」）—— 隔十几分钟回来问第一句不再先白等：实测冷建 5.56s →
+  过期后再取 **0.004s**。只有**指纹变了**（工作区 / 服务表 / MCP 配置）才同步重建，那时旧清单是错的。
 - **`ask_user`（向用户提问）**（`ask_user.py`）：信息不足、需要用户拍板（选哪个目录 / 哪个方案 /
   要不要删）时用它**真问一句并等回答**，最长 `ask_timeout`（默认 600s）；用户的回答就是该次工具
   结果，planner 拿着它继续。作答期走 SSE `ask_required` + `POST /api/ask-answer`（与工具审批同一
-  条 Future 通道，实现见 `app.py` 工具循环里那段拦截）。界面渲染成**问答卡**（选项按钮 + 自定义
-  输入框），答完点 🔄 可改选 —— 改选是**发一条新一轮用户消息**（已发生的那次工具结果改不了），
-  走 `thread.append` 而不是 `aui.composer`（问答卡不在 composer 子树里，那边的桥没注册）。
+  条 Future 通道，实现见 `app.py` 工具循环里那段拦截）。界面渲染成**问答卡**：默认（单选）点选项
+  **即答**；带 `multi=true` 时（2026-10-07 起）候选变成**可勾选条目** —— 点候选**只切换**、要按
+  「确认（N）」才提交，多选取值以 `；` 连成一条文本回来（模型侧拿到的仍是单条文本；此时手填的
+  补充会作为最后一条一起提交）。多选标记随 SSE `ask_required`、落盘 `trace.ask` 与 live 轮次都带
+  上，刷新 / 多端重取后卡片仍是多选形态。答完点 🔄 可改选 —— 本轮**已结束**时改选 = **开新分支重走那一轮**（回到那条提问、
+  把"这次的选择改了"补在后面重跑；旧对话与它已落盘的改动留着，见「消息操作与发送队列」里的
+  问答卡与「开分支后会检查文件改动」两段），只有**本轮被刷新/断线掐掉**的「补答」才走
+  `thread.append` 发一条新一轮消息（用 `thread.append` 而不是 `aui.composer`：问答卡不在
+  composer 子树里，那边的桥没注册）。
   只读模式（ask/plan/review）放行它；**子 agent 一律拿不到**（在 `subagents.DENY_ALWAYS` 里，
   无人值守只会白等到超时）。提问与回答随工具痕迹落盘（`trace` 的 `ask` 字段），刷新后卡片仍在。
 - **`restate_question`（先复述用户问题）**（`agent_client.py` + `app.py`）：**合成元工具**，与
@@ -302,7 +421,7 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 `permissions.effective(decision, mode)` 合成：
 
 | 模式 | 含义 | deny | ask | none |
-|------|------|------|-----|------|
+|---|---|---|---|---|
 | `default`（默认） | 默认权限：规则说了算 | 拦 | 问 | 回落到 `AUTO_APPROVE` + `APPROVAL_TOOLS`（见下） |
 | `allow_all` | 全部允许：除 deny 外一律不问 | 拦 | 放行 | 放行 |
 | `autopilot` | 自动巡航（预览）：普通工具自动放行 | 拦 | 受保护路径仍问，其余放行 | 放行 |
@@ -358,7 +477,7 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 
 **历史回放只带 role + 正文**（`app.py` 构造 `turns` 处）：工具调用与工具结果**不进** prompt，
 只给「这一轮调用过哪些工具」补一行 `[本轮已调用工具：ask_user]`（`_replay_tool_note`）。
-不补的话模型不知道上一轮自己问过什么 —— 用户点「🔄 重新回答」发出「关于上面的问题「…」」时，
+不补的话模型不知道上一轮自己问过什么 —— 用户改了那次选择、重走那一轮时（见上面「问答卡」），
 它在上下文里找不到那次提问，只能反过来再问一遍。
 
 ### 工作区规则
@@ -374,7 +493,7 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 `kilo-memory-v1 targeted_context_not_instruction`）是上游机器格式，也有用例锁着。
 
 | 来源 | 开关（默认开） |
-|------|----------------|
+|---|---|
 | `<工作区>/AGENTS.md` | `rules_enable_agents_md` |
 | `<工作区>/CLAUDE.md` | `rules_enable_claude_md` |
 | `<工作区>/.codemaker.codebase.md` | 无独立开关，随总开关 |
@@ -398,7 +517,7 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 在工具调用前后执行你配置的钩子（实现见 `hooks.py`）：
 
 | 来源 | 说明 |
-|------|------|
+|---|---|
 | `<工作区>/.codemaker/hooks.json` | 项目级 |
 | `~/.codemaker/hooks.json` | 用户级 |
 | Claude Code 各层 `settings.json` | 仅当 `hooks_sync_cc` 打开，或项目/用户配置里写了 `syncCcHooksConfigs: true` |
@@ -486,7 +605,7 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 ### 会话管理
 
 | 端点 | 方法 | 说明 |
-|------|------|------|
+|---|---|---|
 | `/api/session/current` | GET | 当前会话 + 消息 + 会话列表 + token 统计；`?session=<id>` = **只读**要那一条（不动"当前会话"指针，多端各看各的用） |
 | `/api/session/new` | POST | 新建会话 |
 | `/api/session/switch` | POST | 切换会话 |
@@ -503,7 +622,7 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 
 **对话按 `.code-workspace` 工作区隔离**（2026-10-05）：
 
-| | |
+|  |  |
 |---|---|
 | 隔离键 | **工作区身份**（`workspace.workspace_identity()`）：**归属自动判定** —— 请求带 `X-Lugwit-Host: vscode`（扩展 webview）用 VS Code 窗口报的文件夹；`browser` / 没声明（浏览器、托盘、脚本）用 agent 自己的 `.code-workspace` 工作区文件。key = `<标签>-<路径哈希8>`（如 `l_rez_src_ws-7201b69c`），直接做目录名。**没有"切换来源"这回事**（2026-10-05 删了两个按钮）—— 扩展就老实做扩展、独立就用自己的。⚠ 判据是**请求声明**，不是"服务端能否连上 VS Code 桥"：网页与扩展共用同一个服务，只看桥会让浏览器也被判成扩展（会话列表凭空换一套） |
 | 目录 | `sessions/<工作区 key>/` 一套会话 + 一份 `current.txt`（"当前会话"指针）；换工作区 = 换一整套列表，互不可见 |
@@ -529,7 +648,7 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 两版 UI 都有，命令表**同源** `web/src/slashCommands.js`（改一处两版都变）：
 
 | 命令 | 行为 |
-|------|------|
+|---|---|
 | `/tools` | 打开**工具选择器弹窗**：数据源 `GET /api/tools`（含本机/远程服务来源前缀），按**分组与服务**分节、**带搜索框**（输入即过滤）、↑↓/Enter/Esc 键盘操作；弹窗 **portal 到 `body` 并底部对齐**（输入框在带 `backdrop-filter` 的 footer 里，`position: fixed` 会被当成新包含块 → 必须 portal）。选中 → 填 `/tools <名称>` |
 | `/ls` | 打开**目录浏览面板**（可逐级下钻、★ 收藏）→ 选目录 → 填 `/ls <路径>` |
 | `/rez` | 同上，但从 **rez 包名**起（包 → 版本 → 子目录）；选中后插入的是 **`rez_pkg <包名>` 文本**（不是 `/ls <路径>`）—— `/rez` 只是"挑一个包发给 AI"，路由由 `rez_pkg` 指令解释 |
@@ -578,7 +697,7 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
   本机服务与本地内置工具同名的会被去重（同一台机器同一套实现）。
 
 | 端点 | 说明 |
-|------|------|
+|---|---|
 | `GET /api/tool-services` | 列出服务（含本机自动发现的 `builtin` 服务） |
 | `POST /api/tool-services` | 创建服务 |
 | `POST /api/tool-services/activate` | 激活服务 |
@@ -589,7 +708,7 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 ### 其他端点
 
 | 端点 | 说明 |
-|------|------|
+|---|---|
 | `GET /` | 聊天网页 |
 | `GET /health` | 健康检查 |
 | `GET /api/models` | 模型列表 |
@@ -598,7 +717,8 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `POST /api/workspace` | 设置工作区文件根（`POST /api/workspace/source` 已随"来源自动判定"删除） |
 | `GET/POST /api/workspace/root` | 工作区根目录管理 |
 | `POST /api/workspace/root/activate` | 激活根目录（= 把该项移到 `folders` 首位） |
-| `POST /api/ask-answer` | 回答 `ask_user` 的提问（SSE `ask_required` 之后调用；`{ask_id, answer}`） |
+| `POST /api/ask-answer` | 回答 `ask_user` 的提问（SSE `ask_required` 之后调用）。两种入参取到哪个用哪个：`{ask_id, answer}`（单选 / 自由输入）或 `{ask_id, answers:[…]}`（**多选**，用 `；` 连成一条） |
+| `GET/POST /__dev__/prompt-flags` | 两条**提示词实验片段**的运行期开关（`planner_batch_hint` / `answer_write_tight`；POST 传 `null` = 清覆盖、回退 config）。默认都关，A/B 与排障用，只影响本进程 |
 | `GET /api/browse` | 浏览目录 |
 | `GET /api/browse_rez` | 多级浏览 rez 包仓库 |
 | `GET /api/tools` | 工具清单（工具选择器数据源：本地内置 + 各工具服务的工具，带来源分组） |
@@ -607,6 +727,9 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /api/voice/voices` | Edge-TTS 音色表（可按 locale 过滤，供语音下拉） |
 | `GET /api/source` | 读源码上下文（`path`/`start`/`end`/`context`，上限 400 行）供源码弹窗 |
 | `POST /api/prompt/optimize` | 提示词优化（草稿 → 更清晰的提示词；独立小模型，见 `prompt_optimizer.py`） |
+| `POST /api/review-turn` | **按消息复盘**（消息底部「🧠 复盘」）：取证这一轮 → 结论 → 待确认改动 + 沙箱 A/B（见「消息操作与发送队列」） |
+| `POST /api/session/branch-check` | **分支后的文件改动**拍板：`{action: "keep" | "undo", files?}` —— 保留只清标记；撤销用那些改动**之前**的快照写回（不给 `files` = 全撤，见 `branch_changes.py`） |
+| `POST /api/review-apply` | 落地复盘里**用户确认过**的改动（图参数 / 笔记 / 记忆；改图先备份，见 `flow_evolve.apply_edits`） |
 | `GET /api/sandbox/status` | 终端沙盒能力探测（仅 Windows，AppContainer） |
 | `GET/POST/DELETE /api/permission-rules` | 权限规则（saved 层）列表 / 追加 / 删除 |
 
@@ -628,6 +751,11 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 - **`ask_user`**：`tests/test_ask_user.py`（注册与参数、只读模式放行、子 agent 被 `DENY_ALWAYS` 拦掉、
   选项规范化）+ `tests/test_agent_endpoint.py` 的 `AskUserTest`（真起服务：SSE `ask_required` → 回答
   进工具结果；超时给 `NO_ANSWER` 仍能正常收尾）—— 端点批要 `python tests/run_all.py --endpoint`
+- **检索缓存 / 工具失败显示 / 提示词实验开关**：`tests/test_notepad_cache.py`（检索同参数只打一次
+  HTTP、带 kb 时忽略 sources、TTL 过期重查、缓存有上限、预热失败静默）、
+  `tests/test_tool_result_errors.py`（失败结果渲染成「执行失败」而不是误导的「(空文件)」；
+  `_dedupe_guard` 的 dup / 同目标重复读 / **已读区间提示**）、`tests/test_prompt_flags.py`
+  （两条实验片段**默认关**、可运行期开、未知开关报错）
 - **hooks**：matcher 语义、可阻断集合、决策合并（deny 只在可阻断生效 / ask 不覆盖 deny /
   `hookEventName` 不符丢弃）、**真起子进程**走 stdin-stdout 的端到端、Claude Code 四层设置来源
 - **planner 工具循环**：请求形状、工具往返、HTTP 错误 fail-open
@@ -641,6 +769,15 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
   拒绝错目标时会话不动；标题跟随当前分支）；浏览器端到端见 `web/e2e/run_queue_e2e.py`
 - **会话隔离 / 工作区归属**：`tests/test_workspace_isolation.py`、`tests/test_workspace_file.py`、
   `tests/test_depot_workspace.py`（会话按 `.code-workspace` 工作区隔离、云端老条目落当前工作区）
+- **实时保存 / 多端 / 同名会话**：`tests/test_session_realtime.py`（边跑边存 + 收尾清快照、残留快照定格、
+  往非当前会话发不报错且落对文件、会话不存在报 `session_missing`、同名 `dup`、连建不撞 id）
+- **按消息复盘**：`tests/test_session_review.py`（证据与规则式结论、模型报告 + 参数级 diff + 沙箱 A/B、
+  确认后落地、定位不到就明确报错；用例**隔离 flows 目录**，别改到开发机真实那份图）
+- **分支后的文件改动检查**：`tests/test_branch_changes.py`（开分支列出被放弃那条线改过的文件 + 行数、
+  保留只清标记、撤销把新建文件删掉、没改文件不弹、重新生成也记）
+- **整轮 LLM 回放**：`tests/test_turn_replay.py`（容错取条目"严格 → 位次对齐 → 用尽"三级、
+  回放日志、游标按轮重置、输入指纹分段、进程级演练开关 `L_AGENT_TOOL_DRY_RUN`；端到端**真录一轮**
+  再用同一盘录像让两版图各跑一遍：同工作区**严格命中**、换工作区**严格模式报错 / 容错模式跑完并记 drift**）
 - **终端沙盒**（仅 Windows；默认批**跳过**，`set LAC_SANDBOX_TESTS=1` 才跑真跑用例）：
   AppContainer 内执行、授权目录可写、**未授权路径写入被拒**、超时可杀、管道收发
   （`test_sandbox.py`）
@@ -661,7 +798,7 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 优先级：环境变量 > 设置文件 > 内置默认。
 
 | 配置键 | 环境变量 | 默认 | 说明 |
-|--------|----------|------|------|
+|---|---|---|---|
 | `ai_provider` | `AGENT_CHAT_PROVIDER` | `volcengine` | 默认供应商（siliconflow/minimax/zhipu/deepseek/volcengine/aliyun/wuzu） |
 | `<供应商>_model` | `AGENT_CHAT_MODEL` | 各供应商默认模型 | 各供应商模型 ID（火山方舟默认 `deepseek-v4-flash`） |
 | — | `<供应商>_API_KEY` | 中心密钥存储 | API 密钥统一存 **lugwit_auth 的中心密钥存储**（命名空间 `model_hub`，PG 密文；本机无明文密钥文件）。本包经 hub 的 `GET /v1/keys` 取（回环），不落 settings.json |
@@ -705,11 +842,18 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | `sandbox_network` | — | `0` | 沙盒内允许联网（授予 AppContainer `internetClient` 能力） |
 | `sandbox_extra_dirs` | — | 空 | 沙盒额外可写目录（分号串 / 列表；工作区与沙盒临时目录之外） |
 | `tool_content_expanded` | — | `0` | 工具生成内容默认是否展开显示 |
+| `recorder_mode` | `AGENT_CHAT_RECORDER` | `off` | 模型调用录制回放：`off` / `record` / `replay`（replay 不联网，缺条目直接报错） |
+| `recorder_cassette` | `AGENT_CHAT_RECORDER_CASSETTE` | `default` | 录像名（`<名>.jsonl`） |
+| `recorder_dir` | `AGENT_CHAT_RECORDER_DIR` | 空=工作区 `.l_agent_ws/cassettes` | 录像目录（录制/回放两个进程共享时用绝对路径） |
+| `recorder_loose` | `AGENT_CHAT_RECORDER_LOOSE` | `0` | **容错回放**：严格 miss 时按「同一轮对话 + 文件顺序」位次对齐跑完，记 drift（结论打折） |
+| `recorder_run` | `AGENT_CHAT_RECORDER_RUN` | 空=auto | 回放标记（写进 `_replay.jsonl` 的 `run`，整轮 A/B 按它筛本次条目） |
+| `planner_batch_hint` | — | `0` | 规划 system 那段「互不依赖的调用同一步发完」。**默认关**：受控 A/B（4 臂 × 2 题 × 2 样本）实测**没减步数、反而更慢**（Q1 66.7s→88.7s、`path:line` 12.5→6），故关掉。运行期可开：`POST /__dev__/prompt-flags` |
+| `answer_write_tight` | — | `0` | 作答 system 那段「证据/未验证项一行一条、别粘工具结果原文」。**默认关**：受控 A/B 里字数/引用变化全落在噪声内（早期 2 个**非受控**样本看着"更有料"，没能复现） |
 
 ## 依赖该包的包
 
 | 包名 | 用途 |
-|------|------|
+|---|---|
 | `start_multi_app` | 多应用启动（引入 `l_agent_chat`） |
 
 ## 端口占用处理

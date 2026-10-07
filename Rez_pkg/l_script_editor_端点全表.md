@@ -36,7 +36,7 @@ curl.exe http://127.0.0.1:8764/status
 鉴权是**四个字段配合看**（都是**每个请求实时**按环境变量算出来的，运维改完令牌立即生效，不必重启）；后两个是容量/治理观测字段：
 
 | 字段 | 含义 |
-|------|------|
+|---|---|
 | `auth_required` | 当前是否要求令牌（`SCRIPT_EDITOR_TOKEN` 有值即 `true`） |
 | `auth_scope` | 令牌生效范围：`non_loopback`（**只卡跨机**；本机回环免令牌，默认）或 `off`（没令牌 = 不鉴权） |
 | `auth_loopback_exempt` | 回环免令牌开关；`SCRIPT_EDITOR_AUTH_LOOPBACK_EXEMPT=0` 可关掉（详见 §3A.2） |
@@ -65,7 +65,7 @@ print(resp.json())
 ```
 
 | 参数 | 必填 | 说明 |
-|------|:---:|------|
+|---|:---:|---|
 | `path` | ✅ | 要执行的 `.py` 文件绝对路径；不存在返回 404，非 `.py` 返回 400 |
 | `timeout` | ❌ | 执行超时秒数，默认 `300`，合法范围 `[1, 3600]` |
 
@@ -102,7 +102,7 @@ curl.exe -X POST http://127.0.0.1:8764/execute ^
 `file_path` 后再读取执行 —— 无需先调 `/upload`。
 
 | 字段 | 必填 | 说明 |
-|------|:---:|------|
+|---|:---:|---|
 | `content` | 视情况 | 本地文件内容（文本）；`is_binary=True` 时视为 base64 |
 | `is_binary` | ❌ | `content` 是否为 base64，默认 `false` |
 | `mtime` | ❌ | 本地文件修改时间（epoch 秒），用于"日期不一致"判断 |
@@ -110,7 +110,7 @@ curl.exe -X POST http://127.0.0.1:8764/execute ^
 **同步规则（解决"文件已存在但内容 / 日期不一致"）**：
 
 | 场景 | 行为 |
-|------|------|
+|---|---|
 | `file_path` 在服务器不存在 | 自动 `mkdir + 写盘` 再执行 |
 | 服务器已存在、未带 `mtime` | 总是用本次 `content` **覆盖**（确保执行的是交付版本，避免陈旧代码） |
 | 服务器已存在、带 `mtime` | 仅当本地 `mtime` **大于**服务器文件 mtime 时覆盖；否则沿用服务器现有文件 |
@@ -141,7 +141,7 @@ curl.exe -X POST http://127.0.0.1:8764/execute ^
 ```
 
 | 字段 | 说明 |
-|------|------|
+|---|---|
 | `success` | 是否执行成功 |
 | `stdout` / `stderr` | 标准输出 / 错误输出 |
 | `result` | `execute_code_from_api` 的返回值 |
@@ -162,7 +162,7 @@ curl.exe -X POST http://127.0.0.1:8764/execute_async ^
 ```
 
 | 参数 | 必填 | 说明 |
-|------|:---:|------|
+|---|:---:|---|
 | `code` | ✅ | 要执行的 Python 代码 |
 | `timeout` | ❌ | 执行超时秒数，默认 `300`，范围 `[1, 3600]` |
 
@@ -200,7 +200,7 @@ curl.exe http://127.0.0.1:8764/execute_async/result/a7f72c78-05e
 把本地文件内容发送到远程脚本编辑器，写入到指定路径。**自动创建父目录**。
 
 | 参数 | 必填 | 类型 | 说明 |
-|------|:---:|:---:|------|
+|---|:---:|:---:|---|
 | `remote_path` | ✅ | string | 远程保存路径（绝对路径） |
 | `content` | ✅ | string | 文件内容；`is_binary=true` 时为 base64 字符串 |
 | `is_binary` | ❌ | bool | 是否为二进制，默认 `false` |
@@ -244,7 +244,7 @@ requests.post("http://127.0.0.1:8764/upload", json={
 ### 3.7 `POST /download` — 从远程路径下载文件
 
 | 参数 | 必填 | 类型 | 说明 |
-|------|:---:|:---:|------|
+|---|:---:|:---:|---|
 | `remote_path` | ✅ | string | 远程文件绝对路径 |
 | `is_binary` | ❌ | bool | 是否按二进制下载，默认 `false` |
 
@@ -291,7 +291,7 @@ open("D:/img.png", "wb").write(data)
 一致走 JSON（文本 utf-8 / 二进制 base64），因此**跨机器可用**。
 
 | 参数 | 必填 | 类型 | 说明 |
-|------|:---:|:---:|------|
+|---|:---:|:---:|---|
 | `remote_dir` | ✅ | string | 服务器端目标目录（绝对路径） |
 | `files` | ✅ | array | 文件列表，每项 `{"rel_path","content","is_binary"}` |
 | `overwrite` | ❌ | bool | 是否覆盖已存在文件，默认 `false`（跳过） |
@@ -340,7 +340,7 @@ curl.exe -X POST http://192.168.1.100:8764/upload_folder ^
 （默认 32MB，见 §6）就得用这套：**流式落盘、内存恒定、可续传、原子替换**。
 
 | 步 | 请求 | 说明 |
-|:--:|------|------|
+|:---:|---|---|
 | 1 | `POST /upload_start` `{remote_path, total_bytes?, overwrite?}` | 返回 `upload_id`；**自动建父目录**；`overwrite=false` 且目标已存在 → 409 |
 | 2 | `POST /upload_chunk` `{upload_id, content(base64), offset?}` × N | 追加一片；带 `offset` 则校验必须等于已收字节数，不符 → 409 |
 | 3 | `POST /upload_finish` `{upload_id, total_bytes?}` | 校验字节数 → `os.replace` **原子替换**到目标 |
@@ -391,7 +391,7 @@ print("done")
 所有 `/ui/*` 端点用同一个 locator JSON 描述目标控件：
 
 | `by` | 匹配规则 | 示例 |
-|------|----------|------|
+|---|---|---|
 | `objectName` | `setObjectName` 设置的名字 | `{"by":"objectName","value":"http_server_btn"}` |
 | `text` | 按钮/标签/分组框的可见文字 | `{"by":"text","value":"执行"}` |
 | `placeholder` | QLineEdit 占位符 | `{"by":"placeholder","value":"搜索..."}` |
@@ -431,7 +431,7 @@ curl.exe -X POST http://127.0.0.1:8764/ui/action ^
 ```
 
 | action | params | 说明 |
-|--------|--------|------|
+|---|---|---|
 | `click` / `double_click` / `right_click` | — | 合成鼠标事件（按钮类走 `click()` 保证 toggle） |
 | `hover` / `focus` | — | 移入 / 聚焦 |
 | `check` / `uncheck` | — | 勾选框状态设置 |
@@ -453,7 +453,7 @@ curl.exe -X POST http://127.0.0.1:8764/ui/wait ^
 ```
 
 | state | 说明 |
-|-------|------|
+|---|---|
 | `exists` / `gone` | 出现 / 消失（隐藏或销毁均算 gone） |
 | `visible` / `hidden` | 可见性 |
 | `enabled` / `disabled` | 可用性 |
@@ -504,7 +504,7 @@ img = requests.get(f"{base}/ui/screenshot?by=objectName&value=status_label").jso
 ### 5.1 默认工具一览
 
 | 工具 | 说明 |
-|------|------|
+|---|---|
 | `list_tools` / `describe_tool` / `has_tool` / `call_tool` | 工具发现与调用 |
 | `read_file` / `write_file` | 文本文件读写（utf-8 优先，回退 gb18030） |
 | `list_dir` / `find_files` / `search_text` | 目录 / glob / 正则搜索 |
@@ -526,7 +526,7 @@ img = requests.get(f"{base}/ui/screenshot?by=objectName&value=status_label").jso
 `upload_file` 把本地文件内容通过 `POST /upload` 推到远程脚本编辑器；`download_file` 通过 `POST /download` 把远程文件拉回本地。文本与二进制都支持。
 
 | 工具 | 参数 |
-|------|------|
+|---|---|
 | `upload_file` | `local_path`（必填）、`remote_url`（必填）、`remote_path`（必填）、`is_binary`（可选，默认 false） |
 | `download_file` | `remote_url`（必填）、`remote_path`（必填）、`local_path`（必填）、`is_binary`（可选，默认 false） |
 
@@ -590,7 +590,7 @@ for _ in range(60):
 ```
 
 | 工具 | 参数 |
-|------|------|
+|---|---|
 | `execute_sync` | `remote_url`（必填）、`code`（必填）、`timeout`（可选，默认 300） |
 
 **`upload_folder_to_server`** 把整个本地文件夹递归上传到远端 `remote_dir`（基于 `/upload_folder`）：
@@ -605,7 +605,7 @@ tools.upload_folder_to_server(
 ```
 
 | 工具 | 参数 |
-|------|------|
+|---|---|
 | `upload_folder_to_server` | `base_url`（必填）、`local_dir`（必填）、`remote_dir`（必填）、`overwrite`（可选，默认 false） |
 
 ### 5.2 在脚本中调用

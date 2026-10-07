@@ -222,7 +222,7 @@ if (isNew) {
 > nginx 只把 `^/api/v1/services(/|$)`、`^/api/v1/homepage(/|$)`、`^/api/v1/nginx(/|$)` 反代到主页；其它 `/api/v1/*` 兜底转 auth(1027) → 会拿到 404。另外 `/api/v1/services/X/Y` 两段式会被通用路由 `{name}/{op}` 先匹配走。
 
 | 方法 | 路径 | 说明 |
-| --- | --- | --- |
+|---|---|---|
 | GET | `/api/v1/services/status` | 卡片状态 + `last_restart` + `templates_stamp` + `src_watch` |
 | GET | `/api/v1/services/deps` | 全部卡片作为依赖图 `nodes`（deps 页与新建预设下拉的数据源） |
 | GET | `/api/v1/services/history` | 重启历史（`name` 可过滤，`limit` 默认 60） |

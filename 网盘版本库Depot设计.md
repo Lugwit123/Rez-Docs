@@ -37,7 +37,7 @@ blob 按**库根隔离**：同一 md5 在不同库分别有实体和元数据行
 ### 2.3 为什么不选另外两种
 
 | 方案 | 否决理由 |
-|------|----------|
+|---|---|
 | 网盘按真实目录结构存 | 改名/移动要真搬文件，跨地区重传 |
 | 全量元数据只放网盘 JSON | 并发提交无法加锁，列目录要拉一堆小文件 |
 
@@ -47,7 +47,7 @@ blob 按**库根隔离**：同一 md5 在不同库分别有实体和元数据行
 旧的 `account_service.py` 已随 P4 泛化删除）。
 
 | 表 | 作用 | P4 对应 |
-|----|------|---------|
+|---|---|---|
 | `depot_blob(lib_root, md5 PK)`, `size`, `remote_path` | 库内内容 → 网盘路径；主键为 `(lib_root, md5)`，保证按库隔离 | — |
 | `depot_changelist(id, owner, description, status)` | 变更列表，`status`=pending/submitted | CL |
 | `depot_pending_file(cl_id, path, action, blob_md5, src_path, base_rev)` | 待提交区条目 | opened files |
@@ -188,7 +188,7 @@ reconcile  sync_done
 并在 401 时换新 token 重试一次：
 
 | # | 调用方 | 链路 |
-|---|--------|------|
+|---|---|---|
 | 1 | `l_notepad_server/depot_map.py` 的 `http()` | note server → 1028 |
 | 2 | `l_tray/src/l_tray/depot_bridge.py` | 网页 → 托盘 19527 → 1028 |
 | 3 | `lugwit_netdisk_client`（本地桥） | 主窗口登录后 `bridge.setToken()`；另从持久化 WebEngine profile 的 cookie 抓 `lugwit_token` |
@@ -289,7 +289,7 @@ reconcile  sync_done
 托盘侧新增三个网页白名单动作（`l_tray/depot_bridge.py`）：
 
 | 动作 | 透传到 depot 服务 |
-|------|------------------|
+|---|---|
 | `depot_workspace_list` | `GET /api/depot/workspace`（回 `owner` / `workspaces` / `libraries`） |
 | `depot_workspace_save` | `POST /api/depot/workspace`（JSON：`name` / `library` / `local_root` / `host` / 可选 `id`） |
 | `depot_workspace_delete` | `DELETE /api/depot/workspace/{ws_id}` |

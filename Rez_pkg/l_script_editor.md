@@ -7,7 +7,7 @@
 > **本文职责**：面向使用者的入口指南 ——「这是什么 / 怎么用 / 接口总览」。逐端点的完整参考（含 `/ui/*` Qt UI 自动化与 Agent 工具系统）见同目录专项分篇 [`l_script_editor_端点全表.md`](l_script_editor_端点全表.md)。安全（§3A）与服务发现 / IPC（§3B）仍留在本文。
 
 | 项 | 值 |
-|----|----|
+|---|---|
 | 包路径 | `rez-package-source/l_script_editor/999.0` |
 | 依赖 | `python-3.12` / `pyside6` / `Lugwit_Module` / `l_qt_wgt_lib` / `l_agent_tool` |
 | 启动 | `wuwor l_script_editor -- l_script_editor_demo`（组件演示）<br>`wuwor l_script_editor -- l_script_editor_server`（无 UI 常驻服务）<br>`wuwor l_script_editor -- l_script_editor_test`（运行测试） |
@@ -45,7 +45,7 @@ curl.exe http://127.0.0.1:8764/status
 ## 2. 端口配置
 
 | 项 | 值 |
-|----|----|
+|---|---|
 | 默认端口 | `8764` |
 | 环境变量 | `SCRIPT_EDITOR_HTTP_PORT`（如 `set SCRIPT_EDITOR_HTTP_PORT=8768`） |
 | 合法区间 | `[8000, 8999]`；缺省 / 非法 / 越界时回退默认端口 |
@@ -64,7 +64,7 @@ curl.exe http://127.0.0.1:8764/status
 ## 3. HTTP 接口
 
 | 端点 | 方法 | 用途 |
-|------|:---:|------|
+|---|:---:|---|
 | `/execute` | GET / POST | 远程**同步**执行 Python 代码或 `.py` 文件（阻塞等待结果） |
 | `/execute_async` | POST | 远程**异步**提交代码执行，立即返回 `request_id`（不阻塞） |
 | `/execute_async/result/<id>` | GET | 查询异步执行任务的结果（非阻塞） |
@@ -87,7 +87,7 @@ curl.exe http://127.0.0.1:8764/status
 | `/ui/screenshot` | GET | **UI 自动化**：控件截图（PNG，JSON base64 或 raw） |
 
 | 方式 | 传参 | 适用场景 |
-|------|------|------|
+|---|---|---|
 | `GET /execute` | URL 查询参数 `?path=脚本.py&timeout=300` | **最简调用**：路径直接放 URL，空格/中文自动编码解码 |
 | `POST /execute` | body `{"file_path": "...", "timeout": 300}` | AI 工作流：先写 `.py` 文件，再 `curl` 执行；可带 `content` 自动上传（见《l_script_editor 端点全表》§3.3.1） |
 | `POST /execute` | body `{"code": "...", "timeout": 300}` | 一行内联代码 |
@@ -118,7 +118,7 @@ editor_tab.start_http_server(host="127.0.0.1")        # 显式本机
 跨机器使用必须配置令牌（见下），或显式自担风险：
 
 | 环境变量 | 说明 |
-|----------|------|
+|---|---|
 | `SCRIPT_EDITOR_TOKEN` | 访问令牌。设置后除 `/status` `/docs` 外所有端点要求携带：`X-Editor-Token: <token>` 或 `Authorization: Bearer <token>` 或 `?token=<token>` |
 | `SCRIPT_EDITOR_ALLOW_INSECURE` | 设为 `1` 显式跳过非回环守卫（自担风险） |
 | `SCRIPT_EDITOR_FILE_ROOTS` | 文件白名单目录（os.pathsep 分隔，Windows 用 `;`）。设置后 `/upload` `/download` `/upload_folder` `/execute` 的文件路径必须落在其中，越界返回 403；未设置则不限制 |
@@ -269,7 +269,7 @@ pipe_bridge.resolve_address("netdisk_client")    # 该服务 IPC 地址（发现
 ### 3B.3 已落地的端口分配
 
 | 用途 | 端口 | 服务名 | 备注 |
-|------|:---:|------|------|
+|---|:---:|---|---|
 | 独立脚本编辑器服务（托盘菜单拉起，`standalone_server`） | `8764` | `tray`（现由托盘透传） | 托盘 `l_tray/package.py` 设 `SCRIPT_EDITOR_HTTP_PORT=8768`、`_STRICT=1`、`SCRIPT_EDITOR_SERVICE_NAME=tray`；`Tray.py` 常量读环境并把这三项经 `start_rez_package(env_overrides=…)` **透传给子进程** |
 | 网盘客户端（`lugwit_netdisk_client`，内嵌服务） | `8769` | `netdisk_client` | `lugwit_netdisk_client/package.py` 设 `PORT=8769` / `STRICT=1` / `SERVICE_NAME=netdisk_client` |
 | 调试实例示例 | `8766` | `script_editor`（默认名，建议改 `debug`） | 避免与别的默认名实例相撞 |
@@ -391,7 +391,7 @@ python tools\deploy_remote.py --host http://127.0.0.1:8764
 四步链路（`deploy_remote.py` 内部）：
 
 | 步 | 做什么 | 实现 |
-|:--:|------|------|
+|:---:|---|---|
 | 1 | 同步源码 | 调 `l_nginx/999.0/tools/remote_sync.py` 把 `<本包>/src` → 远端同路径（分批 + 大文件分片，见 §4.2） |
 | 2 | 落 helper | `POST /execute` 写 `D:/TD_Depot/Temp/lse_restart_helper.py`，并以**分离进程**启动它（`DETACHED_PROCESS`） |
 | 3 | 重启 | helper 先 `sleep 3s`（让本次 HTTP 响应返回）→ `taskkill` 掉监听 8764 的 pid → 等端口释放 → `wuwo\wuwor.bat l_script_editor -- l_script_editor_server` 拉起（`SCRIPT_EDITOR_HTTP_HOST=0.0.0.0`）；**端口没回来就重试 3 次**，过程写 `D:/TD_Depot/Temp/lse_restart_helper.log` |
@@ -499,7 +499,7 @@ python src\smoke_e2e.py
 ## 8. 组件 API 速览
 
 | 类 / 函数 | 说明 |
-|-----------|------|
+|---|---|
 | `ScriptEditorTab` | 主编辑组件；`start_http_server(host, port)` / `stop_http_server()` / `execute_code_from_api(code)` / `agent` |
 | `EditorAgent` | agent 工具调用器（注入执行环境为 `agent` / `tools`）；`list_tools()` / `call(name, ...)` / `register_tool(...)` |
 | `ToolRegistry` / `AgentTool` | 工具注册表 / 工具定义 |

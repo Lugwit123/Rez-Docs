@@ -130,7 +130,7 @@
 ## 2. 已完成的
 
 | 项 | 位置 | 验证 |
-|----|------|------|
+|---|---|---|
 | 四态状态 + `from_plan`（用服务端清单算） | `src/l_agent_chat/depot_status.py` | 单元测试 |
 | 云端清单 `cloud_manifest()`（`list` 递归） | `depot_sync.py` | 单元测试 |
 | 逐条状态 `status_items()` | `depot_sync.py` | 单元测试 + 实测 |
@@ -251,13 +251,13 @@ _request("POST", f"{url}/api/depot/workspace/select", json={"ws_id": id})
 `depot_status.from_fingerprints(local, cloud, ledger)`：
 
 | 来源 | 取法 |
-|------|------|
+|---|---|
 | **本地** | `local_uploads()` = `{rel: 会上传的那份 bytes}`（设置是**脱敏后**的 dump —— 拿原文件比会把 `settings.json` 永远判成「已修改」） |
 | **云端** | `cloud_manifest()` = `list?dir=` 递归（head 上真实存在的文件 + rev/大小/md5/锁） |
 | **台账** | `load_ledger()` = 上次推/拉成功后记下的 `{sha, rev}` |
 
 | 情形 | 结论 |
-|------|------|
+|---|---|
 | 只有本地有 | `📄 仅本地`（可提交） |
 | 只有云端有 | `☁ 仅云端`（可拉取） |
 | 都有，台账吻合（sha + rev 都一致） | `✓ 已同步`（**不下载**） |
@@ -275,7 +275,7 @@ _request("POST", f"{url}/api/depot/workspace/select", json={"ws_id": id})
 ## 6. 提交 / 拉取只碰「稳的那一头」
 
 | 按钮 | 只处理 | 理由 |
-|------|--------|------|
+|---|---|---|
 | 批量 `☁ 提交` | `local_only` + `broken` | 推上去是「新增」或「重传」，不会覆盖别人的东西 |
 | 批量 `⬇ 拉取` | `cloud_only` | 拉下来是「补齐缺失」，不会盖掉本地东西 |
 | 逐条 `⬆` / `⬇`（侧栏 hover / 设置页条目表） | 任意（含 `modified`） | 用户看得见状态，自己选方向；拉取先备份 `.bak` |
@@ -363,7 +363,7 @@ data: {"kind":"done","ok":true,"total":3,"pushed":[...],"failed":[...],"error":"
 ## 9. P4 其余操作（变更单 / 锁 / 检出 / 删除 / 对账）
 
 | 函数 | 端点 | 说明 |
-|------|------|------|
+|---|---|---|
 | `pending()` | `GET /api/depot/pending?ws=` | 未提交的变更单（`lists[i].items` 是挂着的文件） |
 | `locks()` | `GET /api/depot/locks?ws=` | 文件锁（`{path, owner, ...}`） |
 | `checkout(rels)` | `POST /api/depot/checkout?ws=` | 标成「我编辑中」（`{paths: [...]}`，rel → 库内路径） |
@@ -384,7 +384,7 @@ data: {"kind":"done","ok":true,"total":3,"pushed":[...],"failed":[...],"error":"
 批量按钮管不到的（`settings.json`、锁、删云端）走逐条入口：
 
 | 位置 | 操作 | 显隐条件 |
-|------|------|----------|
+|---|---|---|
 | 侧栏会话条目（hover） | `⬆ 提交这条` | `can_push`（📄 仅本地 / ✎ 已修改） |
 | 侧栏会话条目（hover） | `⬇ 拉取这条` | `can_pull`（☁ 仅云端 / ✎ 已修改） |
 | 侧栏会话条目（徽标位） | `🔒`（锁归属进 tooltip） | `locked_by` 非空 |
@@ -545,7 +545,7 @@ agent 自己的「工作区」不再用私有格式，**直接就是一份 `.cod
 同一份文件也能给 VS Code 打开，两边看到的文件夹与顺序一致。
 
 | 项 | 现在 |
-|----|------|
+|---|---|
 | 工作区文件 | 默认 `<REZ_ROOTS[0]>/l_rez_src_ws.code-workspace`；`AGENT_CHAT_WORKSPACE_FILE` > 设置 `workspace_file` 可覆盖 |
 | 文件内容 | 只写 `folders`（每项 `{path, name?}`：绝对，或**相对文件所在目录** —— 与 VS Code 同规则；同盘写相对、跨盘写绝对）；`settings` / `extensions` / `launch` / `tasks` 原样保留，agent 不增删 |
 | 基准（相对路径 / shell cwd） | **`folders[0]`**：切基准 = 把该项移到数组首位（对 VS Code 侧零副作用） |
@@ -861,7 +861,7 @@ DSML                          应为 0     （方言泄漏）
 ## 26. 改动点
 
 | 文件 | 改动 |
-|------|------|
+|---|---|
 | `config.py` | 新增 `FLOW_ENABLED`（默认 `1`）、`FLOW_NAME`（空 = `default`）；对应环境变量 `FLOW_ENABLED` / `FLOW_NAME` |
 | `app.py` | 导入 `flow_engine` / `flow_spec`；循环前 setup（读图、定位无调用入口、注册护栏闭包/处理器）；`if not calls:` 分支接入 `run_flow` 子流程 |
 | 护栏 | 硬编码级联**保留作兜底**（图不可用时的回退路径，不再作默认路径） |
@@ -883,6 +883,10 @@ DSML                          应为 0     （方言泄漏）
 第三部分之后这条线又走了两轮，**别拿 §25–§27 的"现状一句话"当最新**：
 
 | 主题 | 权威文档 |
-|------|---------|
+|---|---|
 | 图重画成 16 节点「一张图管一切」（熔断/停止/步数用尽走 `end_abort`；门节点 `params`、图级 `params`；`default` 与 `default_intelligent_agent` 共用 `default_intelligent_agent.json`，`default.json` 已改名）+ 对话里四层可见（路线条 / 徽标 / `/flow` 面板 / 轨迹回放）+ 沙箱自我验证（路由回放 / 演练模式 / 对话回放，`optimize_agent`） | `Rez_pkg/流程图智能体_图驱动控制流.md`（含 §3.0 / §3.1 / §7.2 / §7.3 / §10） |
 | **对话按 `.code-workspace` 工作区隔离**（`sessions/<工作区 key>/`，归属自动判定，删掉"切换来源"）、发送队列（`↪`引导 / `⚡`立即发送 / `✎`编辑 / `×`删除；停止 = 真中断）、**「✎ 重新编辑」提问 = 开新分支**（与重新生成同一套分支树 `session_branches`） | `l_agent_chat使用指南.md` 的「会话管理」「消息操作与发送队列」 |
+| **耗时治理（2026-10-07）**：① 工具清单缓存**过期不阻塞**（stale-while-revalidate，冷建 5.56s → 过期后再取 0.004s）；② `notepad_search` **结果缓存 + 启动预热**（首搜 8.14s → 0.31s，同参重查 0.00s）。**同轮实测**：同题 89.7s → 62.4s，但只有 ① 那 1.7s 能归因，其余是模型行为波动 | `l_agent_chat使用指南.md`「工具按需声明 / 工具清单缓存：过期不阻塞」；判据见包内 `doc/CHANGELOG.md`「耗时治理」两节 |
+| **护栏与工具失败（2026-10-07）**：重复读护栏**作答期的「内联工具调用兜底」通道也走同一套**（此前是护栏外后门，不跑 PreToolUse、不进计数表），命中提示列出**已读区间**；工具失败结果渲染成「执行失败」而不是误导性的「(空文件)」 | `Rez_pkg/流程图智能体_图驱动控制流.md`（护栏覆盖范围）；包内 `doc/CHANGELOG.md` |
+| **`ask_user` 多选（2026-10-07）**：`multi=true` → 候选变**勾选条目 + 「确认」才提交**（点候选不再立即提交），多选以 `；` 连成一条；`multi` 随 SSE / 落盘痕迹 / live 轮次都带，刷新不退回单选 | `l_agent_chat使用指南.md`「`ask_user`」与端点表 `POST /api/ask-answer` |
+| **两条提示词实验片段**（`planner_batch_hint` / `answer_write_tight`，2026-10-07）：**受控 A/B 判无效故默认关**（隔离实例 4 臂 × 2 题 × 2 样本；并批那条还更慢）。留代码 + 运行期开关 `POST /__dev__/prompt-flags` | `l_agent_chat使用指南.md` 设置项表那两行；包内 `doc/CHANGELOG.md`「耗时治理第二轮」 |

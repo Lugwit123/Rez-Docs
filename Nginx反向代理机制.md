@@ -53,7 +53,7 @@
 ### 2.1 端口总表
 
 | 端口 | 服务 | 监听范围 | 对外可访问 | 代理前缀 |
-|------|------|---------|:---:|---------|
+|---|---|---|:---:|---|
 | 443 | nginx HTTPS 入口（文档站也在此） | 0.0.0.0 | ✅（**公网唯一入口**，IP 自签证书） | — |
 | 8080 | nginx 备用/调试口 | 127.0.0.1 | ❌（仅本机） | —（同一份 routes.conf） |
 | 1027 | lugwit_auth 认证服务 | 127.0.0.1 | ❌ | `/api/v1/`、`/api/v1/auth`、`/login`、`/auth/` |
@@ -123,15 +123,15 @@ http {
 > 路由集合的**唯一来源是 `conf/routes.conf`**：`conf/https_common.conf`（被 `conf/https.conf` 两个 443 server 块 `include`）与 `conf/lugwit.conf` 的 8080 server 块都 `include` 它。改路由只改这一份。
 
 | 客户端路径 | 转发目标 | 剥前缀? | 后端收到 | 说明 |
-|-----------|----------|:------:|----------|------|
+|---|---|:---:|---|---|
 | `/nginx-health` | nginx 自身 | — | `200 ok` | 精确匹配健康检查 |
 | `/`（精确） | — | — | 302 → `/homepage` | 入口根路径跳门户 |
 | `/`（其余） | l_homepage 8090 | 否 | `/...` | 门户主页兜底 |
 | `/homepage`、`/homepage/*` | l_homepage 8090 | 否 | `/homepage/*` | 门户主页（独立网页登录，使用受控账号凭据） |
 | `/svc-icon/*` | l_homepage 8090 | 否 | 现生成 SVG | 各服务卡片图标（绝对路径） |
-| `/api/v1/services(/|$)` | l_homepage 8090 | 否 | 原样 | 门户服务状态/启停 API |
-| `/api/v1/homepage(/|$)` | l_homepage 8090 | 否 | 原样 | 门户自身专属接口（如重启） |
-| `/api/v1/nginx(/|$)` | l_homepage 8090 | 否 | 原样 | 门户「重载 Nginx」按钮 |
+| `/api/v1/services(/ | $)` | l_homepage 8090 | 否 | 原样 | 门户服务状态/启停 API |
+| `/api/v1/homepage(/ | $)` | l_homepage 8090 | 否 | 原样 | 门户自身专属接口（如重启） |
+| `/api/v1/nginx(/ | $)` | l_homepage 8090 | 否 | 原样 | 门户「重载 Nginx」按钮 |
 | `/api/v1/auth` | 认证 1027 | 否 | 原样 | 认证登录/登出 |
 | `/login`、`/login/*` | 认证 1027 | 否 | 原样 | 统一登录页（支持 `next` 回跳） |
 | `/api/v1/*` | 认证 1027 | 否 | `/api/v1/*` | 认证业务 API（账号/收藏/用户） |
@@ -207,7 +207,7 @@ location /note/ { proxy_pass http://lugwit_note_backend/; }  # 有 URI：剥掉 
 "后端收到什么"取决于**后端服务自己的路由**，两条规则对应两种服务形态：
 
 | 后端路由形态 | 客户端写法 | location 写法 |
-|-------------|-----------|--------------|
+|---|---|---|
 | 自带路径前缀（认证 `/api/v1/*`） | `/api/v1/login` | `proxy_pass http://host;`（不带 URI） |
 | 根路径路由（笔记 `/api/notes`） | `/note/api/notes` | `proxy_pass http://host/;`（带 URI 剥 `/note`） |
 
@@ -250,7 +250,7 @@ location /api/    { proxy_pass http://lugwit_baidu_backend; }   # 否则 /api/v1
 以 l_notepad_client（使用 l_qframelesswindow 标题栏的服务器设置）为例：
 
 | 配置键 | 填写值 | 实际请求 | nginx 处理 |
-|--------|--------|----------|-----------|
+|---|---|---|---|
 | auth_url | `https://121.196.144.88` | `/api/v1/auth/login` | `/api/v1/` → 认证 1027 |
 | auth_route | `/api/v1/auth` | — | — |
 | api_url | `https://121.196.144.88/note` | `/note/api/notes` | 剥 `/note` → 笔记 8765 |
