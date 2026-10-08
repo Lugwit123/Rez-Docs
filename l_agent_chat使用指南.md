@@ -83,7 +83,8 @@ cd web
 npm install          rem 首次（node_modules 已存在则跳过）
 npm run build        rem 一次性生产构建
 npm run watch        rem 开发常驻：保存即增量重建 dist，刷新页面即可（推荐）
-npm run dev:server   rem Vite dev server（127.0.0.1:5174，HMR，/api 代理到 :1250）
+npm run dev:server   rem Vite dev server（127.0.0.1:5176，HMR，/api 代理到 :1250）
+                     rem ⚠ 端口以 web/vite.config.js 的 DEV_PORT 为准（5173→5174→5176 挪过两次）
 ```
 
 - **推荐 `npm run watch`**：与生产走同一路径（后端 URL、Jinja 模板注入、设置页、VS Code 内嵌 shim 都在），只是保存自动重建。
@@ -238,6 +239,14 @@ SSE 事件类型：
 | 请求 | `POST /api/chat` 带 `regen:{mid, guide?}` | `POST /api/chat` 带 `edit:{mid?/index?, original?, content}`；**问答卡的「重新回答」**用 `edit:{ask:{ask_id?, question, answer}}`（提问原文不动，只把"这次的选择改了"补在后面 → 重走那一轮；`ask_id` 是定位依据，卡片自己没 mid 时也认得出） |
 | 切回 | 底部 `◀ 第 i/N 版 ▶`（= `POST /api/session/version/final`，**切的是分支**，下面的对话跟着换） | 同左（提问版本走同一套控件） |
 
+- **跑的过程中是"原地重写"**（2026-10-08）：点下去这条卡**立刻清空**（像一条**新消息**一样），
+  新答案从头流出来（页脚标 `重新生成中 · 下面 N 条属旧版分支`），**不会**在列表底部另开一条
+  影子回复、更不会"边跑边给你看上一版的内容"（旧版留在 `◀ i/N ▶` 后面，切回去才看得到）。
+  为什么必须这样：服务端把"正在跑的那一轮"接在历史末尾
+  （`/api/session/current` 的 `messages + live`），而重新生成是**同一条回复的另一个版本** →
+  影子回复长在视口外、你点的那条卡零反馈、跑完影子消失而上面那条悄悄换版 —— 三处都对不上
+  （ChatGPT / Claude / LibreChat 都是原地重写）。现在 `app._attach_live` 按 live 消息上的
+  `regen_of` 并回原位置。
 - 会话文件里就是一棵**分支树**（`session_branches`：`nodes` / `path` / `roots`，`messages` 是当前分支的扁平投影）；
   没分叉过的会话不写 `nodes`（**懒建**，第一次重新生成 / 重新编辑才建树）。
 - 会话**标题**跟着当前分支的第一条提问走（`session_store.title_from`）：改了第一条再切回原版，标题也回去。
@@ -302,6 +311,11 @@ agent 还在跑的时候继续发消息 → 先进输入框顶部那条队列，
 - 图改动前自动备份到 `flows/_versions/<图名>/`；日志记 `_traces/_applied.jsonl`。
 
 ### 默认智能体（流程图驱动）
+
+> **2026-10-08：默认智能体的名字就是 `default_intelligent_agent`。** 原来那个内置 `default`
+> 让位了（要求原话「任何会话的智能体默认选择 default_intelligent_agent」）——下拉不选就是它、
+> 后端不带 `agent` 也回落到它；用户目录里若还留着 `default.json`，那现在只是一个普通智能体
+> （可改名可删）。设置页与 `/api/agents` 的 `default` 字段是**默认名的唯一来源**，别在前端写死。
 
 默认智能体「无调用收尾」路由由**流程图**驱动（`flow_engine.run_flow`），不再只靠硬编码护栏：
 

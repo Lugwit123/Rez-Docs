@@ -153,7 +153,9 @@ if (isNew) {
   - 用户覆盖卡没带 `machines` 时**沿用包内默认卡的**：在开发机编辑一次这张卡，也不会让它跑到部署机上。
   - `machines` 是内容字段（`_CONTENT_FIELDS`）→ 随写盘 / 覆盖明细 / `to_builtin_item` 一起走，不会因为
     一次「写回包内默认」或界面保存被静默丢掉。
-  - 首用处：`l_agent_chat_web_dev`（`machines: ["dev"]`，Vite 开发服务器 `:5174`，`depends: ["l_agent_chat"]`）。
+  - 首用处：`l_agent_chat_web_dev`（`machines: ["dev"]`，Vite 开发服务器 —— 端口见包内
+    `web/vite.config.js` 的 `DEV_PORT`（**别在这里写死数字**，已经从 5173→5174→5176 挪过两次），
+    `depends: ["l_agent_chat"]`）。
     部署机只有构建模式 `l_agent_chat`（`:1250`，静态 `static/dist`）；开发机在它之外**多这一张**，
     点开就是热更新的 dev UI（`/api`、`/health`、`/static` 由 vite 代理回后端 `:1250`，所以后端要先起）。
 - **卡片有两套名字（2026-09-27，`name`/`label` 拆分）**：

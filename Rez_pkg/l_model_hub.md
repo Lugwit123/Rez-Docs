@@ -128,8 +128,16 @@ POST /v1/chat/completions/multi
              "auto"],                           // ③ auto：优先级第一个可用厂商的代表模型
   "history": {"volcengine/deepseek-v4-1-flash": [{"role":"user","content":"上一轮问题"},
                                                  {"role":"assistant","content":"它自己的上一轮答案"}]},
+  "options": {                              // **逐模型**额外参数（可选，2026-10-08 加）
+    "volcengine/deepseek-v4-1-flash": {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+    "deepseek-v4-1-flash":            {"thinking": {"type": "disabled"}}
+  },
   "max_tokens": 512, "temperature": 0.7, "timeout": 120 }
 ```
+
+- **`options` 是逐路的**：键 = 你 `models` 里那一项**原样字符串**（多路归属也是靠它认领），
+  值 = 只发给这一路的字段。用途就是「各家用自己的思考档位」（`thinking` / `reasoning_effort`）。
+  不认的字段由 `litellm.drop_params` 丢掉，不会让那一路失败；没点到的家不受影响。
 
 - **钉死不降级**：每条都只打点名的那个厂商/模型 —— 一旦走降级链，就变成"同一个模型被问了好几遍"，
   对比失去意义（这是它与 `/v1/chat/completions` 的根本区别）。
