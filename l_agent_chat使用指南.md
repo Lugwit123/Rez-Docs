@@ -194,6 +194,32 @@ SSE 事件类型：
   `prompt_optimizer.py`）改写成更清晰的提示词并写回输入框；请求中按钮显示七彩环形 spinner。
   模型**独立于聊天默认模型**（设置页「提示词优化」的 `prompt_optimize_provider` /
   `prompt_optimize_model`，缺省 zhipu / `glm-4-flash` 免费档），不占主力模型额度。
+- **发送前拼写检查**（2026-10-09）：Enter / 点「发送」之前，把草稿交 `POST /api/spell/check`
+  （实现 `spell_check.py`）过一遍独立小模型；**查出错字才弹窗**（`SpellCheckDialog`），让你选
+  「纠正后发送 / 原样发送 / 取消（留在输入框自己改）」。模型同样独立于聊天默认模型
+  （`spell_check_provider` / `spell_check_model`，缺省 zhipu / `glm-4-flash` 免费档）。
+  默认**开**，开关与超时在 `/panel`（「发消息设置」）或设置页「发送前拼写检查」：
+  `spell_check_enabled` / `spell_check_timeout`（秒，默认 12 —— **实测定的**：免费档
+  glm-4-flash 上短草稿 1.6~4s、长草稿 5~10s，按"0.5~1.5s"估的 8 秒会经常踩超时）。
+  **延迟怎么藏**：停手 800ms 就**先查一遍并缓存**（"边打字边查"），按 Enter / 点「发送」时命中缓存
+  → 零等待、不多花一次调用；只有"打完字立刻发"才会真的等那 1.6~4s。
+  三条硬口径：① **超时 / 出错一律按
+  "没查出问题"原样发送**（检查失败绝不堵住输入框）；② 三个发送口（Enter、排队 ⏳、「发送」）
+  走同一个收口，拦一处等于没拦；③ `/命令`、`@引用`、文件名 / 路径 / 标识符禁改 —— 提示词点名之外，
+  `spell_check.py` 落地前还有两道**确定性**校验（`_tokens` 少一个 token、`_undo_identifier_edits`
+  撤销"猜着改"的文件名，撤不干净就整条作废）。**质量预期**：免费档英文较稳但**召回不稳**
+  （同一句有时只抓一处；句子里带文件名时更容易漏），中文错字一般（`地止`/`文当` 时对时错）
+  —— 所以弹窗逐条列 `from → to` 让人过目是必须的，不做静默替换；要更准就在设置页把
+  `spell_check_model` 换成更强的档（走的是独立小模型，不占聊天模型）。
+- **纠错经验库**（2026-10-09，接上一条）：弹窗里的**「纠正后」那个框可以直接改** —— 不认同 AI 的写法
+  就在里面改，发出去之后把它记成经验，**下次同一处直接照你的写法改**；点「原样发送」则是反向教学：
+  那几条记成"别改这个词"（累计 2 次才生效，防赶时间误点）。学什么是**算出来的**：后端 diff
+  「原文 → 你最终发出去的文本」（不是猜），落盘 `<存储根>/.l_agent_ws/spell_experience.json`
+  （与「记忆」同根），注入时**只挑出现在这句草稿里的**条目（没命中一个字符都不加 —— 免费档提示词
+  越长越乱，实测过）。端点：`GET /api/spell/experience`（看）/ `POST`（记）/ `DELETE`（清，
+  `?from=<词>` 清单条）；总开关 `spell_learn_enabled`（设置页「记住我自己改过的写法」）。
+  ⚠ 护栏：单字规则（如 `止 → 址`）**不进库** —— 注入是按子串命中，单字会误伤一整片，所以不足 2 字
+  就借上下文或丢弃。
 - **设置页窄屏**：宽 ≤860px 时左侧「设置分组」侧栏变顶部横排，可**按住拖动**横向滚动（桌面仍为竖排）。
   手机端**模型设置卡片**改为**水平紧凑布局**（`templates/settings.html` 的 `.card.model-compact`：键值对同行、压缩内边距，
   避免一屏只放得下一项）。
@@ -741,6 +767,8 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `GET /api/voice/voices` | Edge-TTS 音色表（可按 locale 过滤，供语音下拉） |
 | `GET /api/source` | 读源码上下文（`path`/`start`/`end`/`context`，上限 400 行）供源码弹窗 |
 | `POST /api/prompt/optimize` | 提示词优化（草稿 → 更清晰的提示词；独立小模型，见 `prompt_optimizer.py`） |
+| `POST /api/spell/check` | **发送前拼写检查**（`{text}` → `{changed, issues[], corrected}`；独立小模型，开关/超时是设置 `spell_check_*`，见 `spell_check.py`） |
+| `GET/POST/DELETE /api/spell/experience` | **纠错经验库**（看 / 记 / 清）：`POST {action:"corrected",original,final}` 记正向偏好（后端 diff 出 `from → to`）、`{action:"as-is",issues}` 记"别改这个词"（累计 2 次生效）；`DELETE ?from=<词>` 清单条。见 `spell_experience.py` |
 | `POST /api/review-turn` | **按消息复盘**（消息底部「🧠 复盘」）：取证这一轮 → 结论 → 待确认改动 + 沙箱 A/B（见「消息操作与发送队列」） |
 | `POST /api/session/branch-check` | **分支后的文件改动**拍板：`{action: "keep" | "undo", files?}` —— 保留只清标记；撤销用那些改动**之前**的快照写回（不给 `files` = 全撤，见 `branch_changes.py`） |
 | `POST /api/review-apply` | 落地复盘里**用户确认过**的改动（图参数 / 笔记 / 记忆；改图先备份，见 `flow_evolve.apply_edits`） |
@@ -829,6 +857,11 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | `translator_backend` | `AGENT_CHAT_TRANSLATOR` | `baidu` | 翻译后端（baidu/mymemory/ai） |
 | `prompt_optimize_provider` | — | `zhipu` | 提示词优化供应商（**独立于聊天默认模型**，缺省智谱） |
 | `prompt_optimize_model` | — | `glm-4-flash` | 提示词优化模型（免费档，不占主力额度） |
+| `spell_check_enabled` | — | `1` | **发送前拼写检查**总开关（关掉 = 发送不再多一次往返；AI/脚本经 `POST /api/settings` 也能改） |
+| `spell_check_timeout` | — | `12` | 拼写检查那次模型调用的硬上限（秒）；**超时按「没查出问题」放行** |
+| `spell_check_provider` | — | `zhipu` | 拼写检查供应商（独立于聊天默认模型） |
+| `spell_check_model` | — | `glm-4-flash` | 拼写检查模型（免费档） |
+| `spell_learn_enabled` | — | `1` | **纠错经验库**总开关（记 + 注入；关掉 = 不学也不用） |
 | `permission_mode` | — | `default` | 权限模式：`default` / `allow_all` / `autopilot`（见「审批与权限模式」） |
 | `auto_approve` | — | `1` | 工具自动批准（**仅 `default` 模式**的旧回落；`allow_all`/`autopilot` 覆盖它） |
 | `mobile_msg_height` | — | `66` | 移动端单条消息气泡限高（屏幕高度百分比，`0` = 不限；≤860px 生效） |
