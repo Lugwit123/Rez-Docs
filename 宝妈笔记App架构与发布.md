@@ -202,9 +202,115 @@ refresh 直接被丢掉 → 15min 之后 `app.py::force_login_pages` 的 `verify
 2. 新增 `flushCookies()`，在 `onPause()` / `onStop()` 各调一次
    `CookieManager.getInstance().flush()`（切后台/划掉都覆盖）。
 
+> ⚠️ **2026-10-10 补**：只靠上面这条**覆盖不全**（后台强停/省电清理/被 OEM 杀都不走生命周期回调，
+> 实测装了带 flush 的包当天仍被弹 4 次）。已在同一个类里加「**原生备份 + 冷启动回灌**」，
+> 并同时修掉服务端那个"auth 不可达就弹登录页"的脆弱点 —— 见 **§4.9**。
+
 **验收**：登录一次 → 划掉 App → 重开不再弹登录；且 nginx `access.log` 里
 `POST /l_wchat/api/lugwit/login` 不再「每次重开一条」。需要**重打 APK**（`build-apk.bat`
 → `static/apk/baoma.apk` → `deploy_l_wchat.py` 推云端 → App 内「更新软件」）。
+
+### 4.8 第三个真因（2026-10-10）：一个客户端的 refresh 重放，把**所有人**的会话全量吊销
+
+**症状**：**浏览器**（不是 App）进 `http://localhost:8080/l_wchat`，"每次 l_wchat 服务重启后
+都要重登"，且一天里反复弹登录页。与 §4.7 的 App cookie 落盘无关。
+
+**取证（2026-10-10 13:30–14:15，本机 1027 / 1234 / 8462）**：
+
+- `users.token_version`：13:41 = **3170** → 13:48 = 3184 → 13:52 = 3187，约 1–2 次/分钟。
+  自动 `+1` 的路径**只有一条** —— `session_service.rotate()` 的"复用 = 泄露"分支。
+- 当天 auth 日志：`POST /api/v1/auth/refresh` = **58 × 401、0 × 200**；`login` = 69 × 200。
+  即某客户端每 30–40s 拿一枚**已废**的 refresh 去撞，每次都在吊销该账号**全部**会话
+  （浏览器 cookie、托盘 DPAPI、agent_chat 的 store 一起作废）。
+- 会话表 200 行里 **193 行 UA = `python-requests/*`**，每 ~35s 新增一行。
+- **停掉 `l_model_hub_server` 后 7 分钟，`refresh 401` 计数 59 → 59（纹丝不动）** ⇒ 肇事者就是 hub。
+
+**成因**：`l_model_hub/auth_secrets.py::_refresh()` 换不动时**把这枚已废 refresh 留在内存**
+（`_token["refresh"]`），轮换响应缺新 `refresh_token` 时还会**沿用旧的**；下一次又把它提交一次
+→ 每次都触发全量吊销 + `token_version+1`。WChat 的重启只是"你去看页面的那一刻"。
+
+**修法（已落地）**：
+
+1. **服务端治本①·宽限窗** `lugwit_auth/session_service.py::rotate()` —— 新增 `_REUSE_GRACE_S`
+   （`LUGWIT_REFRESH_REUSE_GRACE_S`，默认 60s）：刚轮换完又被重放（并发 / 重试 / 多进程共享
+   同一枚 / 客户端没存住新 cookie）**只补发一枚新 refresh，不做任何吊销**；**超出宽限窗才**
+   按泄露处理。两条路径**都用 `_logger.warning`**（本服务没配 logging handler，`info` 不落日志，
+   而"有客户端在重放"恰恰是这类事故唯一的现场线索）。
+2. **服务端治本②·按族吊销**（`sessions.family`，`schema_upgrade.py` 加列 + 老行补号）：
+   登录**新开一族**、轮换**继承族号**；泄露只吊销**那一族**（原来是吊销该账号全部会话 → 无辜
+   设备连坐）。`token_version+1` 照旧（把可能落到别人手里的 access 一起作废），但别的族的
+   refresh 会话**不受影响**。
+3. **hub 侧** `l_model_hub/auth_secrets.py` —— 新增 `_drop_refresh()`：refresh 失败（401/400）
+   或轮换响应缺 access/新 refresh 时**立刻清掉内存票据**，下次走 `_login()`；绝不再把一枚
+   已废 refresh 拿去撞。
+4. **SDK 侧** `lugwit_auth_client/client.py::refresh()` —— 401 时把本地那枚废 refresh **清掉**
+   （`_drop_dead_store()`，只清"存的确实就是这一枚"的情况），任何用 SDK 的客户端都不会每轮重放。
+5. **会话行 churn（`login` 每 ~68s 一条）**：`l_model_hub/usage_store.py::push_to_depot()` 原本
+   **每次推送都重新 login**（flush 60s 一次 → 60s 一条新 session，一天一千多条；"会话表 193/200 行
+   是 `python-requests`"就是这么来的）。改为按响应 `expires_in` 缓存 token（`_depot_login`），
+   只有 depot 回 401 时才丢缓存重登。
+
+**实测（改完 + 重启）**：① 同一枚 refresh 连发两次 → **都 200**（原来第二次 = 全量吊销）；
+② 隔 65s 再重放 → 401，但**别族的 refresh 仍能 200**（家族隔离生效）；③ 重启后 `refresh` 全是 200、
+**0 × 401**，`token_version` 不再增长；④ WChat `POST /api/lugwit/login` → `/growth` **200**。
+
+**同一模式还留在别处（未改）**：`l_notepad_server/depot_map.py`、`l_log/backend/depot_logs.py`、
+`l_agent_chat/depot_sync.py` 也是"推 depot 前先 login 一次"——同样会持续堆 session 行（**无害**，
+不会吊销任何人；要清账照 `usage_store._depot_login` 的写法加缓存即可）。
+
+### 4.9 公网仍被弹登录页（2026-10-10 晚）：两个都不在服务端吊销上的成因
+
+**症状**：公网手机上仍"经常要重新登录"。
+
+**先排除服务端**（公网日志实读，2026-10-10 全天）：auth 侧 `POST /api/v1/auth/refresh` = **1 次**（401）、
+`宽限窗内重放` = **0**、`判定为泄露` = **0** → **没有任何全量/按族吊销**。当天真正被弹 + 手填密码的
+**只有 2 次（13:52:33、14:08:34）**，全是 Android `MAG-AN00`（另有 12:23 一台 `ASUS_X00TD`）；
+桌面浏览器 **0 次**。附注：nginx 里 779 次 `/login` 命中是 `127.0.0.1` 的 `python-requests`
+（每 ~68s 一次，**14:50:17 后归零** —— 就是 §4.8 那个 hub depot 流程，被 token 缓存止住了），不是用户。
+
+**成因①（服务端脆弱点）**：WChat 页面闸门把 **auth 不可达当成"未登录"** ——
+`verify_with_auth` 对"连不上"与"token 无效"都返回 `None`，`_page_login_ok` 于是判 False、续期也失败
+→ 302 `/login`，而且这个 False 还进缓存 60s。**结果：auth 一重启/网络一抖，那一分钟内所有人刷新都被弹**。
+
+**修法①**（`l_WChat`，已落地并实测）：
+- `api/auth.py::verify_with_auth`：不可达**抛 `AuthUnreachable`**（只有"服务端明确拒绝"才算没登录）。
+- `app.py::_page_login_ok`：三态 `True/False/None`，`None` **不进缓存**；`force_login_pages` 遇 `None`
+  **放行页面**（fail-open，不写 cookie），并打一条 60s 节流的 `[gate]` 告警。
+- `api/routes.py::_require_login`：不可达 → **503**（"现在验不了"），不再 401（前端把 401 当登录态失效）。
+
+| 场景（停掉 auth 实测） | 改后 | 改前 |
+|---|---|---|
+| auth 挂 + 有 cookie → 页面 | **200** | 302 → 登录页 |
+| auth 挂 + 有 cookie → `/api/lugwit/me` | **503** | 401 |
+| auth 挂 + 无 cookie → 页面 | 302 `/login?next=…`（不变） | 同 |
+| auth 恢复 → 页面 / `/me` | 200 / 200 | 同 |
+
+**成因②（手机端）**：WebView 的 cookie 库**延迟落盘**，`onPause/onStop` 里 flush 覆盖不全
+（后台强停、省电清理、被 OEM 杀都不走生命周期回调）。实测证据：手机 10-08 22:23 已下载过带 flush
+的包（线上 APK 4741050 字节与本地同源），当天（10-10）**仍被弹 4 次**。
+
+**修法②**（B-1：原生备份 + 冷启动回灌，`MainActivity.java`，已落地）：
+- `saveCookies()`：用 `CookieManager.getCookie(当前页 URL)` 把整串 cookie 存进 **原生 SharedPreferences**
+  （键 = 该页面的 origin）；**看不到 `lugwit_token=` 就清掉备份**（登出后别又灌回来）。
+  时机：`onPause` + 前台每 30s 一次（Handler 轮询 —— 被强杀时不走生命周期，只靠 onPause/onStop 兜不住）。
+- `restoreCookies()`：在 `super.onCreate()` **之前**（WebView 发第一个请求前）调用；库里已有 `lugwit_token`
+  就跳过（别用旧备份盖掉好的），否则**逐条** `setCookie(origin, "k=v; Path=/")` + `flush()`。
+  两个坑：`setCookie(url, value)` 把整串当**一条** cookie 解（`a=1; b=2` 会把 b 当属性）→ 必须逐条；
+  `Path` 必须显式给 `/`（Android 默认按 url 路径推导会种成 `/l_wchat`，而 WChat 种的是 `/`）。
+- 放**原生**而不是 localStorage：JS 读不到、XSS 偷不走（localStorage 方案见"仍可做"）。
+
+**交付状态**：`build-apk.bat` 重打 + 覆盖 `static/apk/baoma.apk` → 推云端 → **手机上更新一次**才生效。
+
+> 🧱 **构建坑（2026-10-10 实测）**：`wchat-android` 树里有 **134 个文件**（`res/mipmap-*` 图标 +
+> `node_modules/@capacitor/**`）被压成 `SparseFile + ReparsePoint`（WOF 压缩产物）——`dir` 看不出来，
+> 得看 `Get-Item … | Select-Object Attributes,LinkType`。Gradle 的输入快照不认这种文件，直接
+> `java.io.IOException: Cannot snapshot …: not a regular file` 把整次 build 打挂（任务点随机，
+> 先报 `:app:processDebugNavigationResources`、修完又报别的文件）。**修法**：读出来重写一遍即还原成
+> 普通文件；已在 `build-apk.bat` 的 gradle 之前加了一道自动还原（只动"有 ReparsePoint 且无 LinkType"
+> 的，避开真符号链接）。
+
+**仍可做**：B-2（服务端 `restore_key` + 前端 localStorage）—— 覆盖浏览器侧；代价是要么把 refresh
+放服务端保管，要么让 token 落到 JS 可读的存储，安全面都更大。
 
 ## 5. 闹钟（循环闹钟 + 全屏响铃）
 

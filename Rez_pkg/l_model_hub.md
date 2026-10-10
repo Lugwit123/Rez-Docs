@@ -141,6 +141,11 @@ POST /v1/chat/completions/multi
 
 - **钉死不降级**：每条都只打点名的那个厂商/模型 —— 一旦走降级链，就变成"同一个模型被问了好几遍"，
   对比失去意义（这是它与 `/v1/chat/completions` 的根本区别）。
+- **要「绝不降级、点名谁就是谁」就用这条**（哪怕只问一家）：`/v1/chat/completions` 是**降级链** ——
+  点名的模型失败时它按档位链换一个（`resp.model` 会告诉你实际用了谁）。要"失败就失败、不换"走这条。
+  （2026-10-10 之前它还有个 bug：带 `厂商/` 前缀的请求不会把点名的模型排第一，见 §6.2，**已修**。）
+- 火山方舟 DeepSeek 4.1 有两个写法，**官方 id 是点号的 `deepseek-v4.1-flash`**（在 `/v1/models/manual`
+  里，备注就是"官方 id（刷新拉不到，手动补）"）；静态清单里另有连字符的 `deepseek-v4-1-flash`，两条都能调通。
 - **并行 + 互不影响**：`asyncio.gather`；单条失败只体现在它自己的 `ok:false` + `error`，
   **整体始终 200**（一家挂了不拖垮其余）。
 - 返回：`{count, ok_count, results:[{request, provider, model, ok, content, usage, latency_ms, key_index, error}]}`
@@ -186,6 +191,12 @@ POST /v1/chat/completions/multi
 - 管理台：「概览 → 🏢 厂商 / 网关状态」标题右侧 **🔄 探测模型可用性**（旁边显示
   `已探 N 个 · 可用 X · 不可用 Y · 时间`）；每家厂商卡上多一个「**可用 N/M**」徽章（没探过显示
   「模型未探」）；「模型」页的模型卡上给不可用的打「不可用」徽章。
+- **结论会旧，只重探几个**（2026-10-10 踩过）：`meta.updated_at` 是**上次探测时间**，本机实测停了一天多的
+  旧结论里，火山 `deepseek-v4-1-flash` 被记成不可用 —— 于是消费方（降级链、管理台「对比」页的隐藏规则）
+  都绕开它，而它其实 200 可用。只重探少数：
+  `POST /v1/models/health {"only": ["volcengine/deepseek-v4-1-flash"]}`（也支持 `provider` 只探一家）。
+- **探「思考型」模型别把 `max_tokens` 给几十**：思考会先把预算吃光、正文返回空串，看起来像"调通了但没内容"。
+  `POST /v1/models/manual?verify=true` 的试调用特意给 128 就是这个原因（`server.py` 里有注释）。
 
 ### 语音合成（TTS）
 
@@ -274,6 +285,32 @@ plan 端点报 `does not support the agent plan feature` = 订阅网关不含视
 
 数据按标签**懒加载**（`ensureTabData`）：进入 `/admin/routing` 才拉优先级与档位，不再首屏把密钥/模型清单/自检一起拉。
 
+### 6.2 点名了却被静默换成代表模型（2026-10-10 实测 + 已修）
+
+**症状**：`POST /v1/chat/completions` 点名 `volcengine/deepseek-v4.1-flash`，回来的 `resp.model` 却是
+`doubao-seed-evolving`（同厂代表模型）。看着像"4.1 不可用"，其实它 200 可用 —— 别据此去查账号额度。
+
+**根因：`_chain_for()` 没剥厂商前缀。** 它拿**整串** `厂商/模型` 去 `find_model(id)` 查"谁持有这个模型"，
+而清单里的 id 都是**裸 id**，于是永远匹配不上 → `builtin_holders` 为空 → 直接掉进"代表模型兜底"
+（`auto/未知` 那条分支）。而 §3 文档**推荐的写法就是 `厂商/模型`** —— 所以凡是按文档写前缀的请求，
+第一跳都不会是点名的那个模型，全被静默顶替。
+
+**判据（一测就露）**：
+
+| 请求写法 | `GET /v1/chain?model=…` 的 `level` | 链首 |
+|---|---|---|
+| `volcengine/deepseek-v4.1-flash`（带前缀） | `std`（回落值，清单里其实 `eco`） | `volcengine/doubao-seed-evolving` ✗ |
+| `deepseek-v4.1-flash`（**裸 id**） | `eco` ✓ | `volcengine/deepseek-v4.1-flash` ✓ |
+
+所以排查时先看 `level` 是否回落 + 换裸 id 再问一次链：**链首随写法变，就是前缀没剥**。
+
+**已修（2026-10-10）**：`gateway._chain_for()` 在查 holders 前先 `mid.split("/", 1)[1]` 剥掉前缀。
+复验：带前缀点名 `volcengine/deepseek-v4.1-flash` → 链首就是它本身、真调 `used=deepseek-v4-1-flash-260910`
+（火山对 4.1 的回显）；`volcengine/deepseek-v4-flash` 同样链首自指。
+
+**若仍要"绝不降级"**：走 `/v1/chat/completions/multi`（§5.1，钉死点名的厂商/模型，失败就失败，
+不换模型）—— 与"降级链"用途不同，按需选。
+
 ## 7. 调用统计与时间维护（2026-09-28）
 
 计数**不再重启清零**，实现在 `usage_store.py`；**两个维度同时记**：厂商（`providers`）与
@@ -334,7 +371,9 @@ plan 端点报 `does not support the agent plan feature` = 订阅网关不含视
 | 症状 | 先查 |
 |---|---|
 | 插件 401 | 日志 `[gate] 401 … 凭据头=[…] token_len=…`；Base URL 是否 `/model_hub/v1`；改用 `sk-lmh-…` 接入密钥 |
-| 用的模型不是我要的那家 | `GET /v1/chain?model=<id>` 看实际链；模型不在清单 → `POST /v1/models/manual` 手动补 |
+| 用的模型不是我要的那家 | `GET /v1/chain?model=<id>`：**链首不是它** → 看 `level` 是否回落、并把 `<id>` 换成**裸 id** 再问一次（带前缀漏剥是 2026-10-10 的老毛病，§6.2，**已修**）；模型压根不在 `GET /models` 里 → `POST /v1/models/manual` 手动补；要"绝不换模型" → 走 `/v1/chat/completions/multi`（§5.1 钉死） |
+| 「某模型不可用」但单独探一下是 200 | 健康结论会旧（`meta.updated_at` 是上次探测时间）→ `POST /v1/models/health {"only":["厂商/模型"]}` 只重探它；另：只有 `unavailable` 会被隐藏，`transient`（429/5xx）不隐藏 |
+| `GET /v1/keys/<名>` 回 `configured:false`，以为没配 key | 该接口只看**中心存储里同名字段**；hub 实际用的名字是启动日志列的那 14 个（`volcengine` / `volcengine_access` / `volcengine_secret` / `volcengine_video` …），查 `volcengine_api_key` 这种不存在的字段名必然误判 |
 | 某厂商 400 但别家能用 | `litellm.drop_params` 是否生效；该模型是否在 `no_temperature` 名单 |
 | 调用统计不动 | `GET /v1/gateway/usage` 的 `persist` 段：`last_store`/`last_error`/`last_depot`/`depot_error`；再 `GET /v1/gateway/usage/flush` 手动落一次 |
 | depot 推送 400「请指定工作区」 | `usage_store.ensure_workspace()` 没建成（库名/账号不对）；直接调它看返回 |
