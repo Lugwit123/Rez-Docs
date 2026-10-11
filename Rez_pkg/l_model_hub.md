@@ -228,6 +228,38 @@ plan 端点报 `does not support the agent plan feature` = 订阅网关不含视
 填**普通方舟 API Key**（控制台另开通 Seedance 视频模型，按量计费）；都不填就退回 plan 钥匙，
 视频一定失败。`POST /video/task` 会依次试 `api/v3` → `api/plan/v3` 两个地址。
 
+### 图片生成（生图）：一条链，**链尾不需要任何密钥**
+
+| 路由 | 说明 |
+|---|---|
+| `POST /image` | `{prompt, provider?, size?, model?, timeout?}` → `{success, model, image_base64}`。**`provider` 留空 = 自动链**（见下表）；`free` = 只走不要钱的；点名某家 = **只打那一家**（不静默换家 —— 生图各家风格差得远，点名就是点名） |
+
+自动链顺序（第一个成功就返回；全失败时 `detail` 里带**逐家原因**，一眼看出是没钥匙还是限流）：
+
+| 顺序 | 后端 | 花不花钱 | 要什么 |
+|---|---|---|---|
+1 | `volcengine` 豆包 Seedream（`doubao-seedream-5.0-pro`） | 付费 | 火山方舟钥匙（Agent Plan） |
+2 | `modelscope` 魔搭 `Qwen/Qwen-Image` | **免费额度** | 魔搭账号 token（免费领：控制台 `myaccesstoken`） |
+3 | `zhipu` 智谱 **CogView-3-Flash** | **免费模型** | 已有的智谱钥匙（和免费 chat 的 `glm-4-flash` 同一把） |
+4 | `pollinations` **flux / turbo** | 名义免费 | 匿名**不填也算**，但额度极小（见下） |
+
+- **要"稳定免费出图"选第 3 家**（`provider="zhipu"`）：CogView-3-Flash 是免费模型，实测连续调用多次都 200。
+- 第 4 家（Pollinations）**别当主力**：2026-10-11 实测 —— 匿名第一发 200，**紧接着第二发就 `402`**
+  （`/image` 会翻成 502，错误文案里写明"匿名额度已用完"）。注册后在管理台「密钥」页填一把
+  `pollinations` token（或环境变量 `POLLINATIONS_API_KEY`）可提额，代码会带 `token=` 查询参数
+  —— ⚠ 这条**没验过**（手上没 token），只按它对外的接口形状接的。
+- `provider="free"` = 只走不要钱的那几家（跳过第 1 家）。
+- `size`：`"1024x1024"` 这种；各家认得的用、不认的忽略（火山默认 2048、其余 1024）。
+- `model`：只对认 model 的后端有意义（如 pollinations 的 `flux` / `turbo`）。
+- **AI 节点（`/pygraph` 的 `AIImage`）走的就是这条路由**：节点上 `provider` 留空 = 自动链、
+  `size` / `model` 原样透传；节点**不再**替你填 `volcengine`（填了就等于把"换个家也能出图"堵死）。
+  模型下拉的候选来自 `GET /v1/models/catalog?tag=image`（不是 `/available`）—— 生图模型没人探活，
+  用 `/available` 会一个都不显示。
+
+⚠ **`pollinations` 在 `models.json` 里带 `"chat": false`**：它只出图，不参与 chat 自检与网关降级
+（`providers.chat_enabled()` 判它）。少了这个标记，管理台会给它挂一条**假的**红灯（它其实好好的），
+排错时最误导人 —— 加"纯生图/纯某模态"的厂商时记得带上。
+
 ### 密钥与积分
 
 | 路由 | 说明 |

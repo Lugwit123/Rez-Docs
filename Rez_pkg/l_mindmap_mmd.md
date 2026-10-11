@@ -2,6 +2,10 @@
 
 > 面向 AI 助手的包文档。编辑、排障本包功能前先读本文件；涉及 `.solo` 守卫 / 热重载 / 反代的
 > 机制细节见 `solo_单实例守卫模式.md` / `src_hot_reload_源码热重载与主页常驻.md` / `Nginx反向代理机制.md`。
+>
+> ⚠ 本包的服务上跑着**两套**编辑器，别混：`/flow/<名字>` = **agent 流程图**（本文）；
+> **`/pygraph/<名字>` = 节点 python**（`l_node_engine` 引擎，跑任意 python 对象/函数/类）——
+> 那一套的用法、执行面开关、白名单与坑见 **`l_node_engine.md`**。
 
 ## 这是什么
 
@@ -20,7 +24,9 @@ wuwo svc log l_mindmap_mmd -f
 wuwo svc open l_mindmap_mmd
 ```
 
-- 服务别名：`l_mindmap_mmd_server`（= `python -m l_mindmap_mmd.server --host 0.0.0.0 --port 8110`）
+- 服务别名：`l_mindmap_mmd_server`（= `python -m l_mindmap_mmd.server --host 127.0.0.1 --port 8110`，
+  **只绑本机**：`/api/pygraphs/{name}/run` 是任意 python 执行面，不许对外暴露）与
+  `l_mindmap_mmd_server_exec`（同上但 `L_MINDMAP_ALLOW_RUN=1`，**打开执行面**；卡片当前指这条）。
 - 带 `.dev_mod`（`L_DEV_MOD`）：改 `src/**` 会热更自重启；改 `web/src/**` 需 `npm run build`
   （产物进 `src/l_mindmap_mmd/static/dist`）后浏览器**硬刷新**——`main.js` 无版本哈希，易被缓存。
 - 前端开发：`wuwo svc` 之外的 `l_mindmap_mmd_web_dev` 别名起 Vite :5175，`/api` 代理到 :8110。
@@ -32,6 +38,59 @@ wuwo svc open l_mindmap_mmd
 | `/` | 编辑器主页（流列表 + 画布） |
 | `/flow/{name}` | 打开指定流程图 |
 | `/settings` | 兼容旧链接：进入编辑器并自动打开右侧「连线显示设置」面板 |
+
+## 登录授权（lugwit_auth 统一闸门，2026-10-11 接入）
+
+页面与 API 都走**统一登录**（`rez-package-source/l_mindmap_mmd/999.0/src/l_mindmap_mmd/gate.py`），
+闸门原语来自 `lugwit_auth_client.gate`（**唯一实现**，本包只接线）。整体台账见 `各包登录接入台账.md`。
+
+| 情形 | 行为 |
+|---|---|
+| 未登录 **页面**（`/`、`/classic`、`/settings`、`/flow/x`、`/pygraph/x`，或 `Accept: text/html`） | **302** `http://<入口>/login?next=<反代前缀+路径>` —— 登录页在 **nginx 入口根**（交给 lugwit_auth），**绝不能加前缀**（`/mindmap-mmd/login` 是 404 白页，网盘 / model_hub 都踩过） |
+| 未登录 **API** | **401** `{"detail": …, "auth_required": true}` |
+| 已登录（cookie `lugwit_token` / `Authorization: Bearer <token>` / env `LUGWIT_ACCESS_TOKEN`） | 照常；`GET /api/auth/me` 回 `{authed, user, role, role_label, local_direct}` |
+| **本机直连**（peer 回环 **且** 无 `X-Forwarded-*`）的 **只读** 请求（GET/HEAD） | 免登录（本机 curl / 脚本 / 直接开 `:8110` 照旧）；**写类与 `/api/pygraphs/{name}/run` 仍要登录** |
+
+- 开关：`L_MINDMAP_LOCAL_NO_AUTH=0` 关掉"本机直连只读免登录"；`LUGWIT_AUTH_URL` 指定 auth 地址
+  （默认 `http://127.0.0.1:8080`，服务端调 auth 一律走回环 nginx 入口）。
+- ⚠ **这条豁免要求 nginx 真带 `X-Forwarded-For`**：`/mindmap-mmd/` 与 `/mindmap-mmd-dev/` 两个
+  location 一旦自己声明 `proxy_set_header`，http{} 级的同组头全部失继承 —— 少了 XFF，经反代进来的
+  请求会被判成"本机直连"（2026-09 同类事故）。所以这两段**整组重声明**（见 `l_nginx/conf/routes.conf`）。
+  连带加了 `proxy_redirect ~^/login…`（保住根级登录页）与 `proxy_buffering off`（SSE 端点别攒着吐）。
+- 实测（2026-10-11）：未登录走反代 `/mindmap-mmd/pygraph/demo_all_nodes` → 302 → `…/login?next=/mindmap-mmd/pygraph/demo_all_nodes`；
+  `/api/pygraphs` → 401；带 cookie 反代读写 → 200；直连 GET → 200、直连 PUT → 401、直连 PUT+Bearer → 通过；
+  浏览器经网关打开编辑器且 `/api/auth/me` 回 `admin01 · 管理员`（`local_direct: false`）。
+- 依赖：`requires` 里加了 `lugwit_auth_client`（轻依赖客户端包）。
+- ⚠ 改了 `lugwit_auth_client`（共享包）后要 **reload 本服务** —— 热更只盯本包目录，共享包的改动
+  只有重启进程才生效（同 `l_node_engine` 那条坑）。
+- 自证怎么跑：改 `gate.py` → 重建无关，但**必须 reload 服务**，然后按上表逐条 curl
+  （反代页面 302 / 反代 API 401 / 带 cookie 200 / 直连 GET 200 / 直连写 401 / 直连写+Bearer 通过
+  + `GET /api/auth/me`）。⚠ 用 `curl` 而不是 `urllib` 看 302：`urllib` 默认**跟随跳转**，
+  会把"302 到登录页"显示成 200 的登录页 HTML（我自己就先被它骗了一次）。
+
+## 与环境、与 pygraph 的关系
+
+`/flow/<名字>` 是 agent 流程图；**`/pygraph/<名字>` 是节点 python**（`l_node_engine` 引擎，
+跑任意 python 对象/函数/类），用法/执行面开关/白名单/AI 节点后端见 **`l_node_engine.md`**。
+AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目录，与 `pygraphs/` 平级** —— 别放图目录里，
+那里任何 `*.json` 都会被当成一张图、还会跟用户的图名 `ai` 撞车；面板「AI 服务」可写，
+`GET|PUT /api/pygraphs/ai-config`，凭据只回掩码）。
+
+## 路径口径：**别写根绝对 `/api/...`**（踩过两次，2026-10-11）
+
+页面可能挂在反代前缀下（`/mindmap-mmd/`、dev 的 `/mindmap-mmd-dev/`），所以请求前端一律走
+**「`__API_BASE` 非空就拼前缀，否则用相对路径 `./api/...`」**这一套 —— 现有三处实现，改的时候必须一致：
+`pyApi.js`、`flowApi.js`、`valueSources.js`（参数候选/值列表，`desc.api` 也按这套解析）。
+
+- 写 `fetch("/api/xxx")` = **根绝对**：经前缀进来会逃出前缀、被别的 location 接走 → 404（dev 与生产都 404，
+  控制台只留下一句 `Failed to load resource`，很容易被当成后端没这个接口 —— 其实直连 `:8110` 是 200）。
+- **静态资源同理**：模板/页面里的 `static/...` 靠 `<base href>` 解析（`flow.html` 由服务端静态写入，
+  dev 壳 `web/index.html` 用内联脚本归一化到应用根）。
+
+**标签页图标**：唯一来源 `static/favicon.svg`（🧠），生产页（`templates/flow.html`）与 dev 壳（`web/index.html`）
+**各引一行同一个文件**。dev 下这条相对路径由 Vite 的 `/static` 代理转给后端出图（见 `vite.config.js`）——
+别把图标再复制一份到 `web/public/`（两份早晚不一样）。dev 壳少了那行 `<link rel="icon">` 时，
+浏览器会去猜根路径的 `/favicon.ico`（那是主页的图标），表现就是"标签页没图标"。
 
 ## 核心功能
 
@@ -73,8 +132,11 @@ wuwo svc open l_mindmap_mmd
   `avoidPad, softMargin, softRamp, softStep, showSamples, showAvoidBounds`（碰撞与避让）、
   `borderRadius, strokeWidth, backWidth, backOpacity, arrowDur, trailCount, arrowSize, dashGap,
   labelFontSize, showLabels`（线型与箭头）、`showGrid, showFps, layoutCol, layoutRow, layoutX0,
-  layoutY0`（画布与布局）。面板按这四组折叠（折叠态存浏览器 localStorage），数值胶囊点一下可手输数字
+  layoutY0`（画布与布局）、`allowAllPython`（Python 节点）。面板按这五组折叠（折叠态存浏览器 localStorage），数值胶囊点一下可手输数字
   （单位按参数自动补、越界自动夹紧）。
+- `allowAllPython`（**默认 true** = "默认运行全部"）：python 节点图的导入白名单整表放行 —— 宿主在
+  跑图 / 问端口 / 取节点元数据前给本进程设 `L_NODE_ENGINE_ALLOW_PKGS=*`（通配语义见 `l_node_engine.md` §2.4），
+  **不动**用户的 `allow.json`；关掉则还原进程启动时的原值。⚠ 打开后任意 python 模块都能被导入/实例化。
 - 后端读写是**扁平键值 YAML 子集**（`server.py` 的 `_yaml_load/_yaml_dump`），无第三方依赖；API 面走 JSON。
 
 ## 流程图文件与 API
@@ -91,7 +153,7 @@ wuwo svc open l_mindmap_mmd
 |---|---|---|
 | GET | `/api/flows` | 流列表 |
 | GET | `/api/flows/{name}` | 取流程图 JSON |
-| PUT | `/api/flows/{name}` | 保存流程图（编辑器自动保存也会 PUT） |
+| PUT | `/api/flows/{name}` | 保存流程图（编辑器自动保存也会 PUT）；**校验不过也照写**，原因在响应的 `warning` 字段 |
 | DELETE | `/api/flows/{name}` | 删除 |
 | GET | `/api/settings` | 读设置（`?reset=1` 恢复模板默认） |
 | PUT | `/api/settings` | 写设置（增量合并，落 YAML） |
@@ -123,4 +185,6 @@ wuwo svc open l_mindmap_mmd
 | `L_MINDMAP_MMD_RUNTIME` | 覆盖本包的 runtime 目录（`_runtime_dir()`：热更/守卫的运行时目录，默认 `~/.lugwit/l_mindmap_mmd/runtime`） |
 | `L_AGENT_CHAT_FLOWS_HOME` | 覆盖 flows 目录（**与 l_agent_chat 运行端同源**，默认 `<实例数据根>/l_agent_chat/flows`，即 `~/.lugwit/main/l_agent_chat/flows`；`L_AGENT_MARKET_HOME` 亦可） |
 | `L_MINDMAP_MMD_SETTINGS` | 覆盖 settings 目录（默认 `~/.lugwit/l_mindmap_mmd`） |
+| `L_MINDMAP_LOCAL_NO_AUTH` | `0/false/no/off` = 关掉"本机直连只读免登录"（默认开） |
+| `LUGWIT_AUTH_URL` | 登录闸门验签用的 auth 地址（默认 `http://127.0.0.1:8080`，走回环 nginx 入口） |
 | `L_MINDMAP_HOST` / 端口 env | 监听地址 / 端口（默认 8110，`PORT_ENV` 亦可） |
