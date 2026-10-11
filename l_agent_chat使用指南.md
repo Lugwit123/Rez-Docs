@@ -500,7 +500,18 @@ wuwor l_agent_chat -- l_agent_chat_turn_replay ^
   `sandbox_network` 打开（授予 AppContainer `internetClient` 能力）。
 - **不静默降级**：开关开着但沙盒不可用（非 Windows / API 缺失 / 授权失败）时，命令返回
   明确错误，绝不悄悄改成非沙盒执行。
-- 能力探测：`GET /api/sandbox/status`；设置页「WebSocket 终端」卡内也会显示可用性。
+- 能力探测：`GET /api/sandbox/status`（返回里带 `enabled` / `scoped`）；设置页「WebSocket 终端」卡内也会显示可用性。
+- **本次运行作用域**（2026-10-10，`sandbox.scoped` / `sandbox.policy()`）：上面两项是**整机**设置，
+  另有一套**只在某几路执行里生效**的覆盖 —— `multi_agent` 的每一路就是这样把自己**强制**关进
+  沙盒 + 授权联网的，**不改**用户的全局开关（否则主 agent 会被顺手改掉）。
+  - 实现是 ContextVar（可嵌套，出作用域自动还原）；`run_in_executor` 之前拷过
+    `contextvars.copy_context()`，所以线程里拿到的仍是作用域内那份策略。
+  - `run_command` 一律按 `policy()` 决定怎么起进程；`policy()` 返回
+    `{enabled, network, fallback, scoped}`。
+  - **降级口径与全局不同**：全局开关开着时"绝不悄悄降级"（不可用就报错）；**作用域里**
+    `fallback=True` 允许降级成真实执行，但必须**如实标注** —— 工具结果带
+    `sandboxed: false` + `sandbox_error` + 一行 `note`（用户口径 2026-10-10：
+    "尽量沙盒，否则降级并标注"）。
 - 实测限制：
   - 授权走 `icacls … (OI)(CI)M` 写**可继承 ACE**，会传播到目录已有子项并在 ACL 上留痕；
     **大目录首次授权可能较久**（幂等，已存在则跳过）。
@@ -731,8 +742,32 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
   下面，结果是这条回复的**新版本**（`◀ i/N ▶` 可切回）。取消勾选则另发一条用户消息。
 - **档位**：`off` / `low` / `high` / `max`（与「思考强度」四档同名），逐路可不同；卡头把"本轮实际用的
   档位"和"下次用哪档"分开显示（证据 + 选择）。
-- 其他：模型清单来自 hub `/models/available` 的"探过且可用"清单；`multi_ai` 属**写类工具**，
-  演练模式（`flow_evolve.dry_run`）下会被拒；同一轮重复调同一个调用签名会被护栏跳过。
+- **审核人（超时代拍板）**（2026-10-10，`multi_review.py`）：配置卡底部「审核人」下拉选一家
+  —— 留空 = 用**底部输入框那对 provider/model**（`multi_review.resolve`）。两个等待点都由它兜底：
+  - **配置卡等不到用户**（`config.ASK_TIMEOUT` 默认 600s）→ 审核人读提问 + 候选模型清单，
+    挑名单 + 各家档位 → **直接开始并答**，卡上标「审核人自动选定」（`decide_config`）；
+  - **方案都出齐后等不到用户选**（`MULTI_PICK_TIMEOUT` 默认 60s）→ 审核人读各家方案，
+    选一份 + 给理由（`pick_plan`）→ 经 `multi_card.picked_note` 拼成"按这份方案继续动手"的指令，
+    **在该轮内直接接着跑**（**不新增消息**）。
+  - 审核人是**旁路单次调用**（`aside.one_shot`，不落盘、不进对话上下文）；解析失败 / 答非所问
+    一律返回空 → 回落"继续等用户"，**绝不抛**。
+- **方案选取（等用户点）**：方案都出来后落一张 `multi_pick_required`，点某一格（或直接点
+  「✅ 用这个方案」）→ `POST /api/multi/pick {multi_id, key, reason?}`；用户选定与审核人选定
+  走**同一条**落地路径（`picked_note`），都在**那一轮里阻塞等待**。
+- **`/multi_agent`（带工具的多家并答）**（2026-10-10，`multi_agent.py`）：**同一个卡片家族**，
+  差别只在"每路怎么跑" —— 各家拿到**全量工具**（去掉交互/委托类：`ask_user` / `question` /
+  `suggest` / `interactive_terminal` / `task` / `spawn_subagent` / `multi_ai` / `multi_agent` /
+  `optimize_agent` / `session_review`）先自己动手调查，**只出方案、不改文件**（`multi_agent.PLAN_NUDGE`
+  是提示词口径，**工具层没禁写**），再各给一份。每路的工具调用走 SSE `multi_tool`，卡上每格渲染一个
+  「工具流水」折叠块（工具名 / 成功失败 / 耗时 / 一行结论）。
+  - **沙盒**：每路跑在**强制的沙盒 + 联网**里（`sandbox.scoped`，见「终端沙盒化」）；建不起来
+    （非 Windows / 授权失败）则**降级成真实环境**并在结果里如实标 `sandboxed: false` + `sandbox_error`。
+  - **每路步数在卡上可调**（`multi_agent.norm_steps`，默认 3，夹 1..20；写 0 也按 1 算）。
+  - 触发：斜杠 `/multi_agent`，工具名 `multi_agent`（常驻声明集 `tool_router.CORE_NAMES` 里与
+    `multi_ai` 并列）。卡片级「⚖ 并答」/「↺ 重置」/「✅ 用这个方案」与 `multi_ai` **完全同口径**
+    —— 卡片元数据里带 `tool` / `steps`，`POST /api/multi/rerun` 据此分流。
+- 其他：模型清单来自 hub `/models/available` 的"探过且可用"清单；`multi_ai` / `multi_agent` 属
+  **写类工具**，演练模式（`flow_evolve.dry_run`）下会被拒；同一轮重复调同一个调用签名会被护栏跳过。
 
 ### 输入框命令（`/` 与 `@`）
 
@@ -823,6 +858,9 @@ ignore 治理 / 注册表 PATH 补齐 / rg 后端 这三项属于 `l_agent_tool`
 | `POST /api/review-turn` | **按消息复盘**（消息底部「🧠 复盘」）：取证这一轮 → 结论 → 待确认改动 + 沙箱 A/B（见「消息操作与发送队列」） |
 | `POST /api/session/branch-check` | **分支后的文件改动**拍板：`{action: "keep" | "undo", files?}` —— 保留只清标记；撤销用那些改动**之前**的快照写回（不给 `files` = 全撤，见 `branch_changes.py`） |
 | `POST /api/review-apply` | 落地复盘里**用户确认过**的改动（图参数 / 笔记 / 记忆；改图先备份，见 `flow_evolve.apply_edits`） |
+| `POST /api/multi/config` | **并答配置卡**提交：`{multi_id, models, levels, reviewer?, steps?, q?}` —— 点「⚖ 开始并答」才真去问；`reviewer`（审核人）与 `steps`（多 agent 每路步数）卡上改完随这次带上。超时 = 审核人代拍板（见「多模型并答」） |
+| `POST /api/multi/pick` | **并答方案选取**：`{multi_id, key, reason?}` —— 选某一格，那一轮的阻塞等待就地继续（`by:"user"`）；`multi_id` 已结束/未知返回 `ok:false`。超时 = 审核人代选 |
+| `POST /api/multi/rerun` | **卡片级重跑**（卡上「⚖ 并答」）：只重跑这张卡，不跑规划/复述/配置卡；卡片元数据里 `tool=multi_agent` 时走多 agent 那条路（带 `steps`） |
 | `GET /api/sandbox/status` | 终端沙盒能力探测（仅 Windows，AppContainer） |
 | `GET/POST/DELETE /api/permission-rules` | 权限规则（saved 层）列表 / 追加 / 删除 |
 
@@ -958,6 +996,7 @@ wuwor l_agent_chat -- python tests/run_all.py -v      rem 逐条看用例名
 | `spell_learn_enabled` | — | `1` | **纠错经验库**总开关（记 + 注入；关掉 = 不学也不用） |
 | `permission_mode` | — | `default` | 权限模式：`default` / `allow_all` / `autopilot`（见「审批与权限模式」） |
 | `auto_approve` | — | `1` | 工具自动批准（**仅 `default` 模式**的旧回落；`allow_all`/`autopilot` 覆盖它） |
+| `multi_pick_timeout` | — | `60` | **并答方案选取**的最长等待（秒）：到点由**审核人**代选一份并接着跑（见「多模型并答」）；`0` = 不等待（测试夹具用这个口径） |
 | `mobile_msg_height` | — | `66` | 移动端单条消息气泡限高（屏幕高度百分比，`0` = 不限；≤860px 生效） |
 | `rez_roots` | `AGENT_CHAT_REZ_ROOTS` | 源码+3rd 仓库 | rez 包仓库根（`;` 分隔） |
 | `rules_enabled` | `AGENT_CHAT_RULES_ENABLED` | `1` | 工作区规则注入总开关 |
