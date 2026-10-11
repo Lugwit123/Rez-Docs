@@ -91,6 +91,7 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 | 控件 | 作用 | 存在哪 |
 |---|---|---|
 `▶ 运行` | 手动跑一次（SSE 推进度/结果） | — |
+`鼠标手势` | 左键 = **点选 / 框选**（**不平移**）；中键 / 右键**拖** = 平移；右键**单击** = 右键菜单；滚轮 = 缩放。参数（`selectionOnDrag` + `panOnDrag={[1, 2]}`）**与流程图编辑器逐字一致** —— 两套画布手感必须一样；React Flow 默认是"左键拖 = 平移"，与节点编辑器的肌肉记忆相反（用户口径 2026-10-12） | — |
 `运行日志` | **画布底部**的横带（横跨画布 + 属性面板整条底边，可「收起」成一行；收起后画布自动长高） | 运行时状态 |
 `⚡ 实时` | **改动即跑**：结构改动（加删节点/连线/改参数/切标志位）后 700ms 防抖自动保存并运行；突发改动合并成一次。开开关时先跑一次 | `localStorage.pygraph.live`（不进图文件） |
 `⊞ 吸附` | 拖拽吸附 15px 网格 | `localStorage.pygraph.snap` |
@@ -234,9 +235,9 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 |---|---|---|
 `l_node_engine/flow` | `LoopStart` / `LoopEnd` | 循环括号。**不要画回边**：`LoopStart → 循环体 → LoopEnd`，环由执行器接管。`LoopEnd.items` 是逐轮收集，`state` 回灌下一轮。轮数上限 `L_NODE_ENGINE_MAX_ITERATIONS`（兼容旧名 `L_COMFYUI_MAX_ITERATIONS`） |
 `…/objects` | `MakeInstance` | 造实例。`target`（路径/已注册键）**或** `class_ref`（类对象，优先）；`init_args` 是构造 kwargs 的 JSON；`singleton` 决定复用 |
-| | `CallMethod` | 调对象方法。固定三项 `target/method/kwargs_json` + `class_ref` 可选；**方法参数端口按节点问**（见坑 2） |
+| | `CallMethod` | 调对象方法。固定三项 `obj_path/method_name/call_args` + `class_ref` 可选；**方法参数端口按节点问**（见坑 2） |
 | | `GetAttr` / `GetItem` | 取属性 / 取下标（纯数字当整数下标；可取不到给 `fallback`） |
-| | `CallFunction` | 按 `module:func` 调任意函数（也支持 `module.Class.method`），端口按签名展开；保留名 `path`/`kwargs_json` |
+| | `CallFunction` | 按 `module:func` 调任意函数（也支持 `module.Class.method`，走导入白名单），端口按签名展开；固定输入 `func_path`/`func_args`（**任意**函数参数名都能直接上端口，含 `path`）；**位置专用参数**（`len(obj, /)` / `operator.sub(a, b, /)`）也展开，执行时按签名顺序绑到 `*args` |
 `…/classes` | `LoadClass` | 路径 → **类对象**（蓝图 Class Reference 引脚），另给路径字符串 |
 | | `ClassOf` | 对象 → 所属类 |
 | | `ClassInfo` | 类 → name / module / qualname / bases / doc |
@@ -246,6 +247,7 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 `…/io` | `Input` | 图的**参数入口**（= agent 工具的形参）：`name` / `value`（默认值）/ `type` / `description` |
 | | `Output` | 图的**返回值出口**（= 工具返回）。按 ComfyUI 约定返回 `{"result": …, "ui": …}`，`ui` 供画布内联预览 |
 | | `Preview` | 显示任意结果：**原样透传**（插在链中间不断流），同时把值交给画布渲染（`mode` = auto/text/json/repr） |
+| `…/note` | `Note` | **画布注释**（2026-10-12）：`text` 是 Markdown，画布上渲染成便签、**双击就地编辑**（`Esc` 放弃）。**不参与执行** —— `execute` 返回空 tuple，跑图时就是个空操作（但必须注册：没注册的 class_type 执行器会报 `Unknown node class`）。前端渲染见 `l_mindmap_mmd` 的 `PyNote.jsx` + `markdown.js`：**marked 解析 + DOMPurify 消毒**（两步都要 —— marked 不做消毒，注释里的 `<script>`/`onerror`/`javascript:` 全靠 DOMPurify 删；实测探针通过） |
 
 ## 四、坑（按"会咬人"排序）
 
@@ -259,6 +261,27 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 8. **前端产物没有内容 hash**：模板里用 `?v={{ asset_ver() }}`（`main.js` 的 mtime）做 cache-busting。**症状：改了前端、重建了，页面却像没变 → 先怀疑浏览器缓存**（我自己被坑过一次）。
 9. **超时只是"放弃等待"**：Python 杀不掉线程，节点里死循环会继续跑（超时事件文案里写明了）。执行也是单线程串行，SSE `abort` 只是前端不再读。
 10. **`Output` 的 `{"result","ui"}` 形状**：`ui` 是给宿主做**节点内联预览**的（前端按 ui 的**键名**选渲染器：`text`/`json`/`repr`/`value`）。`run_pygraph` 取 `result`；SSE 汇总也按 `result` 呈现，别把整只 dict 丢给前端。
+11. **换函数/方法后，旧参数键会留在图的 `inputs` 里**：`_resolve_inputs`（`graph.py`）不按签名过滤，
+   `CallFunction`/`CallMethod` 又把端口传来的键当 kwargs 打下去 —— 于是把 `path` 从
+   `fs_nodes:list_dir` 改成 `os.path.exists` 会以 `takes at most 1 keyword argument (3 given)` 失败
+   （残留的 `root`/`pattern`/`detail`），而画布上**看不见**它们（端口是按**新**签名展开的）。
+   2026-10-12 修：两个节点执行前用 `introspect.keyword_names()` 只收**当前签名认的**键
+   （带 `**kwargs` / 签名读不出 → 照旧全收），忽略的键打 WARNING —— 宿主挂了 `l_node_engine` 的
+   WARNING handler，能在 `wuwo svc log l_mindmap_mmd_server_exec` 里看到。
+   ⚠ 副作用：参数名**打错**也只会被忽略 + 一条警告（不再报错），排错要看日志。
+   另一条相关口径（**2026-10-12 已修**）：函数自己的参数名以前会撞节点的**固定输入名**
+   （`path`/`kwargs_json`；`CallMethod` 还有 `target`/`method`），撞上就永远拿不到端口、只能走 `kwargs_json`
+   —— 像 `os.listdir(path=…)` / `os.path.isdir(path=…)` 这类根本没法动态传参。现在固定输入改名为
+   `func_path`/`func_args`（CallFunction）与 `obj_path`/`method_name`/`call_args`（CallMethod），
+   **任意参数名都照原样展开**。老图不需要手工迁移：读图 / 跑图 / 存图都会把旧键映射成新键
+   （`server.py` 的 `_migrate_legacy_inputs` + 引擎两个 `execute` 里的 `LEGACY_INPUTS` 兜底）。
+   相关的第二条（**2026-10-12 一起补的**）：**位置专用参数**照常展开成端口，执行时按签名顺序绑到
+   `*args`（`introspect.positional_names` + `objops`/`callmethod` 的 `func(*args, **merged)`）。
+   没有这条时 `len(obj, /)` / `operator.sub(a, b, /)` / `glob` 之外的多数内置函数"端口有但调不动"
+   （`takes no keyword arguments`），图里就**没法数长度、没法做算术、没法拼字符串** ——
+   只能回头用引擎自己的 kwargs 友好函数。
+   ⚠ 仍有表达不出来的：`os.path.join(a, *p)` 这类 **VAR_POSITIONAL**、`str.join` 这种要先有实例的
+   （`self` 被跳过）、以及 f-string 式的字符串拼接（没有可用的 kwargs 版格式化）。
 
 ## 五、怎么自证（改完跑什么）
 
@@ -275,6 +298,22 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 
 > ⚠ 跑任何**带 AI 节点**的图之前，先在右侧「AI 服务 ▸」里配好模型中心凭据（lugwit 账号密码，或接入密钥）：
 > 节点是在**服务进程里**打模型中心的，拿不到浏览器的登录态（见 §3.0.1）。
+
+**AI 节点的「模型」下拉**（候选 = 模型中心清单里**该能力**的那批，见 `ai_nodes.model_spec`）：
+
+- 候选**全部来自接口**（`/api/pygraphs/ai-models`，按 `tags` 筛能力），文生图节点里不会列出只会聊天的模型；
+- ⛔ **别在节点声明里塞"默认模型"当候选**：控件会把"当前值"补进选项列表，于是界面上冒出一个
+  **接口从没返回过**的取值，看着就像候选是硬编码的（`default="auto"` / `default="whisper-1"` 都踩过，
+  2026-10-12 已改成**空默认**）。要 `auto` 就走下拉右侧的 ✎ 自由输入。
+- 选中的值会真的发给模型中心（`厂商/模型`）；**留空 = 不指定**，由上游自己挑（模型中心走降级链，
+  各家出图/语音用自家默认常量）。
+- ⚠ **「（不可用）」徽章 = 探过且确实不可用**（`probed && !available`），**不是**"没探过"：
+  生图 / 视频 / 语音这几类**根本不做探活**（探一次要真出一张图/一段音频），永远是
+  `available=false, probed=false`。只看 `available` 会把整张 image 列表染红 —— 2026-10-12 用户
+  当场问"为啥全部标注不可用"（而那几个模型刚跑出过图）。所以宿主 `/api/pygraphs/ai-models`
+  必须把 `probed` 一起透出去（`server.py`），前端在 `valueSources.js` 里只按 `probed && !available` 加后缀；
+  上游没给 `probed` 就**不标**（宁可不评价，也别把没验证过的说成坏的）。
+- 示例图 `demo_ai_image` 已经把两个模型都**显式钉住**：`zhipu/glm-4-flash` + `zhipu/cogview-3-flash`（都免费）。
 
 ## 六、已知未做 / 限制
 

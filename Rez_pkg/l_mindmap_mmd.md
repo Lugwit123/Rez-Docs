@@ -15,6 +15,8 @@
 图和运行端（`l_agent_chat/flow_spec.py` / `flow_engine.py`）共用**同一份 flows 目录**，这里改完即生效。
 
 前端基于 **React Flow**（`@xyflow/react`），构建产物在 `web/dist`，由 FastAPI（`src/l_mindmap_mmd/server.py`）托管。
+另有两枚前端依赖：`marked` + `dompurify` —— python 节点图的**注释节点**（`Note`）在画布上渲染 Markdown
+（marked 解析、DOMPurify 消毒，见 `web/src/markdown.js`；两步都不能省）。
 
 ## 启动 / 服务
 

@@ -248,9 +248,17 @@ plan 端点报 `does not support the agent plan feature` = 订阅网关不含视
   （`/image` 会翻成 502，错误文案里写明"匿名额度已用完"）。注册后在管理台「密钥」页填一把
   `pollinations` token（或环境变量 `POLLINATIONS_API_KEY`）可提额，代码会带 `token=` 查询参数
   —— ⚠ 这条**没验过**（手上没 token），只按它对外的接口形状接的。
+- ⚠ **生图模型永远 `probed=false`**（没人给它做探活：探一次就得真出一张图）。
+  `/v1/models/catalog` 会同时给 `available` 与 `probed`，**消费方必须看 `probed`** ——
+  只看 `available` 的话这一整类都是 `false`，界面上会全被标成"不可用"
+  （2026-10-12 在 pygraph 的模型下拉上就是这么翻车的，见 `l_node_engine.md`）。
 - `provider="free"` = 只走不要钱的那几家（跳过第 1 家）。
 - `size`：`"1024x1024"` 这种；各家认得的用、不认的忽略（火山默认 2048、其余 1024）。
-- `model`：只对认 model 的后端有意义（如 pollinations 的 `flux` / `turbo`）。
+- `model`：**真的会用它**（2026-10-11 起）。编辑器下拉给的是 `厂商/模型`（如 `zhipu/cogview-3-flash`），
+  本服务**只剥本厂商前缀**再发给上游 —— 模型 id 自己带斜杠的不受影响（魔搭是 `Qwen/Qwen-Image`）；
+  前缀是别家时原样透传（上游报 400，不会静默换成自家的默认模型）。留空 / `auto` = 各家默认常量。
+  实测：`model=zhipu/cogview-3-flash` → 200；`model=zhipu/definitely-not-a-real-model` → 502
+  「智谱图片生成失败: HTTP 400」（= 模型值确实传到了上游，不是装饰）。
 - **AI 节点（`/pygraph` 的 `AIImage`）走的就是这条路由**：节点上 `provider` 留空 = 自动链、
   `size` / `model` 原样透传；节点**不再**替你填 `volcengine`（填了就等于把"换个家也能出图"堵死）。
   模型下拉的候选来自 `GET /v1/models/catalog?tag=image`（不是 `/available`）—— 生图模型没人探活，
