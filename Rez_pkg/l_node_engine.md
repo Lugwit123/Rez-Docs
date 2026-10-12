@@ -46,7 +46,7 @@ wuwo svc restart l_mindmap_mmd_server          # 最后手段，会中断在用�
 
 卡片（`l_homepage` 的 `l_mindmap_mmd_server`）目前指向 `l_mindmap_mmd_server_exec`；想关就把 `run_args` 换回 `l_mindmap_mmd_server`（`wuwo svc` 用 `packages + run_args` 拼命令，`run_cmd` 只是展示）。
 
-其它旋钮：`L_MINDMAP_RUN_TIMEOUT`（墙钟超时，默认 60s）、留痕 `~/.lugwit/main/l_mindmap_mmd/pygraphs/runs.jsonl`。
+其它旋钮：`L_MINDMAP_RUN_TIMEOUT`（墙钟超时，默认 60s；**2026-10-12 起可被请求体的 `{"timeout": N}` 覆盖**）、留痕 `~/.lugwit/main/l_mindmap_mmd/pygraphs/runs.jsonl`。
 **别在公网部署机上开这个开关，也别把 `--host` 改回 `0.0.0.0`。**
 
 ### 2.4 导入白名单（"能 import 哪些包"）
@@ -59,6 +59,16 @@ wuwo svc restart l_mindmap_mmd_server          # 最后手段，会中断在用�
 
 被拒绝时错误信息会**直接写出这两个办法**（含 `allow.json` 的绝对路径）—— 别把它当成"路径写错了"。
 
+**结构校验（2026-10-12）**：`l_node_engine.validate_structure(prompt) -> {"errors": […], "warnings": […]}`
+—— **不执行**就告诉调用方这张图跑起来会不会炸（未知节点 / 悬空连线 / 缺必填 / 括号配不上 / 真环 / 状态不成对）。
+实现**直接调执行器那套计划器**（`_build_loop_plans` / `_build_if_plans` / `_topological_sort`），
+所以不会出现"校验说没事、跑起来 GraphPlanError"。宿主入口见 `l_mindmap_mmd.md` 的 `/validate`。
+
+**演练模式（dry-run，2026-10-12）**：`l_node_engine.set_stub(fn)` / `get_stub()` —— `fn(node_id,
+class_type) -> bool`，判 True 的节点**不执行**、直接产出 `(None,)`（事件里带 `stubbed: true`）。
+与 `guard` 的区别（别混）：guard 抛异常 = 该节点**失败**（进 `node_errors`）；演练是"这步没真做"，
+图照样跑完 —— 于是能比的正是**控制流/路由**。用途：宿主做沙箱 A/B（`l_mindmap_mmd` 的 `/ab`）。
+
 **通配 = 全部放行（2026-10-11）**：白名单里任一条目写成 `*`（或 `all`）即"允许任意 python 对象"
 （`guard.ALLOW_ALL_TOKENS`；env / `allow.json` 都认）。`l_mindmap_mmd` 的编辑器把它做成了设置项
 「允许所有 python 对象（导入白名单全放行）」——**默认开**（`settings.yaml` 的 `allowAllPython`，
@@ -68,7 +78,7 @@ wuwo svc restart l_mindmap_mmd_server          # 最后手段，会中断在用�
 ### 2.5 常用命令
 
 ```cmd
-wuwor l_node_engine  -- l_node_engine_selftest      :: 引擎自证（18 组，含 AI 路由表 / 标志位 / 类节点）
+wuwor l_node_engine  -- l_node_engine_selftest      :: 引擎自证（20 组，含 AI 路由表 / 标志位 / 类节点 / 增量烹饪）
 wuwor l_mindmap_mmd  -- l_mindmap_mmd_web_test      :: 前端协议层单测（30 项，node --test）
 wuwor l_mindmap_mmd  -- l_mindmap_mmd_web_build     :: 重建静态产物（→ src/l_mindmap_mmd/static/dist）
 wuwor l_mindmap_mmd  -- l_mindmap_mmd_web_dev       :: Vite 开发服务器（:5175，/api 代理到 8110）
@@ -91,6 +101,9 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 | 控件 | 作用 | 存在哪 |
 |---|---|---|
 `▶ 运行` | 手动跑一次（SSE 推进度/结果） | — |
+`👁 2D 取景器` | 节点卡片头上的 👁（**只在输出含 `IMAGE` 端口的节点上出现**）→ 画布与属性面板之间多一栏看图：滚轮缩放、拖拽平移、双击适应、`1:1` 看 texel、**RGB/R/G/B/A 通道切换**、⛶ 铺满画布区、Esc 关。数据走宿主 `GET /api/pygraphs/render?name=&node=`（**上一次运行**的输出，内存里按需渲染，长边 ≤1024、RGBA；`X-Tex-Size`/`X-Tex-Mode` 在响应头）。输出是**文件路径**的节点（`TexExportImage`、AI 节点）render 会 404 → 取景器回退用它的 `ui.image` | 不落盘；只在内存留最近一次 |
+`节点缩略图 / 算子库示例图` | 节点卡片底部显示**上一次运行**的输出小图（`?thumb=1`，≤128px；**没跑过不请求**）；左侧调色板里 `l_tex_nodes` 那 21 个算子带 **96px 示例图**（宿主用 `l_tex_nodes.samples` 现烤，`GET /api/pygraphs/palette/<类名>`，与跑图同门槛；没示例的 404 → 前端只显示名字） | 都是内存缓存（`_TEX_RENDER` / `_PALETTE_CACHE`） |
+`🧩 增量：开/关` | **增量烹饪**：结构没变的节点复用上一轮结果，只重算脏的。实测 1024² 5 节点图：冷跑 2.8s → **参数没变 8ms**（5/5 复用）、**只改下游 0.27s**（上游重活全复用）、改上游 ~3s（脏按拓扑往下传）。复用过的节点在画布上挂 `🧩` 徽标、日志报"复用 N 个，只重算了 M 个"。**关掉 = 每次全量重算**（图里有取时间戳/随机数这类**非纯**节点时用它）。缓存键是**结构指纹**（`class_type + 字面量参数 + 上游指纹`，不做内容哈希），**括号节点（循环 + 如果）整段与区内节点** / `bypass` / `mute` 都不进缓存（见坑 16）；**删图会把它的缓存一起丢**（里面是数组级结果） | `localStorage.pygraph.incremental`；宿主 `_RunCache`（按图名，上限 120 节点） |
 `鼠标手势` | 左键 = **点选 / 框选**（**不平移**）；中键 / 右键**拖** = 平移；右键**单击** = 右键菜单；滚轮 = 缩放。参数（`selectionOnDrag` + `panOnDrag={[1, 2]}`）**与流程图编辑器逐字一致** —— 两套画布手感必须一样；React Flow 默认是"左键拖 = 平移"，与节点编辑器的肌肉记忆相反（用户口径 2026-10-12） | — |
 `运行日志` | **画布底部**的横带（横跨画布 + 属性面板整条底边，可「收起」成一行；收起后画布自动长高） | 运行时状态 |
 `⚡ 实时` | **改动即跑**：结构改动（加删节点/连线/改参数/切标志位）后 700ms 防抖自动保存并运行；突发改动合并成一次。开开关时先跑一次 | `localStorage.pygraph.live`（不进图文件） |
@@ -160,7 +173,51 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 
 > 分组框刻意**不是** React Flow 的父子节点（`parentId` + `extent`）：那要处理相对坐标、层次排序、拖框带动成员、成员进出判定——一堆坐标系坑，收益只是观感。
 
-## 三、节点清单（16 种基础 + 6 种 AI = 22）
+### 2.8 界面分区 = 可搬的标签条（2026-10-12）
+
+`/pygraph` 的界面是**三块可搬的标签面板**：左栏（🧩 节点库）、右栏（🔧 属性 / 🤖 AI 服务 / ⚠ 问题 /
+🔬 A/B / 🧾 审计 / 📈 轨迹 / 🕐 历史）、底栏（📋 运行日志 / 🧊 3D 视图）。引擎在
+`web/src/pyTabs.js`（模型 + 落盘 + 尺寸拖拽 hook）与 `web/src/PyTabStrip.jsx`（标签条 + 面板壳）。
+
+⚠ 加标签的两处必改：`pyTabs.TAB_DEFS` 登记（`home` 决定默认落哪个面板，旧存档会自动补进来）；
+面板体里**每个标签都要 `tabs.isActive(panel, key)` 守卫**（面板的 `children` 是全量渲染的，
+不守卫就会出现"切成 A 标签、B 标签还挂在下面"）。`🧊 3D 视图` 是这么加的（`Viewer3DPanel` →
+`MeshViewer docked`，与节点卡片上的 👁 同一份渲染）。
+
+**交互**（与 `lugwit_baidu_netdisk` 的 `web_depot.html`「标签引擎」同款 —— 那边是原生 JS 搬 DOM 节点，
+这里是 React 按归属渲染）：
+
+| 操作 | 效果 |
+|---|---|
+| 拖动标签 | 本面板内 = **排序**；拖到别的面板 = **连同内容搬过去**（落点有 3px 指示条；拖到边上自动横向滚） |
+| 标签条末尾 `＋` | 列出**别的面板**的标签，选一个就搬到本面板末尾并切过去（等于"拖过来"的鼠标版） |
+| 拖缝 | 左↔画布、画布↔右栏两条竖缝改宽，底栏上方横缝改高；**双击复位**（左 210 / 右 300 / 底 150） |
+| 面板被搬空 | 自动收成 **26px**（标签条藏起来，只剩 `＋` 当落点 —— 搬回来即可复原） |
+| 底栏「收起/展开」 | = 那个面板的折叠（只留标签条）；回放时会自动展开（不然回放条看不见） |
+| 刷新 | 归属 / 每个面板的活动标签 / 尺寸 / 折叠 **全存 `localStorage["pygraph.ui"]`**（防抖 300ms + `pagehide` 补一记） |
+
+三条**有意**的分歧（别按 depot 改回去）：
+
+1. **画布、顶栏、2D 取景器不参与**标签系统 —— 画布是 workspace，`.pyg-center` 的 `grid-area`
+   绑定（`has-viewer` 那套）与 `CanvasRulers`/`overlay` 的 props 契约都绑死在它身上。
+2. **「人在环」的询问条（Ask）挂在工具栏正下方**，不进任何标签体 —— 跑到一半要人回答时，那条要是
+   被切到看不见的标签里（或底栏折着），图就一直挂着等人。
+3. **切标签/搬面板 = 内容卸载重挂**（depot 是搬 DOM 节点、内容不重挂）。这里所有业务状态都在
+   `PyGraphEditor` 的 `useState`（受控输入 / `aiDraft` / `log` / `history`…），所以重挂不丢数据；
+   会丢的只有**非受控** DOM 状态（`<details>` 展开、滚动位置）。
+
+⚠ 四个踩过的坑：① 存档键名要对上（写 `order`、读 `tabs` → **刷新后布局悄悄回默认**，最难从界面看出来）；
+② 标签条**必须能横向滚**（右栏 300px 塞 7 个标签总宽 ~470px，`overflow:hidden` 时后面几个
+**鼠标够不到**、拖不动 —— 实测拖 `history` 拖起来的是别的标签）；③ `.pyg-tabhead` **不能** `overflow:hidden`
+（末尾「＋」的下拉是它的 `absolute + top:26px` 子元素，一裁就整块看不见 —— "点了没反应"，
+而 DOM 里查得到：**用 `querySelector` 的测试会漏掉这类"渲染了但被裁掉"**，要么真点、要么查 `elementFromPoint`）；
+④ 「＋」菜单的关闭**不能用 `stopPropagation` 拦**（一页三个 ＋，拦了就"上一块的菜单关不掉"、
+两块同时开着）—— 改成"点的是不是自己这条标签条"（`headRef.contains(target)` 才不关）。
+
+## 三、节点清单（17 种基础 + 6 种 AI = 23）
+
+> **算子不止这些**：图像处理那类（噪波/模糊/色阶/混合/法线…）在**包外**的 `l_tex_nodes` 里 ——
+> 引擎刻意只用标准库，带依赖的算子库挂进来即可（见 `l_tex_nodes.md`，38 个 `Tex*` 节点）。
 
 ### 3.0 AI 节点（6 种，输入输出只有 文字 / 图片 / 视频 / 音频）
 
@@ -229,11 +286,13 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
   "打开图"下拉里冒出一个叫 `ai` 的条目）。现在文件在上一层，宿主也会把"不像图"的 json 过滤掉
   （见 `list_pygraphs_api` 的形状检查）。
 
-### 3.1 基础节点（16 种）
+### 3.1 基础节点（17 种）
 
 | 分类 | 节点 | 用途 / 端口要点 |
 |---|---|---|
 `l_node_engine/flow` | `LoopStart` / `LoopEnd` | 循环括号。**不要画回边**：`LoopStart → 循环体 → LoopEnd`，环由执行器接管。`LoopEnd.items` 是逐轮收集，`state` 回灌下一轮。轮数上限 `L_NODE_ENGINE_MAX_ITERATIONS`（兼容旧名 `L_COMFYUI_MAX_ITERATIONS`） |
+| | `Compare` / `Not` / `And` / `Or` | **值级判断**（2026-10-12）：`Compare(a, op, b)` 出真/假（两边都能当数字就按数字比）；`Not` / `And` / `Or` 逻辑组合。喂给 `IfStart` 用 |
+| | `IfStart` … `IfEnd` | **条件分支括号**（2026-10-12）：条件真 → 执行括号之间的节点；假 → **整段跳过**（区内节点输出写 `(None,)`，下游读它拿到 `None`、不会报「上游没有产出」）。区怎么认：**IfEnd 的祖先 − IfStart 的祖先**（所以 `IfEnd` 至少要接一条区内的线）；`IfEnd.taken` 告诉你这一支走没走。⚠ 第一版边界：**没有 else**、不支持 if 套 if、不支持把 if 放进循环体（循环放进 if 可以）；违反 → `GraphPlanError` 明说 |
 `…/objects` | `MakeInstance` | 造实例。`target`（路径/已注册键）**或** `class_ref`（类对象，优先）；`init_args` 是构造 kwargs 的 JSON；`singleton` 决定复用 |
 | | `CallMethod` | 调对象方法。固定三项 `obj_path/method_name/call_args` + `class_ref` 可选；**方法参数端口按节点问**（见坑 2） |
 | | `GetAttr` / `GetItem` | 取属性 / 取下标（纯数字当整数下标；可取不到给 `fallback`） |
@@ -244,13 +303,73 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 | | `CastTo` | `ok` + `value` 两路；不匹配 `ok=False, value=None`（Cast Failed 引脚），`strict=True` 则报错 |
 | | `IsChildOf` | 类是不是某基类的子类（给实例则等价 `isinstance`） |
 | | `SubclassesOf` | 类 → 子类列表（`classes` 是真实类对象列表，可递归；`paths` 是路径字符串，便于打印） |
-`…/io` | `Input` | 图的**参数入口**（= agent 工具的形参）：`name` / `value`（默认值）/ `type` / `description` |
+| | `FindClasses` | **按关键词/模块/基类搜类**（`keyword` / `module` / `base` / `limit` → `classes` 真类对象列表 + `paths` + `count`）。⚠ **只搜已经导入的模块**（`sys.modules`），不 import 新东西 —— 要搜磁盘上的包用宿主侧的 `introspect.discover_classes`。编辑器用它给"节点搜索框"加一节「🧩 类」（点一下落 `MakeInstance`），契约里的 `/engine/classes` 也是同一个实现 |
+`…/io` | `Input` | 图的**参数入口**（= agent 工具的形参）：`name` / `value` / `type` / `description`。`type` = **任意 python 类型表达式**（`str`/`int`/`float`/`bool`/`list`/`tuple`/`dict`/`set`/`bytes`/`None`/`Path`…，也能写 `list[int]`/`dict[str, int]`），只影响 ①给模型看的 schema ②编辑器挑控件 ③`Input.execute` 按它把值转成真对象；空/不像类型 → 退回 `string`。`image`/`model` 是语义标签（文件路径参数）。**值怎么存见 §3.3** |
 | | `Output` | 图的**返回值出口**（= 工具返回）。按 ComfyUI 约定返回 `{"result": …, "ui": …}`，`ui` 供画布内联预览 |
 | | `Preview` | 显示任意结果：**原样透传**（插在链中间不断流），同时把值交给画布渲染（`mode` = auto/text/json/repr） |
 | `…/note` | `Note` | **画布注释**（2026-10-12）：`text` 是 Markdown，画布上渲染成便签、**双击就地编辑**（`Esc` 放弃）。**不参与执行** —— `execute` 返回空 tuple，跑图时就是个空操作（但必须注册：没注册的 class_type 执行器会报 `Unknown node class`）。前端渲染见 `l_mindmap_mmd` 的 `PyNote.jsx` + `markdown.js`：**marked 解析 + DOMPurify 消毒**（两步都要 —— marked 不做消毒，注释里的 `<script>`/`onerror`/`javascript:` 全靠 DOMPurify 删；实测探针通过） |
+| `…/io` | `Ask` | **人在环**（2026-10-12）：跑图到此**暂停**问人（`prompt` / `options` 逗号候选 / `default`），答完继续、`answer` 往下流。实现 = 引擎钩子 `set_ask(fn)`（与 `set_guard` 同形状）+ 宿主通道：`l_mindmap_mmd` 把问题推成 SSE 的 `ask` 事件，浏览器在运行日志上方的询问条作答 → `POST /api/pygraphs/runs/{run_id}/input` 唤醒线程。**宿主没挂钩子时明确报错**（绝不静默返回空串 —— 审批被跳过却继续跑比报错危险）。超时 `L_MINDMAP_ASK_TIMEOUT`（默认 180s） |
+| | `StateIn` / `StateOut` | **跨轮状态**（2026-10-12，会话续跑）：`StateIn(name, default)` 读上次存的值（`default` 是 **JSON 文本**，读不动退化成普通字符串）；`StateOut(name, value)` 原样透传给下游、**跑完由宿主落盘**。引擎**不碰磁盘**（它不知道"会话"是什么）：宿主跑前把会话里 `name` 的值灌进 `StateIn.default`，跑后把 `StateOut` 的输出写回 —— `l_mindmap_mmd` 落成 `pygraphs/_sessions/<图名>/<会话id>.json`，跑图带 `{"session": "<id>"}` 才启用 |
+`…/subgraph` | `SubGraph` | **子图**（2026-10-12）：把**另一张图**当一步跑。契约 = 嵌套图的 `Input`（= 本节点参数端口，按 `name` 注入）/ `Output`（= 返回值，v1 只取一个，其余进 `ui.text`）。`sub` 是**内联 prompt、不是图名** —— 引擎宿主无关（图名解析是宿主的活），且增量指纹必须随内容变（只放名字会"内容改了还复用旧结果"）。深度上限 8、**按内容哈希**判成环、护栏接力（`active_guard()`，显式传入的 guard 不能被子图绕过）；`sub` 的指纹走**整体 sha1**（`_safe_repr` 会截断 → 会撞，见坑 14）；失败用 `SubGraphError` **原样上抛不套娃**（见坑 15）；子图内**不接**增量缓存（key 是节点 id，会撞外层）。**图名 → 内联 prompt** 走 `subgraph.resolve_graph_names`（节点类用 `GRAPH_NAME_PORT` 声明"哪个输入是图名、内联写进哪个键"，引擎仍不认目录 —— loader 是宿主给的；递归解开子图的子图，按**名字**拦环 / 拦深度，报错带节点路径 `GraphNameError`）。宿主侧（图名→内联 / 参数端口 / 编辑器 UI）与它的第一个用家 `TexFxMap` **已做**（2026-10-12）：逐条清单与实测判据见 `子图与FX-Map_计划.md`。**双击进内层图**（Substance 那种）：节点类声明 `GRAPH_SKELETON`（图文件模板）→ `get_node_info` 带成 `graph_skeleton`，宿主"双击没接图的节点"时照它建一张并接上（`SubGraph` 的模板是直通 `Input → Output`） |
+
+### 3.2 3D 模型参数（`Input(type=model)`，2026-10-12）
+值语义与 `image` **完全同构**（值是**路径**：上传后是服务端路径，手填本机路径也认）。四处配套：
+
+| 环节 | 在哪 | 要点 |
+|---|---|---|
+| **函数 → 节点（批量）** | `l_node_engine/999.0/src/l_node_engine/from_functions.py` | 宿主侧那一半：`register_package_functions("我的包")` 一行把包里的公开函数全挂成节点 —— 只扫本模块定义的（不把 `os.path.join`/`lprint` 这类 import 进来的也包上）、端口按注解（没注解没默认值 → `*`+forceInput）、跳过私有/零参/denylist、**重名退成 `<模块名>.<函数名>` 不覆盖**、重扫幂等、过导入白名单、`async def` 也能跑；`describe_module_functions()` 只看不注册。自证 `tools/from_functions_check.py` |
+| 目录 | `l_node_engine.pygraph.models_dir()` | `<图目录>/models`（与 `media/` 平级）；`model_url(path)` 出宿主相对 URL（`models/` 下 → 读口；本机路径 → 受控读口 `models-local?path=`）；**`model_path(value)` 给节点用** —— 绝对路径原样、相对名（含多文件 glTF 的 `<子目录>/<文件>`）补成 `models/` 下绝对路径 |
+| 上传 | `l_mindmap_mmd/server.py` | `POST /api/pygraphs/models/upload?name=x.glb[&newdir=1\|&dir=<uuid8>]`：**原始 body 流式落盘**（不是 base64 —— 模型几十上百 MB，base64 再撑大 1/3 且全进内存）；白名单 `glb/gltf/obj/mtl/bin/fbx/stl/ply` + 贴图 `png/jpg/jpeg/webp`，上限 200MB，走 `L_MINDMAP_ALLOW_RUN` 门槛；**多文件**（glTF + `.bin` + 贴图）→ 服务端建一层 `<uuid8>/`，值取主文件的相对名 |
+| 读取 | 同上 | `GET` **和 `HEAD`** `/api/pygraphs/models/{name:path}`（认 `<文件>` 与 `<服务端子目录>/<文件>`，其余形态 400、绝不拼客户端路径；HEAD 给前端探文件大小）；**本机路径**走受控只读读口 `GET\|HEAD /api/pygraphs/models-local?path=<绝对路径>`（白名单根 `L_MINDMAP_MODEL_ROOTS` + 只认 3D 扩展名 + `resolve()` 后在根内 + 普通文件） |
+| 编辑器 | `l_mindmap_mmd` 的 `PyModelPicker.jsx` + `MeshViewer.jsx` | 值输入框 + 📁 上传（**可多选**）+ 👁 预览；预览是 three.js（**懒加载**，主包只 +24KB），认 glb/gltf/obj/**fbx**/stl/ply，OrbitControls 拖拽/滚轮/右键平移 |
+
+- 工具 schema 里就是 `{"name": …, "type": "model"}`（`graph_tool_spec`）—— agent 看到"这是个 3D 模型参数"。
+- **多文件 glTF**：外部 `.bin` / 贴图按**同目录相对路径**解析（GLTFLoader 以 `.gltf` 的 URL 为基准），
+  所以主文件与伴随件必须在同一层（服务端就是这么放的）。
+- 本机路径的 👁 不再是"置灰"：走受控读口，白名单根**外**时按钮 title 会明说"不在白名单根下（当前白名单：…）"；
+  没配 `L_MINDMAP_MODEL_ROOTS` 时读口回 403（功能关着）。
+- `.usd` 明确不做（要 USDZLoader + wasm，收益/成本不划算）；`.fbx` 已加（FBXLoader 是 three 自带 examples）。
+- **把引擎跑在别的进程里（当宿主）**：契约 v1 + bottle 骨架见 `Rez-Docs/Rez_pkg/远端引擎契约_v1.md`
+  —— 脑图编辑器（l_mindmap_mmd）可同时接**多个**远端引擎；图随编辑器走，宿主只提供 schema + 执行，
+  对象留在宿主进程（图里用 `MakeInstance`/`CallMethod` 那族节点操作它）。
+  本包的 `requires` 是 **`python-3.11+<3.13`**（刻意放宽）：宿主常常是别的解释器/别的 rez 环境
+  （比如 py3.11 的 Qt 工具），内核零三方依赖，只 require 这一个包就够。
+  要再加格式 = 上传白名单 + `MeshViewer` 里一个加载器分支（两处）。
+
+### 3.3 `Input` 的值怎么存（全 python 类型，2026-10-12）
+
+**标量存真标量，容器存 JSON 文本** —— 后者是被逼的，原因写死在这里免得后人改回去：
+
+| 类型 | 存进图里的形状 | 编辑器控件 | 节点里拿到的 |
+|---|---|---|---|
+| `int` / `float` / `number` | JSON 数字（`3`） | 数字框 | `int` / `float` |
+| `bool` | JSON 布尔（`true`） | 勾选框 | `bool` |
+| `None` | `null` | 只读提示 | `None` |
+| `str` / `Path` / 自由类型 | 字符串 | 文本框 | `str`（`Path` 交给下游自己 `Path()`） |
+| `list` / `tuple` / `set` / `dict` / `object`（含 `list[int]`） | **JSON 文本字符串**（`'[1, 2]'`） | **结构化行**（`list` 类：一行一个元素；`dict`：键值行；可切回 JSON 文本视图；非法 JSON 退文本视图红框，但**照样写得进去**） | 真 `list`/`tuple`/`set`/`dict`（`Input.execute` → `coerce_param` 转） |
+| `bytes` / `bytearray` | 字符串 | 文本框 + 📄 选文件（文件 → `base64:<…>`） | `b"…"`（文本按 utf-8；`base64:` 前缀**解码**成字节） |
+| `image` / `model` | 路径字符串 | 选文件 / 上传（见 §3.2） | 路径字符串 |
+
+⚠ **容器为什么不能直接存数组**：`Input.value` 的端口是 `*`，而"连线"的存储约定正是
+`[源id, 下标]` 数组（`toPrompt` / `_resolve_inputs` 都按这个认）。存 `[1, 2]` 会被当成
+"连到节点 1 的第 2 个输出" —— **值直接丢了**，画布上还看着像有连线。所以容器值以 JSON
+文本入库、执行时 `coerce_param()` 再 parse 回真对象（图文件里一眼看是字符串、节点里是真对象，
+这个不对称是刻意的）。
+
+- 类型字段是 COMBO：下拉给常见类型，**点右边 ✎ 可手写任意表达式**（`list[int]` / `np.ndarray`）。
+- 前端那张表在 `l_mindmap_mmd/web/src/pySchema.js`：`paramEditorOf` / `paramValueFromText` /
+  `paramTextOf` / `paramJsonError` —— **有 node 单测**（`web/tests/pySchema.test.mjs`），改口径先改测试。
+
+### 3.4 宿主侧的四个配套（引擎只保证"图能跑"，这四件全在宿主）
+
+| 配套 | 引擎侧给了什么 | 宿主（`l_mindmap_mmd`）在哪 |
+|---|---|---|
+| **校验** | `validate_structure(prompt) -> {"errors", "warnings"}`，与执行器**同一套判据**（括号配对 / 嵌套限制 / 真环 / 缺必填 / 悬空连线） | `POST /api/pygraphs/{name}/validate`；编辑器「校验」按钮 = 本地快查 + 这条权威（结果进「问题面板」）。端到端盯着这条链的是探针场景 **`runflow`**（见 `tools/web_probe.md`） |
+| **轨迹 / 回放 / 历史** | 跑图事件 `executed` / `executing` / `failed`（带 `if_taken` / `loop.iteration` / `cached`） | `runs.jsonl`（每次运行一行摘要）+ `_traces/<图名>.jsonl`（逐步）+ 编辑器「📈 轨迹 / 🕐 历史」两个面板 + **画布回放**（按步高亮，复用"正在执行"视觉） |
+| **A/B 沙箱** | 同一张图喂两套 `Input` 值各跑一遍，只比**控制流**（值级比较没意义） | `POST /api/pygraphs/ab`；编辑器 🔬 A/B + 🧾 审计（`_traces/_applied.jsonl`） |
+| **策略包** | 无（纯宿主资产） | 编辑器 `📦 包 → 导出/导入`：`{kind: "lugwit-pygraph-pack", version: 2, exported_at, title, graph, baseline?}`；导入**也吃裸图 JSON**、重名自动避让。纯函数 `web/src/pygraphPack.js`（+ `web/tests/pygraphPack.test.mjs`，`l_mindmap_mmd_web_test` 一起跑） |
 
 ## 四、坑（按"会咬人"排序）
-
 1. **服务是 `.dev_mod` 但引擎不在它眼里**：改 `l_node_engine/*.py` 后，`l_mindmap_mmd` 不会自重启 —— 必须 `wuwo svc reload l_mindmap_mmd_server`，否则现象是"代码明明改了却没生效"。
 2. **动态端口按节点问，不许改回"上次上下文"**：`CallMethod`/`CallFunction` 的 `INPUT_TYPES` 是**确定性**的（只有固定几项）。曾用"上一次执行过的 (target, method)"全局上下文展开端口，结果同一张图在不同会话/时刻画出的行都不一样。现在由编辑器按节点问 `GET /api/pygraphs/ports?target=&method=&kind=`（`kind=function` 走函数）。
 3. **缺 handle 的边会被 React Flow 静默丢掉**：所以编辑器**预取所有** `CallMethod`/`CallFunction` 的端口（`portsKey` 只含 id+目标+方法，拖拽不重取），画布与面板都用 `mergedInputSpecs()` **同一份合并结果**。症状：打开保存过的图，"连线不见了"，点一下节点又回来。
@@ -265,6 +384,14 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
    `CallFunction`/`CallMethod` 又把端口传来的键当 kwargs 打下去 —— 于是把 `path` 从
    `fs_nodes:list_dir` 改成 `os.path.exists` 会以 `takes at most 1 keyword argument (3 given)` 失败
    （残留的 `root`/`pattern`/`detail`），而画布上**看不见**它们（端口是按**新**签名展开的）。
+12. **写类接口在前端只能"带会话"用**：闸门对本机直连只放行 `GET/HEAD`（见 `gate.py`）——
+   页面免登录**不等于**接口免登录。自动化里要测上传，别在页面里模拟登录表单（本机直连的页面
+   **不弹**登录框），正确做法是 `POST 127.0.0.1:1027/api/v1/auth/login` 拿 token，再给浏览器
+   种 `lugwit_token` cookie（域 = 目标站）。
+13. **`MeshViewer` 的加载器必须写成字面量 `import("…")` 分支**：用变量路径（`import(SPEC[kind])`，
+   哪怕加 `@vite-ignore`）Vite 无法静态分析 → 运行时按 URL 去请求裸模块名 → **404**，症状是预览
+   永远停在"载入中"。同理 FastAPI 的 `@app.get` **不带 HEAD**（`HEAD` 探大小会吃 405）——
+   要 HEAD 就用 `@app.api_route(..., methods=["GET", "HEAD"])`。
    2026-10-12 修：两个节点执行前用 `introspect.keyword_names()` 只收**当前签名认的**键
    （带 `**kwargs` / 签名读不出 → 照旧全收），忽略的键打 WARNING —— 宿主挂了 `l_node_engine` 的
    WARNING handler，能在 `wuwo svc log l_mindmap_mmd_server_exec` 里看到。
@@ -283,11 +410,44 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
    ⚠ 仍有表达不出来的：`os.path.join(a, *p)` 这类 **VAR_POSITIONAL**、`str.join` 这种要先有实例的
    （`self` 被跳过）、以及 f-string 式的字符串拼接（没有可用的 kwargs 版格式化）。
 
+14. **节点自己拿不到宿主的 `emit`**（2026-10-12，做 `SubGraph` 时踩的）：`emit` 由执行器一路传给
+   `_safe_emit`，`execute()` 里**根本没有这个名字**。第一版在 `SubGraph.execute` 里写了个引用
+   `emit` 的闭包 → 被 `_safe_emit` 的 try/except **静默吞掉**：图跑完了、结果也对，日志里却一条
+   子图进度都没有（最难查的一类）。要给节点一条"自己推事件"的路，用 `graph.active_emit()`
+   （与 `active_guard()` 同形，都是按执行上下文放的 ContextVar）。
+15. **`_safe_repr` 对 dict 会截断（20 项 × 40 字符）**：它是给 debug 载荷限长的，不是给指纹用的 ——
+   一份**嵌套 prompt** 会被压成前几十个字符，**两份不同的子图会算出同一个指纹**，于是"改了子图却
+   复用上一轮结果"。这类"整体语义"的字面量必须整体 sha1：`graph._HASH_LITERAL_INPUTS` +
+   `_literal_fingerprint`（自证里有一条专门盯它：两份只差在 300 字之后的子图，指纹必须不同）。
+   顺带：`SubGraphError` 往上传时**别层层包裹**（8 层嵌套各套一句"子图里有 N 个节点失败"，
+   最外层就只剩一团乱码）—— 约定是子图自己的错**原样上抛**。
+16. **增量的"括号节点不进缓存"漏了 `IfStart`（2026-10-12 修）**：第一版只把 `LoopStart/LoopEnd`
+   排除了，`IfStart` 照旧命中缓存 —— 而"命中"只是把括号自己的旧值塞回来，**"跑区内节点 / 整段跳过"
+   这一步根本没发生** → 区内节点既没产出、也没被写成 `(None,)` → **下游**读区内节点的那些节点
+   连环报「上游节点 X 没有产出」（现象是整图 0.06s 秒退、答案空，报错全落在下游，根因在括号上）。
+   现在 `bracket_nodes = 循环括号 ∪ if 括号` 一律不进缓存（区内节点本来就不在外层 `order` 里、
+   没有指纹，所以等价于"这一区每轮真跑"）。self-test：`_check_incremental` 里那张带 if 的图
+   **连跑两次**（真/假两支都测）。教训与坑 14 同类：**判据要落在"这一轮到底执行了什么"上**，
+   只看"输出对不对"会把这种"该跑没跑"的错放过去。
+17. **`INPUT_TYPES` 两种写法都要接得住（2026-10-12 修）**：引擎**支持**「类方法」与「类属性 dict」两种
+   （`node_base.get_node_info` 就是这么读的；`LoopStart/LoopEnd`、自检里的假节点用的都是 dict），
+   但 `validate.py` 原来写死了 `cls.INPUT_TYPES()` → 循环括号一律吃 `bad_spec`
+   （`'dict' object is not callable` 警告），**顺带把它们的必填检查整段跳过** —— 而"循环区接线对不对"
+   正是最该被校验的一类（做 `flow→pygraph` 镜像时踩到）。已改成两种都读。
+   校验与执行器**同判据**是这张表的既定原则，别再分叉：self-test `_check_validate` 里加了一张带循环的图，
+   断言 `errors` 与 `warnings` **都为空**。
+18. **`StateIn.default` / `Input.value` 是"JSON 文本"口径**（2026-10-12 写跨轮图时踩到）：
+   `StateIn` 把 `default` **按 JSON 解析**（`parse_state_text`），所以写 `[]` / `{}` 得到 list / dict
+   （多数场合正是本意），但下游若是**只吃字符串**的节点（`operator:concat`、`json:loads` 以外的文本拼接）
+   就会当场炸 —— 实测 `can only concatenate str (not "list") to str`（报错落在**下游**节点上，
+   根因在 `StateIn` 的默认值）。要"空字符串"就写 `""`，要"空列表"就写 `[]` 并让它只喂给吃容器的节点。
+   `Input` 的容器值同理（存 JSON 文本、执行时 parse 回真对象，见 §3.3）。
+
 ## 五、怎么自证（改完跑什么）
 
 | 改了什么 | 跑什么 |
 |---|---|
-`l_node_engine/**` | `wuwor l_node_engine -- l_node_engine_selftest`（18 组；新增能力请加组） |
+`l_node_engine/**` | `wuwor l_node_engine -- l_node_engine_selftest`（**20 组**；新增能力请加组） |
 `web/src/pySchema.js`、校验/映射口径 | `wuwor l_mindmap_mmd -- l_mindmap_mmd_web_test`（30 项） |
 `l_node_engine/ai_nodes.py`、AI 路由/载荷/凭据 | selftest 的 AI 组（验路由表 + 载荷 + 落盘 + ai.json 通道 + 凭据三档/过期重登/401 换一枚重试一次）；**再核对一次 hub 的 `GET :8462/openapi.json`** —— 路由表是抄出来的，不是推出来的；带真凭据的端到端见 §3.0 第 4 条（本机 dev 账号，别拿去公网机） |
 `web/src/*.jsx`（画布/面板/预览/框/错误卡/历史/AI 配置） | 重建 + 浏览器点一遍（FPS 读数、预览、标志位、实时模式、分组框、循环区包裹框、问题面板、历史、AI 服务） |
@@ -317,14 +477,41 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 
 ## 六、已知未做 / 限制
 
+- **跑图的墙钟超时**：默认 = 服务端 env `L_MINDMAP_RUN_TIMEOUT`（**60s**）；
+  **2026-10-12 起支持 per-request 覆盖** —— 请求体给 `{"timeout": N}`（夹 1..3600）就用它
+  （`_run_timeout`）。要跑长的**别改服务 env**（那是全服务口径），在这一次请求里给就行。
+  撞上超时的表现：宿主发一条 `error`（`执行超时（Ns）。工作线程无法强杀…`）—— 脚本/前端**很容易漏看**，
+  现场就只剩"耗时正好 N 秒 + 输出空"（实测踩过）。⚠ 另：**超时常常是症状不是病**：
+  把整棵树的路径都塞进提示词那种"题目太大"，调到 300s 也回不来（实测）——先看提示词有多大。
+- **引擎没有数值/排序原语**：`Compare`/`Not`/`And`/`Or` 只出真假，`CallFunction` 能借 stdlib
+  做**单个**运算，但"计数 + 分组 + 排序"这种**汇总**在图上表达不出来（要么宿主办、要么模型办）。
+  做"把智能体控制流搬进图"时，这是与"`if` 不能进循环体"并列的第二个硬缺口。
+- **`if` 区放进循环体：** ~~不支持~~ → **2026-10-12 起支持**（智能体的循环体里必然有分支，
+  这条不放开，"把控制流搬进图"就堵死）。实现要点（改这块先看这三条，都踩过）：
+  ① **规划顺序** —— if 配对要先算，循环区靠它把括号 + **条件那一段**补进区里
+  （只看"可达 ∩ 能到 LoopEnd"，`IfStart` 与它的 `Compare` 会漏在区外 → 假支会被当成真支）；
+  ② `_run_loop` 每轮要 **dispatch 括号**，`executed` 集每轮新开并预置循环括号/区外上游
+  （不预置会 `_run_if → upstream → LoopStart → _run_loop` **递归爆栈**）；
+  ③ 区内的普通节点**要等它的括号跑完**再走（拓扑序里它可能排在括号前面）。
+  仍拒：**`if` 套 `if`**、**if 与循环区跨边界**（一个括号在里一个在外）。自证：第 22 组。
+- **多路分支 / 护栏（guard）在 pygraph 侧没有原语**：flow 的 `branch`（多 case）与 `gate`（guard 注册表）
+  只能靠条件节点 + 逐条 if 展开（且 if 不能嵌套）；把智能体控制流搬进图时，这两层要么补齐原语，要么交给宿主。
+- **子图（引擎 + 宿主都已做，2026-10-12）**：`SubGraph` 能跑（自证第 21 组）；宿主 `l_mindmap_mmd`
+  在跑图 / 校验前把 `{graph: "图名"}` 内联成 `sub`（`_inline_subgraphs` → 引擎的 `resolve_graph_names`，
+  解析不了直接 400）、`GET /api/pygraphs/ports?kind=subgraph&target=<图名>` 给参数端口、
+  `/object_info` 把 `GRAPH_NAME_PORT` 那个输入换成**图名下拉**、编辑器卡片上有「↗ 子图」跳转。
+  **仍然只取一个 `Output`**（多输出要动编辑器的端口声明 —— 前端按静态 `RETURN_TYPES` 画端口，留到"子图多输出"那步）。
+- **子图内不接增量缓存**（缓存的 key 是节点 id，嵌套 id 会和外层撞）：改子图里任意一处 →
+  整个子图重跑。子图**内容**变了外层那个 `SubGraph` 节点的指纹会跟着变，所以不会拿到旧结果。
 - 队列只有"深度 4 的 FIFO"（没有优先级 / 取消排队；正在跑的那个杀不掉 —— 同"超时只能放弃等待"）。
 - 分组框是**视觉框**（不带动成员、不做父子绑定）；要"整块搬走"得自己多选拖。循环区包裹框同理（自动生成、不可交互）。
 - **hub 的图片/视频两条原生路由没真跑过**（未测：出图/出片能不能成、首帧 data URL 火山认不认）。
   LLM 那条**已验证**（只用 lugwit 账号密码，见 §3.0 第 4 条）。
 - **STT 没有标准形状**：hub 不提供，节点发的是"任意本机服务的通用形状"（`audio_b64` + `filename`）——
   接自己的服务时可能要改。
-- 图表 / 3D / PDF 等其余预览类型没做（图片/音频/视频已做：产物落媒体目录 + `ui.{image,audio,video}` + 宿主只有
-  单文件名的媒体路由，别放宽那个安全边界）。
+- 图表 / PDF 等其余预览类型没做（图片/音频/视频已做：产物落媒体目录 + `ui.{image,audio,video}` + 宿主只有
+  单文件名的媒体路由，别放宽那个安全边界）。**3D 模型预览是宿主的事**（`l_mindmap_mmd` 的 `MeshViewer`，
+  2026-10-12 起还会把节点图产出的 PBR 材质贴上去，见 `l_tex_nodes.md` §6.3）—— 引擎侧不掺和。
 - 折叠 / pin 的其余交互（节点标题栏折叠）没做；`bookmark` 是纯标记（没做筛选/跳转）。
 - 前端只有协议层单测（`pySchema`），组件层没有自动化。
 - `l_comfyui_backend` 里还躺着一份同源但更旧的执行内核（`node_base`/`node_registry`/`prompt_executor`），尚未接到 `l_node_engine`，两处口径可能漂。

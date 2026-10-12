@@ -57,6 +57,30 @@ l_model_hub（http://127.0.0.1:8462）已启用统一登录闸门，但没取到
 所以**能共用数据根就共用**：会话会落在同一个 `sessions/<工作区 key>/`，采集器只建/删**自己的**会话，
 用完不留痕。
 
+### 2.1 两条**保命配方**（从坑 4 / 坑 6 长出来的，权威口径放这里）
+
+**① 样本级守卫**（对抗"跑一轮就被硬杀"）
+
+- 现象：实例日志停在 `POST /api/chat … 200`、**无 traceback**、连启动它的那个 cmd 的收尾行都没有
+  （整棵树没了）；而**纯空闲探活 90s 全 OK** → 死因在"跑一轮 chat"或"调用方进程树收尾"。
+- 做法：**每个样本先探活**（探活命令见配方 §1），死了就**当场重启实例并等就绪**，再跑 `--n 1`；
+  这样"跑一轮就被杀"也丢不了整批 —— 逐样本数据照拿到。
+- 参照实现：`rez-package-source/l_mindmap_mmd/999.0/tools/run_arm_a.cmd`（探活 → 必要时重启 → 跑 1 样本 → 追加 JSONL）；
+  真起实例的功能 e2e 见 §3.1 的 `tools/e2e_supervisor.py`（用 `DETACHED_PROCESS` **真脱离**，从根上躲开坑 4）。
+- （`.cmd` 必须 CRLF / 无 BOM / 纯 ASCII；改完复检 —— 见坑 2 与"本地规则"。）
+
+**② 开新控制台跑包装脚本**（对抗"控制台卡在续行态"）
+
+- 现象：回显里反复出现同一行拼接残片；你敲的命令"**凭空消失**"、回显还是上一条 —— cmd 卡在**续行块**里等 `)`。
+- 同族成因（都能把控制台带坏）：`echo (…)` 里的**孤立 `(`**、`&` 长链、往 `%TEMP%` 落残片，
+  甚至仓库根被写进一个**遮住真启动器**的 61 字节 `wuwor.bat`（cmd **先找 cwd**）。
+- 对策：
+  - `Start-Process cmd.exe -ArgumentList '/c','<wrapper>.cmd' -WindowStyle Hidden -Wait` 开**新控制台**；
+  - **一次一条命令**，别拼 `&` 长链；包装脚本**一次只干一件事**；
+  - 等待用 `ping -n 6 127.0.0.1 >nul`，**别用 `timeout /t`**（无控制台的管道里直接
+    `Input redirection is not supported`，等待变空转）；
+  - 判据永远看**落盘产物**（日志 / JSONL / mtime），**不看回显**；启动器先 `Get-Item wuwor.bat` 核身份（比 mtime / 字节数）。
+
 ## 3. 采集器用法
 
 提示词实验开关是**运行期**的（`GET/POST /__dev__/prompt-flags`），所以四臂跑的是**同一份代码**，
@@ -71,6 +95,31 @@ wuwor l_agent_chat -- python tools/iso_ab.py --out ab.jsonl
 
 指标：总时长 / 规划步数 / 规划耗时 / 作答耗时 / 工具耗时 / 答案字数 / `path:line` 引用数 / 条目行数。
 默认题集 2 道（文档型 + 定位型），臂 `A/B/C/D` = 两个开关的四种组合。
+
+### 3.1 另一类用法：**功能 e2e**（`tools/e2e_supervisor.py`）
+
+不是 A/B，而是"新功能在真服务里到底成不成"（2026-10-12 加）：它自己用
+`DETACHED_PROCESS` 起一个隔离实例（**所以不会被后台任务的 job object 带走**，见 §2 坑 4），
+把监工阈值压到 3 秒，跑 `ping -n 60` 两轮，断言：疑问卡出现 / 日志能增量跟读 /
+答"继续等"命令正常收尾带 `log_path` / 答"现在终止"结果标 `supervisor-abort` 且不留残留进程。
+
+```bat
+:: 走专用别名（内部就是调那个脚本）—— 它不进默认批：真调模型 + 两分钟 + 另起实例
+wuwor l_agent_chat -- l_agent_chat_e2e_supervisor
+:: ⚠ 别从 `run_all.py --e2e` 进：`wuwor` 的"禁止整批回归"公共护栏只认 `run_all.py`，
+::   连 `--e2e` 一起拦（实测报 `blocked full test batch`）—— 这也是为什么单开一个别名。
+:: 也可直接跑脚本（⚠ 给绝对路径：从仓库根跑 tools/… 会 No such file）
+wuwor l_agent_chat -- python rez-package-source/l_agent_chat/999.0/tools/e2e_supervisor.py
+```
+输出在 `D:\Temp\lac_e2e\`（`LAC_E2E_OUT` 可改）；stdout 里全是 `PASS/FAIL`，末尾一行 `SUMMARY`。
+
+**两个"测试设计"教训**（两轮假 FAIL 都是它们，跟被测功能无关）：
+1. **两轮别用同一条命令**：仓库自带"重复调用护栏"会把完全相同的调用吞掉
+   （`（护栏）这次调用与前面完全相同，已跳过`）→ 终止路根本走不到。现在用 `ping -n 25` / `ping -n 45` 两条。
+2. **模型偶发不干活要能自证**：上游波动/限流会让那一轮**没有任何工具调用**，看起来像"功能坏了"。
+   驱动现在：① 记 `error` 事件 + 事件序列 + 工具序列 + 最终答案（`DIAG` 行）；
+   ② 没调到工具就**自动重试一次**（`RETRY_OK`）；③ 单独一条 `turnX_ran_command` 判据，
+   把"模型不干"和"监工坏了"分开。
 
 ## 4. 判读约定（不守就白测）
 

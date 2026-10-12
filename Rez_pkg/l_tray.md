@@ -146,6 +146,21 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 （wuwo 剥离它、恒设 `L_SOLO_IGNORE=1` 并注入 `L_SOLO_PEER_*`，**不杀旧实例**，是否接管交给包自己决定）。
 差别与现状见 `solo_单实例守卫模式.md`。
 
+**「启动maya」菜单的版本从哪来**（2026-10-12）：菜单整条由
+`Lugwit_Module.l_src.insLocation.getMayaInsLocationDict()`（`Tray.py:1185`）的返回值决定 —— 返回空则
+「启动maya」子菜单**根本不出现**。三路合并，先后有序：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | 注册表 | `HKLM\SOFTWARE\Autodesk\Maya\<版本>\Setup\InstallPath` 的 `MAYA_INSTALL_LOCATION`（**只读这一个值名**，只有 `..._bak` 的版本读不到） |
+| 2 | 目录扫描 | 扫 `_scan_dirs`（缺省 `C:\ProgramData\PCGM_Apps\App\Autodesk`）下的 `Maya<4位版本>`，要求 `bin/maya.exe` 存在；**补齐 1 里没有的版本** |
+| 3 | 手动指定 | `data/ins_location/maya_extra.json` 里的 `{"版本": "安装目录 或 maya.exe 全路径"}`，**覆盖**同版本的前两路结果 |
+
+装了 Maya 但**没写进注册表**（定制安装目录）时靠 2/3 两路出菜单。配置格式见文件自带的
+`_readme`；改完**重启托盘**才生效（菜单启动时构建，§1 约束 2）。合并结果会写进
+`data/ins_location/maya_locations.json`（内容没变不写），ChatRoom 的
+`get_maya_executable()` 也读这份取 maya.exe。
+
 ## 5. 排错速查
 
 | 现象 | 先看 |
@@ -158,6 +173,7 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | 症状像"代码变了但行为没变" | 先用上一条热灌一次；还不对再确认改的是不是 `999.0/src` 下的源（不是 `rez-package-3rd` 落地区） |
 | 服务管理里 ExecServer 显示"未启动" | `curl.exe -s http://127.0.0.1:19527/health`；端口被占时 ExecServer 会记 `ExecServer 端口 19527 被占用` |
 | 改了菜单/配置没生效 | 托盘菜单启动时构建 → 重启托盘 |
+| 「启动maya」菜单整个不见 / 缺某个版本 | 该版本可能不在注册表（只认 `MAYA_INSTALL_LOCATION`，`..._bak` 不算）。在 `data/ins_location/maya_extra.json` 里按 `{"2018": "C:/.../Maya2018"}` 显式指定（见 §4「版本从哪来」），重启托盘 |
 | 强制结束程序无效 | 目标进程名不对（下拉里没有时手动输入 `<名>.exe` 的 `<名>` 部分） |
 
 ## 6. 2026-09-20 变更记录
@@ -185,3 +201,12 @@ curl.exe -s http://127.0.0.1:19527/docs            :: 端点说明（浏览器�
 | 网页动作 +3（2026-09-26 续） | `depot_local_mkdir` / `depot_local_newfile` / `depot_local_delete`（删除走回收站，不许删根目录本身）；`requires` 显式加 `winshell` |
 | 边界加固（2026-09-26 P0） | ① `_norm()` 加 `realpath`，`_check_path()` 回**解析后**路径 → junction/symlink 逃逸不再能蒙过前缀比对；② 空 token **不再回落托盘会话 token**（新增 `_require_roots()`），没带登录态的页面直接拒答；③ `mode="open"` 挡可执行/脚本/快捷方式扩展名（`_NO_STARTFILE_EXTS`）；④ 删根保护扩到"根本身 **及其上层目录**"。验收：假 `depot_bridge` + 临时工作区探针（含 `mklink /J` 逃逸用例）全绿 |
 | 运维实测（2026-09-27） | ① 托盘**跑着的时候**完成的登录不进内存（`tray_tokens.json` 有、`session_user()` 空、401），补 `restore_session()` 即恢复 → §3；② 改 `local_tree.py` 后进程里仍是旧模块，`reregister` 的 `reload` 是**顶层键** → §5；③ 工作区目录树全链路真机复验：真 token 拉树 294ms / 1352 条目，本机删文件 **27ms 检出**、页面 2.5s 轮询第 1 个 tick 重拉后树里不再有它；④ `watchdog` vs `watchfiles` 性能实测 → §2 那张表 |
+
+## 8. 2026-10-12 变更记录
+
+| 改动 | 说明 |
+|---|---|
+| 「启动maya」菜单支持手动指定路径（新增） | `Lugwit_Module/l_src/insLocation.py` 的 `getMayaInsLocationDict()` 从"只读注册表"改为**注册表 → 兜底目录扫描 → `data/ins_location/maya_extra.json` 手动指定**三路合并（后两路解决"装了 Maya 但不在注册表"）→ §4「版本从哪来」 |
+| 兜底扫描（新增） | 扫 `C:\ProgramData\PCGM_Apps\App\Autodesk\Maya<版本>`（可用 `_scan_dirs` 改写，可用同名版本覆盖）；要求 `bin/maya.exe` 存在，扫不到的版本不进菜单 |
+| 手动指定配置（新增） | `data/ins_location/maya_extra.json`（自带 `_readme`）；值可以是安装目录，也可以是 maya.exe 全路径 |
+| `maya_locations.json` 落盘语义（改） | 原来"文件不存在才写"，现改为**每次内容变了就更新**（合并结果，含扫描/手动条目），下游 ChatRoom 取 maya.exe 不再只看到注册表那一个版本 |
