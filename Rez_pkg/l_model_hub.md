@@ -209,16 +209,126 @@ POST /v1/chat/completions/multi
 30~60s 载模型 → 超时默认 300s）见 `l_indextts2.md`。`/v1/audio/speech` 的
 `speed` 与 IndexTTS2 的 `duration_factor` 是倒数关系（`speed=0.5` → 时长 ×2）。
 
-### 视频生成（Seedance）与「视频专用 Key」
+### 视频生成：**一家一个适配器**（`video_providers.py`，2026-10-15 重写）
+
+原先 `/video` **写死火山 Seedance**。加第二家时就露馅了：视频"哪家"分不出来靠模型 id ——
+创建/查询路径、鉴权、状态字面量各家全不同。现在一家 = 一个适配器，统一 `create()` / `status()`：
+
+| provider | 上游 | 凭据字段（管理台「密钥」页） |
+|---|---|---|
+| `vidu` | Vidu 生数科技（`api.vidu.cn`，鉴权 `Token <key>`） | `vidu` |
+| `fal` | fal.ai 队列 API（`queue.fal.run`，鉴权 `Key <key>`） | `fal` |
+| `agnes` | Agnes AI / Pavo（`apihub.agnes-ai.com/v1`，鉴权 **`x-api-key`**） | `agnes` |
+| `minimax` | MiniMax 海螺（`api.minimaxi.com`） | `minimax_video` → 回落 `minimax` |
+| `seedance` | 火山方舟 ark（标准域 → plan 域兜底） | `volcengine_video`（+ `volcengine_video_model` 选模型） |
+| `siliconflow` | 硅基流动 Wan2.2 T2V/I2V | `siliconflow` |
+| `dashscope` | 阿里云百炼 DashScope 万相 | `dashscope`（**不是** `aliyun` 那把） |
+| `google` | Veo 3.1 / `gemini-omni-flash-preview` | `google`（Gemini API key） |
+| `kling` | 可灵（自签 JWT） | `kling_access` + `kling_secret`（**两个都要**） |
+
+⚠ **两家钱的坑**（2026-10-15 用户实际问到的）：
+
+- **fal 的"每天 5 条免费"是网页体验台的额度，不是 API 的**：fal 官方两面说法 —— 工具页
+  `fal.ai/minimax-h3-max` 免账号每天 5 条（登录后 Sandbox 再 +5，能到 15 秒）；而 API
+  明确是 **per-second 计费**（H3 Max 768P `$0.08/秒`、Turbo 半价，5 秒 768p ≈ $0.40）。
+  想从我们画布调用就得注册 fal 拿 key 并充值。endpoint id：`minimax/h3-max/{text,image,reference}-to-video`。
+- **Vidu 这把（`vda_…`）是"充值/额度制"**：出片扣积分；`GET /ent/v2/tasks/<不存在的 id>/creations`
+  返回 `400 参数解析错`（而不是 `401`）就说明**鉴权已过** —— 这是免花钱验钥匙的办法。
+  另外 Vidu 的产物 URL **24 小时过期**，所以节点必须当场下载落盘（我们的链路就是这么做）。
+- **Agnes AI / Pavo**（2026-10-15 实测，两条踩坑记录）：
+  - **两个站、key 不通用**：国内站 `https://api.agnes-ai.cn/v1`（平台 `platform.agnes-ai.cn`）、
+    国际站 `https://apihub.agnes-ai.com/v1`。适配器默认走**国内站**，换站设 `AGNES_API_BASE`。
+  - ⚠ **鉴权头怎么发**：只发 `Authorization: Bearer` 就够（官方文档口径）。2026-10-15 试过"两个头都发"
+    （想兼容国际站 `/v1/models` 那条只认 `x-api-key` 的口），但**适配器不打那条口**，多带没好处 ——
+    对照组里"两个头都发"那次恰好回 `503 video_queue_full`、紧跟的"只带 Bearer"回 200，
+    看着像头的问题；可**修完只带 Bearer 之后仍见过 503**（hub 已确认载入新代码）⇒
+    真实原因更可能是**上游免费档间歇性拥塞**，那对 A/B 是巧合。**结论**：只发 Bearer（没必要多带），
+    遇到 503 就**重试**，别把它当配置问题。
+  - ⚠ **key 是"两行拼起来"的一整把**：用户当时分两行贴的（`sk-…` 与 `…Uo`），
+    **只贴前半段两站都回 401**（国内站 `无效的令牌`）—— 拼接后才通。以后遇到"401 但看着像对的 key"，
+    先确认是不是被换行截断。
+  - **视频协议（官方「Agnes Video 2.5 Flash」页，别照别的家抄）**：创建 `POST {base}/videos`，
+    body = `{model, prompt, mode, seconds, size, aspect_ratio?, n}`；`mode` 是 **`text` / `keyframe` / `reference`**
+    （**不是** `text2video` —— 实测那个值回 `400 mode 无效`）；`seconds` 是**字符串** `"4"–"12"`；
+    Flash 的 `size` **必须 `"720P"`**（别的值 400）；首帧走 `mode="keyframe"` + `first_frame`（要**公网 URL**）。
+    查询是 **`GET {root}/agnesapi?video_id=<id>&model_name=<model>`** —— ⚠ 它在**根**下，**不在 `/v1` 里**；
+    创建回的是 **`video_id`**（`id`/`task_id` 是任务 ID，别拿它们查）。产物在响应顶层 `url`。
+  - **额度能查**（本仓已接）：`GET /v1/video/quota?provider=agnes` → 走它 OpenAI 兼容的
+    `/v1/dashboard/billing/subscription`（`*_limit_raw`）+ `/usage`（`usage_raw`，单位 0.01 美元，**原样回不换算**）。
+    实测本机：`limit_raw = 1e8`（该网关口径 = 实际不限）、`usage_raw = 0`；且 Flash 视频官方标**限时免费 `$0/秒`**。
+  - **实测进度（2026-10-15 晚）**：文本真出结果（`agnes-3.0-flash` → `Hi there friend`）；
+    **视频真出片** ✅ —— `POST /video/task`（provider 留空自动挑家，现在它排第一）→
+    `task_iUXExu…` → 轮询到 `succeeded`/`progress:100` → 下到 **3,170,308 字节 `video/mp4`**。
+  - **上游会给的两种"挡下"**：`503 video_queue_full`（`视频队列已满，请稍后重试`，**间歇性**）与
+    `429 rate_limit_exceeded`（`您已达到免费用户的 API 速率限制`，约 1 RPM）—— 都**不是**配置问题，
+    等一会儿/重试即可（画布那条链的探针场景就带重试：`tools/web_probe.cjs aivideo`）。
+  - **排队序号：上游不给**。它的任务字段全集就是 `id/video_id/task_id/status/internal_status/
+    progress/internal_progress/seconds/size/quality/url/error/created_at/completed_at/expires_at/usage` ——
+    没有 `queue_position` 之类。所以"排到哪了"只能看 `status` + `progress`（百分比）；
+    **fal 那家反过来**：有 `queue_position`、没有百分比。两种信号都已从 `/video/task/{id}` 透出去
+    （`progress` / `queue_position` / `raw_status`），画布节点那行进度会写成"已等 30s · 40%"。
+  - ⚠ **别盯 `internal_status` 判成败**：它在本机这次**成功时仍是 `pending`**（`status=succeeded`、
+    `url` 有值、`progress=100`）—— 判据要看 `status` 与 `url`。
+
+**字段留空 = 这家不可用**（接口已就绪，填上钥匙即可用，不必改代码）。现状与三条硬约定：
+
+0. **它们同时是注册表里的「一等厂商」**（2026-10-15 补）：都写进了 `models.json`
+   （`dashscope` / `google` / `kling` 三条 + `minimax`、`siliconflow` 各补上视频模型条目），
+   都带 **`"chat": false`** + 模型只挂 `["video"]` 标签 —— 于是
+   **管理台「厂商」「模型」「密钥」三页都看得见它们**（`/providers` 是全集），
+   而**聊天那侧一点不受影响**：`chat:false` 让自检不再挂假红灯（`providers.chat_enabled`），
+   `tag=text` 的链/档位也筛不到视频模型（实测：`list_models(tag="text")` 仍是原来那 9 家）。
+   ⚠ `/v1/models`（OpenAI 面）**本来就会列出非 chat 模型**（`cogview-3-flash` / `flux` / `speech-2.8-hd`
+   早就在里面）—— 视频模型加进来同样会出现，**别拿它当"能聊天"的清单**。
+
+1. **无钥匙 = 明确 4xx**，文案点出"去填哪个字段"（不静默换家、不落 500）；
+2. **`provider` 留空 = 自动**：按 `AUTO_ORDER`（可用 `L_MODEL_HUB_VIDEO_PROVIDER` 覆盖）挑
+   **第一家有钥匙的**，并把选中者回在响应里。当前顺序 = `minimax,seedance,siliconflow,dashscope,google,kling`
+   —— `minimax` 排第一是因为它**实测真出过片**；
+3. **`task_id` 带厂商前缀**（`"<provider>:<上游 id>"`，可灵再多带一段创建路径）——
+   查询只需回传 task_id，`/video/task/{id}` 与 `l_WChat` 那种"只回显 task_id"的调用方**都不用改**。
+
+| 路由 | 说明 |
+|---|---|
+| `POST /video` | 同步出片（脚本/一次性用）：`{prompt, provider?, model?, image_url?, duration?, resolution?, timeout?}` → `{video_url}` |
+| `POST /video/task` | 建任务 → `{task_id, model, provider}`（画布节点走这条） |
+| `GET /video/task/{task_id}` | 查一次 → `{status, video_url, provider}`，`status ∈ queued/processing/succeeded/failed` |
+| `GET /v1/video/models` | **各家 + 模型清单 + 钥匙配没配**（`has_key`）—— 画布下拉与排障读这条；`?tag=video` 的 `/v1/models/catalog` 也会并入这些模型（**按模型 id 去重**：清单里历史遗留的 `volcengine/doubao-seedance-*` 与适配器的 `seedance/*` 是同一批；硅基流动的 `Wan-AI/Wan2.2-*` 被 `/v1/models` 动态刷新成 `tags:["text"]` 进了 chat 清单 —— 只按 key 去重会让它**永远拿不到 video 标签**，画布下拉里就看不见它。实测 `catalog_models("video")` = 22 条、providers = 六家 + volcengine，`zhipu` 0 条） |
+| `GET /v1/video/quota?provider=<家>` | 某家的**额度/用量**（目前只有 `agnes` 有账单端点；别家明确 404，不假装查到）。返回原样的 `*_limit_raw` / `usage_raw` + 单位说明 |
+
+两个"上游会打回"的坑（都在适配层里归一了）：
+
+- **时长多为枚举**：海螺只认 6/10 秒、可灵只认 5/10 秒 —— 给个通用默认 5 秒会被回
+  `invalid params, param 'duration' only support 6s and 10s`。适配器按模型的 `durations` 取
+  "不小于请求值的最小档"。
+- **`resolution` 别在服务层写死**：各家默认档不同（火山 `720p`、海螺 `768P`、万相 `1280*720`），
+  留空就交给该家的 `default_resolution`。
+
+实测（2026-10-15，本机）：
+
+- ✅ **MiniMax 海螺出片**：`POST /video/task`（不带 provider）→ 自动选 `minimax` →
+  `GET /video/task/minimax:<id>` → `succeeded` + 真实 MP4（1.2~2.4 MB），节点侧落 `<pygraphs>/media/`；
+  ⚠ **2026-10-15 晚些时候该账号试用额度用完**：同一路由回
+  `MiniMax 创建任务失败：HTTP 200 insufficient balance`（hub 照实转 502 + 原文，
+  画布上表现为节点 0.7s 就失败 —— **不是链路坏了，是没额度**；换家/充值即恢复，
+  `GET /v1/video/models` 的 `has_key` 看不出这个，只有真打一次才知道）；
+- ❌ 火山：`volcengine_video` 那把钥匙的账号**没开通任何视频模型**（`ModelNotOpen`；用 AK/SK 刷新
+  出的 57 个模型里没有视频）；`doubao-seedance-2-x` 那几个新 id 也 `NotFound` —— 换把**已开通**的
+  key 或改 `volcengine_video_model` 即可；
+- ❌ 阿里直连：`aliyun` 那把是 maas 网关 token，打 DashScope 原生接口回 `InvalidApiKey`（要另配 `dashscope`）；
+- ❌ 硅基流动：账号余额不足（`30001`）；
+- ⚠ `happyhorse` 那类**只有 DreamMaker 上游**（`api.dreammaker.netease.com`，网易内部聚合网关 +
+  账号鉴权 + App 白名单）的 app 没接 —— 那不是"一把钥匙"能解决的，接它等于接一整套 DreamMaker 鉴权。
+
+### 火山 Seedance 的「视频专用 Key」（历史细节，仍然适用）
 
 用的 **不是** `volcengine` 那把钥匙：方舟 **Agent Plan** 钥匙在 `plan/v3` 网关下**不支持视频模型**
 （`404 UnsupportedModel`），而标准 `/api/v3` 又不认 plan 钥匙（401）。所以视频优先读**专用字段**
-（`client._video_key`）:
+（`video_providers.BY_ID["seedance"]`；旧的 `client._video_key` / `_video_model` 保留为兼容壳）:
 
 | 途径 | 值 |
 |---|---|
-| 管理台「密钥」页 | `volcengine_video`（存储字段 `volcengine_video_api_key`，2026-09-29 加入） |
-| 环境变量 | `VOLCENGINE_VIDEO_API_KEY`（兼容 `ARK_VIDEO_API_KEY`） |
+| 管理台「密钥」页 | `volcengine_video`（存储字段 `volcengine_video_api_key`，2026-09-29 加入） || 环境变量 | `VOLCENGINE_VIDEO_API_KEY`（兼容 `ARK_VIDEO_API_KEY`） |
 | 模型 ID | 管理台「密钥」页 `volcengine_video_model`（或环境变量 `VOLCENGINE_VIDEO_MODEL`），不填用默认常量 `client.VOLCENGINE_VIDEO_MODEL` |
 
 实测判定链（2026-09-29）：`GET /api/v3/models` 200 说明 key 有效；创建任务报
@@ -282,8 +392,80 @@ plan 端点报 `does not support the agent plan feature` = 订阅网关不含视
 - **档位**（`levels.py`）：`eco` / `std` / `max`，各自一份候选模型；`GET /v1/gateway/status` 里
   `levels.order` / `labels` / `default`。
 - **优先级**（`priority.py`）：厂商顺序，调 `/v1/chain` 能直接看到某请求模型的实际顺序。
+  - 两层：**线上值**（auth 中心存储 `prefs:model_hub_priority`，管「路由」页 / `POST /v1/priority/global`
+    写它）与**清单默认**（`models.json` 的顶层 `provider_priority`，只在线上没有显式顺序时兜底）。
+    要"新装/清过设置也按这个顺序"就改 `models.json`；要立刻生效改线上值。
+  - **2026-10-14**：两边都改成 **`modelscope` 最前**（用户口径「这个有免费额度」）——
+    顺序 = `modelscope, volcengine, deepseek, siliconflow, minimax, zhipu, aliyun, wuzu, aigw_personal,
+    pollinations`。判据：`GET /v1/chain?model=deepseek-ai/DeepSeek-V4-Pro` 的**链首 = modelscope**
+    （改前是 siliconflow —— 该模型由 modelscope 与 siliconflow 共同持有，优先级就是在这里起作用的）。
+  - ⚠ **优先级的适用范围**：只在**同一个模型 id 有多家持有**时决定顺序；只被一家持有的 id
+    （如 `deepseek-v4-1-flash` 只有 `volcengine`）**换优先级没用** —— 链首恒是那家。
+    想要"某模型也走免费家"，得让那家**真的有这个 id**（`POST /v1/models/manual` 补），
+    或直接点名那家自己的 id。
 - **自定义提供商（BYO）**：管理台「密钥」页添加，与内置厂商并列；`no_temperature` 标记透传给调用方
   （`provider_omits_temperature`）。
+
+### 6.0 模型**别名**：一个名字打到各家自己的 id（2026-10-14）
+
+**问题**：同一个模型在各家**上游 id 完全不同** —— DeepSeek V4.1 Flash 在火山是 `deepseek-v4-1-flash`、
+阿里是 `deepseek-v4.1-flash`、魔搭是 `deepseek-ai/DeepSeek-V4.1-Flash`、DeepSeek 官方自己是
+`deepseek-flash`。而上游**只认自己的 id** ⇒ 光把名字"统一"办不到：客户端请求 `deepseek-flash`
+时，网关必须替每一家换上**那一家自己的 id**。
+
+**做法**：`models.json` 顶层 `aliases`（**映射在这一层**，其余机制全复用）：
+
+```jsonc
+"aliases": {
+  "deepseek-flash": {
+    "level": "eco",                              // 兜底梯子用它的档位
+    "note": "统一的 DeepSeek V4.1 Flash",
+    "providers": {                               // 各家自己的真实 id（别名表 = 权威家清单）
+      "modelscope":  "deepseek-ai/DeepSeek-V4.1-Flash",
+      "volcengine":  "deepseek-v4-1-flash",
+      "deepseek":    "deepseek-flash",
+      "aliyun":      "deepseek-v4.1-flash",
+      "wuzu":        "deepseek-flash",
+      "aigw_personal": "deepseek-flash"
+    }
+  }
+}
+```
+
+- 请求 `model=deepseek-flash` → `gateway._chain_for` 走 `_alias_chain`：按**优先级**依次展开成
+  `(厂商, 厂商/该家的 id)`；**链首就是优先级第一家**（所以"免费额度的家排最前"立刻生效），
+  别名没覆盖到的厂商继续按原有**档位梯子 + 代表模型**兜底（保证总能答上）。
+- 判据：`GET /v1/chain?model=deepseek-flash` → 链首 = `modelscope/deepseek-ai/DeepSeek-V4.1-Flash`
+  （改优先级前是 `deepseek/deepseek-flash`）；`GET /find?model_id=deepseek-flash` 回
+  `alias:true` + 家清单 + 顺序；`GET /v1/models` 里它跟着 `auto` 排在前面。
+- ⚠ **两条硬约束**：
+  1. 别名点到的 id **必须在网关的 model_list 里**（= 静态清单条目，或 `POST /v1/models/manual` 补的）。
+     动态刷新拉来的 id 只在 `/v1/models` 露脸、**不进调用链** ⇒ 那一跳会被静默跳过。
+     （本次为此把 `deepseek-ai/DeepSeek-V4.1-Flash`（魔搭）与 `deepseek-v4.1-flash`（阿里）
+     补进了 `models.json` 的静态条目。）
+  2. **顺序有两层**：全局 `provider_priority` 与**按模型**的顺序（`prefs:model_hub_priority` 的
+     `models.<名字>`）。别名名如果**同时是一个真实 id**（`deepseek-flash` 就是），那条按模型的老顺序
+     会**赢过**全局顺序 —— 要改链首得连它一起改：
+     `POST /v1/priority/model {"model":"deepseek-flash","order":["modelscope", …]}`。
+- 别名与真实 id **同名不冲突**：别名表就是"这个请求名的家清单"，比"谁恰好叫这个名字"更明确
+  （网关先查别名表）。
+- **在哪设**（2026-10-14 起有页面了）：管理台 **`/admin/routing` → 🔖 模型别名**（一别名一张卡：
+  正式名 / 档位 / 备注 / 每家一行「厂商 → 该家的 id」；`+ 新增别名` / `🗑 删` / `↺ 用默认表` /
+  `保存别名`）。**整表提交**（`POST /v1/aliases`），与优先级同一口径 —— 因为存储一旦写过就以它为准，
+  "只写一条"会把清单里的默认别名挤掉。
+  - 存储 = auth 中心存储 `prefs:model_hub_aliases`；**没写过就回落 `models.json` 的 `aliases`**
+    （升级包带来的默认别名照样生效）；`POST /v1/aliases/reset` = 回到默认表。
+  - 接口：`GET /v1/aliases`（有效表 + `source`）· `POST /v1/aliases`（整表写）· `POST /v1/aliases/reset`。
+- **对外只出口"正式名"**（用户口径 2026-10-14）：
+  `GET /v1/models` = `auto` + **别名** + **没被任何别名顶替的模型 id**；
+  被别名映射的那些各家私有 id（`deepseek-v4-1-flash` / `deepseek-ai/DeepSeek-V4.1-Flash` /
+  `deepseek-v4.1-flash` …）**不再单列** —— 它们是实现细节，由别名代表出场。
+  管理视图（`/v1/models/catalog`、`/v1/models/available`、管理台「模型」页）**保持原样**（按厂商看明细）。
+  代码：`registry.canonical_model_names()`。
+- 自证：`tests/test_gateway_chain.py::AliasChainTest`（6 项：展开成各家 id / 链首随优先级 /
+  缺 id 的家跳过 / `厂商/别名` 写法 / 兜底仍在 / 非别名不受影响）；
+  `tests/test_aliases.py`（10 项：存储优先 / 空表也算写过 / 回落默认 / 存储读挂也回落 /
+  只出口正式名 / 被映射的私有 id 隐藏 / `GET·POST·reset` 三条接口 / 脏数据被丢）。
 
 ### 6.1 管理台「路由」页怎么用（2026-09-28 重排）
 

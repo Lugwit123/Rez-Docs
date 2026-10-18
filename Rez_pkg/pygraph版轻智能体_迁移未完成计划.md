@@ -11,7 +11,7 @@
 |---|---|
 | ① 引擎侧控制流（分支 / 人在环 / 跨轮状态 / 结构校验 / 轨迹回放 / 沙箱 A/B / 策略包） | **完成 + 自证**：`wuwor l_node_engine -- l_node_engine_selftest` 全绿（子图是第 21 组）、web `node --test` 43 项 |
 | ② 第一版对照：Arm B（小图）vs Arm A（老 agent） | **已收口**：n=3 表在对照文档 §4.0、原始样本 `tools/ab_runs/2026-10-12_n3.jsonl`、复跑脚本 `tools/run_arm_a.cmd` / `run_arm_b.cmd`（见 §1） |
-| ③ 换发动机：`plan` / `tools` 步循环搬进图 | **第 1 步（影子）✅、第 2 步的等价证据 ✅（5 场景两档对拍）、第 3 步起点（flow→pygraph 镜像）✅**（2026-10-12）；"执行本体接进图"与"翻默认档位"未起步 |
+| ③ 换发动机：`plan` / `tools` 步循环搬进图 | **第 1 步（影子）✅、第 2 步的等价证据 ✅（5 场景两档对拍）、第 3 步起点（flow→pygraph 镜像）✅**（2026-10-12）；**执行本体已收敛成唯一一份 ✅**（2026-10-14，`tool_turn.py`）；**goal 模式已对齐 ✅ + 换发动机 n=3 对照已出 ✅**（2026-10-14）；**翻默认档位**留人拍板 |
 | ④ 子图 / FX-Map 宿主接线 | **已完成**（引擎 + 宿主 + `TexFxMap`；见 `子图与FX-Map_计划.md`） |
 | ⑤ 阻断项：增量缓存 × 括号节点 | **已修**（2026-10-12）：`IfStart` 与循环括号一并排除出缓存；自证 + 真跑连跑 2 次都过（见 §4） |
 
@@ -79,11 +79,14 @@
   ② **第二问的措辞必须含"再列一次"** —— 只问"比上一轮多了几个"时模型直接 `answer`（`if_taken=False`），
   `dump` 是 `null`，谈不上对比。
 
-  **Arm B 的 Q2 已就位且跑通（2026-10-12）**：`tools/agent_lite_ab.py --q q2`
-  —— 图只改两处（`glob` 换成 `*/*.py`；成句提示改成"按子包分组计数 + 排序"），
-  **汇总这一步是模型干的**（图只管取数与循环 —— 引擎没有数值/排序原语，见 `l_node_engine.md` §六）。
-  实测：**`answer_ok=True`**、`dur=9.58s`、12 步 / 2 次模型往返，答案表与真值逐项一致
-  （`_tmp 9 / l_test_code 2 / repo_tools 2 / Test 2 / 合计 15`）。
+  **Arm B 的 Q2 已就位、且 2026-10-13 起"图自己算"**：`tools/agent_lite_ab.py --q q2`
+  —— `glob('*/*.py')` → **`GroupCount(key_sep="/")`**（按子包分组计数、按个数降序）→ `Sum` 出合计 →
+  `ToText` 拼进提示；模型只**照着念**（"别自己重算"）。实测 `answer_ok=True`、17.8s，
+  表格与真值逐项一致（`_tmp 9 / l_test_code 2 / repo_tools 2 / Test 2 / 合计 15`）。
+  （此前是"把清单塞给模型让它数"：提示词大、还会算错 —— 那正是 §3.2 里"引擎无数值原语"的后果，
+  2026-10-13 补了 `Calc/Count/Sum/GroupCount/ToText` 五个节点后这条不再成立。）
+  过程里踩过的两次墙（留痕）：`**/*.py` 递归 → 提示词爆炸（调到 300s 也回不来，真因是题目/模式写错）；
+  宿主原先只有 env 一条超时路 → 已补 per-request `{"timeout": N}`。
   中途撞的三次墙（都留了痕，别重复踩）：
   ① 原写 `**/*.py`（递归整棵树）→ **提示词爆炸**，作答那步连 300s 都回不来；而且**口径也不对**
   （真值数的是"子包**直接**放的 .py" = `*/*.py`）。**换成一层通配后 9.6s 就答完了** ——
@@ -146,8 +149,15 @@
    - 现在能抓到什么：默认图上两边恒等（= "可以安全接管"的证据）；有人给 `branch_steps` 加一条
      "预算见底 → 收尾"之类的改动 → 影子立刻报分歧。
    - 主文档：`流程图智能体_图驱动控制流.md` §2.1。
-   - **还差的**：真模型 n 轮的分歧率（隔离实例 + 真 provider 的配方，见
-     `l_agent_chat_隔离实例A_B实测.md`）；确定性那半已经由上面的端点用例兜住。
+   - **真对话分歧率：已量到（2026-10-13）n=21 · 分歧 0（0.0%）** —— 11 轮真模型对话（读/写/搜/多读/
+     无工具/大文件/失败路径 + 3 轮步数上限=1），**两支出口都覆盖到**：`graph=loop×18` + `finish×3`
+     （`budget_exhausted` 那 3 行），`baseline` 分布完全一致 → **图（full 档）与硬编码基线在真对话上一致**。
+     怎么凑出来的（**这条比数字重要**）：本机 `l_agent_chat` 一夜**零自然对话**，光开着影子只攒到 1 行
+     → 用 **`tools/shadow_feed.py`** 主动喂（真模型/真工具/`persist:false` 不落会话），
+     再用 `tools/shadow_report.py` 读。
+     ⚠ 三条边界别读过头：① 这些轮次的问题**是我给的**（不是自然用法）；
+     ② 护栏是桩 → "门拦不拦"那一层看不见；③ `fail_limit_hit`（熔断）与 `stopped`（工具要求停）
+     **没采到**（要专门造：连续失败 / 让工具要求停）。
 
 2. **接管分支决策**：等价 `flow_full`，但决策由图上的门表达（不再散落成 `params` 阈值）。
    判据：`turn_replay.py` 沙箱 A/B 通过（**不拆护栏、不绕远、能收尾**）+ 真跑 n=3 不劣化。
@@ -172,6 +182,117 @@
    **真模型 n=3** 与"翻默认档位"仍待做（后者会改用户可见行为，**留给人拍板**）。
 3. **整轮图化**：`plan`/`tools`/收尾都在图上，宿主只当"执行器"（LLM 往返 / 审批 / SSE / 痕迹）。
 
+   **接线层已落地（2026-10-13）** —— 引擎侧钩子 + agent 侧一轮跑通：
+
+   - **引擎**：`l_node_engine/host_steps.py` —— 节点 `HostStep`（`step` + 动态端口）+ 进程级注册表
+     `register_host_step(name, fn, *, description, params, outputs)`；**没注册就报清楚**
+     （不许静默产出 `None`）；多输出（执行器返回 tuple）按序交出去。自证 selftest 第 28 组。
+   - **agent**：`l_agent_chat/graph_turn.py` —— `TurnContext`（宿主侧状态）+ 四个宿主步骤
+     `plan`（默认走 `agent_client._planner_step`，真 LLM 往返）/ `tools`（**分发器由调用方注入**，
+     审批/流式/痕迹不搬进图）/ `has_calls` / `is_answer`（两个**宿主谓词**，图上拿它们做
+     `IfStart` 条件与 `LoopEnd.stop`）+ `run_graph_turn(graph, ctx)`（注册 → 跑 → **一定注销**）。
+   - **v1 接缝（写清，别当成能用的数据流）**：图上 `HostStep` 只给 `step`；**动作之间的数据交接走
+     宿主 context**（messages / 工具结果本来就在宿主侧，且是几十 KB 级）。"数据流也进图"是后续
+     （给 `HostStep` 加 `ports` 动态输出 + 图内取值节点），与"控制流进图"分开做。
+   - **自证**：`tests/test_graph_turn.py` **5/5** —— ①图真驱动一轮：第一圈要工具（dispatch 真被调一次）、
+     第二圈不要 → `LoopEnd.stop` 收尾（`rounds=2` / `stop_reason="answer"` / 输出端口有值）；
+     ②步数上限到点收尾（`stop_reason="budget"`，不是崩）；③跑完四个步骤**全注销**（不污染下一轮）；
+     ④没注册 → `node_errors` 说清"宿主没注册 + 已注册哪些"；⑤`tools` 没接分发器 → 明确报错
+     （**不偷偷执行**）。引擎侧 `l_node_engine_selftest` 同时覆盖 `HostStep` 三条判据。
+   - **接真实执行本体（只读档，2026-10-13 同轮）**：`plan` 默认就是真 LLM 往返（`_planner_step`）；
+     `tools` 的分发器由调用方注入 —— 沙箱脚本 `l_agent_chat/tools/graph_turn_demo.py` 给的是
+     **只读档**（复用现成演练模式：写类在 `AgentTool.__call__` 处一律拒，读类放行 ⇒ 模型想写
+     也改不了盘）。真模型自证：`--ask "读 AGENTS.md 第一行"` → **rounds=2 / stop_reason=answer /
+     errors=0**，答案正确；模型一直要工具时 → `stop_reason=budget`（护栏那条也走过）。
+     ⚠ 踩到的最要命一条：工具结果**必须回灌** planner 对话（`_append_tool_turn`），否则模型下一圈
+     看不到结果、只能盲目重规划（实测同一个问题从"2 圈答案正确"退化成"4 圈撞上限 + 答非所问"）。
+   - **还差（第 3 步的主体，不是接线）**：把 `app.py` 回合函数里**内联**的 plan / tools 执行本体
+     抽成可调用函数，挂到 `plan`/`tools` 两个宿主步骤上（那函数 ~2500 行，plan/tools 与 SSE/审批/
+     检查点交织 → 得先拆；沙箱里走的是"只读档 + 无审批"的简化分发器）；以及**翻默认档位**
+     （会改用户可见行为 → 留给人拍板 + 真对话 n=3 对照）。
+
+     **✅ 执行本体已收敛（2026-10-14，"真抽执行本体"）** —— 判据/记账不再是两份：
+     - **新增 `l_agent_chat/tool_turn.py`**（全**同步**，无 `await`）：判据链拆成逐条小函数
+       `hook_pre` / `permission_effect` / `fs_block` / `needs_approval` / `mcp_autoapprove` /
+       `approval_preview` / `hook_permission_request`，记账拆成 `snapshot` / `record`，另有组合入口 `judge()`。
+       **顺序照 `app.py` 现状**（PreToolUse hook → 规则引擎 → deny → 读后写闸门 → 是否审批 → 预检 →
+       PermissionRequest）。**同步**是关键：pygraph 分发器（跑在宿主线程）可原样调用，
+       硬编码步循环在其上 `await` 自己的部分。
+     - **`graph_turn.approval_dispatch`** 改调它（顺带补齐原简版缺的五项：PreToolUse 改写 /
+       PermissionRequest / edit·apply_patch 预检 / mcp `autoApprove` / PermissionDenied hook）；
+       旧私有 `_needs_approval`/`_fs_block`/`_hook_deny`/`_perm_effect`/`_before_write` 删除。
+     - **`app.py`** 的判据块 / 快照块 / 记录块改调同一批函数；`_diff_preview`/`_apply_patch_preview`
+       从 app 删除。**异步点**（审批等待 / 监工看门狗 / SSE yield）与特殊工具分支、失败路径**仍在 app**
+       —— 那正是"审批 / 流式 / 痕迹不搬进图"的既有边界。
+     - **边界（本次没动）**：`plan` 本来两边就已同调 `agent_client._planner_step`；**翻默认档位**仍留给人拍板。
+     - 判据：`tests/test_tool_turn.py` **20/20**（含"唯一性防回归"：app / graph_turn 都不许再定义那份逻辑）
+       + `tests.test_graph_turn` **38/38** + `tests.test_flow_full_equivalence` + **端点批 103/失败 2**
+       （两条为环境所致：市场接口取到非 JSON、开发机上多出的 `office-*` 技能；均与工具执行面无关）
+       + 真跑三件：`l_agent_chat_graph_smoke` **4/4** / `web_probe.cjs agentgraph` **5/5** /
+       `l_agent_chat_graph_step_probe`（人在环：出询问条 → 批准 → 落盘 + checkpoint + diff）PASS。
+     - ⚠ **踩过的坑（端点批抓到，已修）**：`tool_turn.fs_block`/`record` 早先对**空会话**直接短路
+       （"没会话就跳过"）—— 但 `app.py` 的老调用方不带 `session_id` 时 `req_sid` 就是**空串**，
+       而 `fs_guard` 的观察与判据按 `""` 这一桶**成对**记账 ⇒ 短路 = 读后写闸门**静默关掉**。
+       现两处均照空串判/记，并有 `test_empty_session_still_gates` 防回归。
+     - 计划/设计：`openspec/changes/c9-tool-turn-consolidation/`。**纯搬家，用户可见行为不变**。
+
+     **✅ goal 模式已对齐（2026-10-14，换发动机收尾）** —— 与硬编码那条线**同一份判据**：
+     - **缺口（改前）**：图侧 `goal` 门**只看时间** ⇒ 目标已达成也会被推回去硬撑到预算耗尽；
+       且推回提示只写"说一句就收尾"，**没叫模型打 `GOAL_DONE`/`GOAL_BLOCKED`** ⇒ 模型不打标记、
+       一直被拦，看着像"图不认标记"（其实是提示词没要求）。
+     - **改法（只动宿主 `graph_turn.py`，图资产不动）**：`TurnContext.goal_verdict`（`done`/`blocked`/`""`）
+       + 模块级 `_goal_verdict()`（懒导入 `chat_modes.goal_verdict` = **唯一实现**，与硬编码同款）；
+       `do_plan` 每圈从**模型正文**算结论并留一条 `🏁 目标达成 / 受阻`；`do_goal` **有结论即放行**；
+       `GOAL_NUDGE` 改写成硬编码那条线的原文（逐条对照验收标准 + 单独一行打标记）。
+       ⚠ 只喂 `reason`（正文）：`assistant` 是原始 dict，`str()` 会把 `reasoning_content` 一起带上，
+       模型在思考里复述一句标记就会被误判。
+     - 判据：`tests/test_graph_turn.py::GoalGateTest`（预算内拦 / 预算到点放行+交代进度 /
+       **GOAL_DONE 提前放行** / **GOAL_BLOCKED 提前放行** / 非 goal 不看标记 / 推回提示必须含 GOAL_DONE）
+       + 真跑：goal 模式预算 180s、目标门只拦 **1** 次（上限 2）、**18.6s 就提前收尾且 `停因 answer`**
+       ⇒ 只可能因读到 `GOAL_DONE` 放行（复现两次）。
+
+     **✅ 换发动机 n=3 对照（2026-10-14）** —— 同一问题 / 工作区 / 模型，**只差智能体**：
+     - harness：`l_mindmap_mmd/999.0/tools/agent_arm_a.py` 新加 `--agent graph|hard`（**ASCII 键**绕开
+       命令行中文码页）/ `--mode goal` / `--goal-seconds` / `--n`，并加判别器 `graph_driven`（这轮真由图
+       驱动）/ `goal_gate`（目标门真拦过）。跑在隔离实例 `:1299`（当前代码 + 稳定产物，见
+       `l_agent_chat_隔离实例A_B实测.md`）。⚠ `🏁` 是**过程流水**行、**不走 SSE**，哨兵别量 SSE（两臂皆然）。
+     - 问题：`列出 <rez-package-source> 顶层有哪些 .py 文件？`（两臂逐字相同）。
+     - 原始样本：`l_mindmap_mmd/999.0/tools/ab_runs/2026-10-14_engine_n3.jsonl`（agent 模式、两臂，靠
+       `agent` 字段区分）/ `2026-10-14_engine_goal.jsonl`（goal 模式，含复跑那次）。
+
+     | 臂 | 智能体 | 图驱动 | 工具 | 审批 | 耗时(s) | tokens | 答案(字) |
+     |---|---|---|---|---|---|---|---|
+     | hard | `硬编码智能体` | 否 | 3~6 | 1~2 | 15.5 / 20.6 / 24.5 | 61k / 77k / 78k | 1283~2337 |
+     | graph | `default_intelligent_agent` | 是 | 2~3 | 0~1 | 9.7 / 15.8 / 19.2 | 44k / 44k / 62k | 816~1106 |
+
+     - **判读口径（先定口径，别把变化读成"劣化"）**：
+       - ✅ **正确性**：两臂都对（3 个 `.py`：`check_class_list.py` / `restart_app.py` / `test_scan.py`）。
+       - ✅ **该省的**：图臂 tokens 中位 **~44k vs hard ~77k**（约 **−43%**，同题）、工具调用更少
+         （2 vs 4）、答案更短（816~1106 vs 1283~2337 字）。
+       - ⚠ **用户可见差异（唯一一条）→ ✅ 已关闭（2026-10-15）**：当初 hard 臂答复**带"问题复述"**
+         （`contract` 那一步的可见产物）、图臂**不复述**（图臂 `contract` 节点当时只提醒、不产可见复述）。
+         用户拍板**完全对齐 hard 口径**（并同时覆盖画布那条路）后已补上：图侧重新把 `restate_question`
+         广告给模型（撤 `app.py` 两处刻意过滤）、`do_contract` 改成真校验（漏了照抄 `RESTATE_RETRY_NUDGE`
+         重试一次）、两个分发器加"只记不发"元工具分支、作答那一刻 `compose_reply` 拼成答复第一段
+         （模型漏了 → `fallback_restate` 本地兜底 ⇒ **"复述必然存在"**）+ 第 0 圈就发 `restate` 事件；
+         **图资产不动**。判据：`RestateContractTest` 6 例 + `graph_smoke` 4/4（隔离实例同样 4/4，
+         `read` 档新增"答复第一段必须是问题复述"）+ `step_probe` 默认/`--slots`/`--always` 全过 +
+         `web_probe agentgraph` 6/6。实现与代价见 `l_agent_chat/.../doc/CHANGELOG.md`（2026-10-15 条）。
+       - ✅ **收尾门的口径也补齐了（2026-10-15 同轮）**：`fact` 门（先核实）原来比 hard **松**——
+         图侧 `did_read` 把 `list_dir` / `search_text` 也算"读过"，于是"只搜过就下结论"反被放过去。
+         现已照 `app.py` 那处护栏的原文判据对齐（`not read_any and (located_any or not did_tools) and
+         _looks_like_code_question(last_user)`，谓词/工具名表仍从 `app` 懒导入），并照 hard **只拦 1 次**；
+         非代码问题这道门不再插手。判据 `GraphTurnTest::test_fact_gate_same_as_hard` 4 例。
+         ⚠ 唯一剩下的差异是**收益性的**：模型第 0 圈没先复述时 `contract` 会追加纠正消息 ⇒
+         那一轮多跑一圈（**与 hard 同口径**：hard 也重规划一次；模型照做时不多跑圈）。
+       - ⚠ **不许省的都还在**：两臂都出审批卡、都落 `_traces`、都有收尾门（`门拦`/`提醒` 都在）。
+       - ⚠ **别读成"图更快"**：耗时差受 prompt cache 命中影响（hard 先跑、后两轮多命中缓存），
+         单题不足以下结论；**多步问题集**是 §2.1 的待做项。
+     - **结论**：在"该省的开销"（tokens / 冗余工具调用）上**图臂占优或持平**，
+       在"不许省的面"（护栏 / 审批 / 痕迹 / 收尾 / **问题复述**）上**一致**；**未发现劣化**。
+       `翻默认档位`已无待拍板的口径差异（原"是否保留 restate"那条 + "`fact` 门比 hard 松"那条
+       均已于 2026-10-15 关闭）。
+
    **起点已落地（2026-10-12）**：`l_mindmap_mmd/999.0/tools/flow_to_pygraph.py` 把默认智能体的
    **流程图**（goto 状态机）翻成 **pygraph**（拓扑求值 + 括号区），产出
    `pygraphs/default_intelligent_agent.json`【镜像】（21 节点）：
@@ -181,15 +302,35 @@
    - 工具那一步 v0 = **只读档**（`glob:glob`）；flow 的 `tools` 背后那套带审批/痕迹的工具集**仍在宿主**
      （= 第 3 步真正要搬的东西）。
    - **两条不可平移**（都已实测，逐条落成 `fx_*` 便签，别假装平了）：
-     ① 背边 → 括号区（pygraph 图必须无环）；② 多路 `branch` 与 `gate` 在 pygraph 侧**没有原语**
-     （且 if 不能嵌套）→ 待补引擎能力或交给宿主。
+     ① 背边 → 括号区（pygraph 图必须无环，`while` 用 `LoopStart(until_stop=True)`）；② 多路 `branch` 与
+     `gate` 在 pygraph 侧没有**同名原语** → 多路控制流用"嵌套 `IfStart` + `Not`"、多路选值用 `Select`
+     （都 2026-10-13 起可用；**`else` 2026-10-16 起可直写** = `IfStart … ElseStart … IfEnd` 三件套，
+     见引擎 §3.1 —— 这条不再必须靠 `Not` 嵌套）；门的判据结构仍归宿主。
      ~~③ `if` 不能放进循环体~~ → **2026-10-12 已由引擎放开**（见 `l_node_engine.md` §六）：
      镜像里的 `branch_calls` 现在是**真 if 区**（`has_calls` + `if_tool/end_tool`，工具只在需要时才跑），
      不再退化成"无条件工具 + stop"。
    - 判据：结构校验 errors/warnings **全空** + 覆盖表 16/16（`--verify`）；真跑 **2 圈收敛**
      （`is_answer=True` → `stop`）、答案正确、`node_errors` 空。
-   - ⚠ 镜像**不是**运行时本体：默认智能体的控制流仍跑在 `flow_engine` 上；这张图现在是"能看、能校验、
+   -    ⚠ 镜像**不是**运行时本体：默认智能体的控制流仍跑在 `flow_engine` 上；这张图现在是"能看、能校验、
      能跑（只读档）"的**靶子**，第 3 步要做的正是把宿主的执行本体接进 `plan`/`tools` 两个位置。
+
+## 3.5 P0～P3：工程 / 资产化（用户 2026-10-13 提的大方向）
+
+口径（用户原话）：**"一个工程一个大目录，里面可以创建函数、类图、结构体……希望实现 UE 蓝图的大部分功能；
+agent 的 pygraph 就是第一个工程"**。分四期，每期都能真跑、都能停：
+
+| 期 | 内容 | 状态（2026-10-13） |
+|---|---|---|
+| **P0** | **工程容器**：目录即工程、地址 `工程/资产`、老图兼容、列表带 `project`、`/api/pygraphs/projects`、路由升级（13 条 `{name:path}` + 裸路由 `{name:asset}`） | ✅ **宿主 + 前端都做完并实测**（2026-10-13）：宿主侧工程内建图/跑图/列表/工程接口、老 23 张平铺图不坏；**左侧资产树**（「📁 工程与资产」按工程分组、三类资产、点图打开、点结构体/类落节点、↻）；探针场景 `assets` 9 项 PASS。**还差**：`project.json`（工程设置/依赖）、重命名/搬家 |
+| **P2** | **函数库化**：编辑器按子图输出**画多端口** + 资产树分类 | ✅ **做完并实测**（2026-10-13）：宿主 `ports?kind=subgraph` 的 `outputs` + 前端 `pySchema.applyOutputPorts` / `toFlow(graph, info, portsByNode)`（**按节点**覆盖输出元数据）→ 引用的图有 2 个 `Output`，画布上就是 2 个端口（实测 handles `["out0","out1"]`、名字来自那张图）。⚠ 踩到一处：端口 effect 原先**把 `outputs` 丢了**（只存 input/methods/signature/doc）。 |
+| **P1** | **结构体（Struct）**：字段表资产；运行期就是 dict；节点 `MakeStruct`（字段名作动态输入）/ `SetField`（值语义返新 dict）/ 取值用现成 `GetItem`；**按名字引用**（图里只填 `工程/名字`，宿主内联字段表） | ✅ **引擎 + 宿主 + 前端都做完并实测**（2026-10-13）：节点 `l_node_engine/struct`；资产 `kind=struct`（重名当场 400）+ `GET /api/pygraphs/structs`；名字引用 `_inline_structs`（**内联成 JSON 文本**）+ `struct_ref` 400；**字段端口 + 资产下拉**（`ports?kind=struct` + `STRUCT_NAME_PORT` 补成 select，实测 handles=`struct/fields/n/out0`）。**还差**：结构体编辑器（表格）、`project.json` |
+| **P2** | **函数库化**：编辑器按子图输出**画多端口**（数据已备：`list_graph_outputs` + ports API 的 `outputs`）+ 资产树分类 | 引擎/宿主已备，差前端 |
+| **P3** | **类图**：`实例 = dict（字段）+ 方法 = 图引用`；节点 `ConstructClass` / `CallGraphMethod`（**不生成真 python 类** —— 纯 JSON 资产、可热更、无动态类序列化坑）；继承/接口先不做 | ✅ **v1 引擎 + 宿主做完并实测**（2026-10-13）：类资产 `kind=class`（`fields` + `methods{方法名:图地址}`）+ `GET /api/pygraphs/classes`；`_inline_methods` 按「类→方法→图」把方法图内联成 `sub`（方法图里 `Input(self)` 拿实例），解析不到 → `method_ref` 400。实测：构造 41 → 调 `bump` → **42** ✓。v1 边界：方法名**静态**、方法图里再定义方法不支持。**还差**：类编辑器、继承/接口、按值动态分发（要就自己接 `Select`） |
+
+- 类图那条路的取舍：**实例=dict + 方法=图**（推荐）vs 生成真 python 类（更像 UE，但动态类 + 序列化 + 热更都变麻烦）。
+- 老图策略：**根目录 = 兼容层**（新资产必须进工程，老图原地不动）—— 推荐，已按它实现。
+- 引擎能力侧的前置（都已做）：子图 = 函数（**多输出** 2026-10-13）、`while`/嵌套 if/嵌套循环、`Select`、
+  `Calc/Count/Sum/GroupCount/ToText` —— 即"**用图写函数**"这条路已经通了；**类**要 P3，**结构体**要 P1。
    判据：迁移前后同题 n=3 对照（步数 / 耗时 / 工具数 / 收尾率）+ 一份"用户可见差异"清单。
 
 ### 3.3 硬约束（写前面，别到时候才发现）
@@ -232,6 +373,27 @@
 
 - 现状：pygraph 轨迹只记图内 `run`；真对话的轮次轨迹在 `l_agent_chat` 侧 `_traces/<图>.jsonl`。
 - 判据：一轮真对话能在编辑器里回放（或至少在控制流面板看到节点路径 + 被拦的门）。
+
+**✅ 已落地（2026-10-15）—— 图驱动一轮的轨迹落盘**（`l_agent_chat` 侧，宿主改动、图资产不动）：
+
+- 病根：默认档由 pygraph 驱动后，`app.py` 仍按 `flow_spec_ and flow_fctx` 往 `_traces` 写 ——
+  但图驱动那轮**没跑过 `run_flow`** ⇒ `flow_fctx.visited` 恒空 ⇒ `steps:0, seq:[], segs:[], guards:{}`。
+  实测该文件 **174/200 条是空的**，最后一条**非空**停在 `2026-10-14 14:27:26`（= pygraph 接管默认档之前）：
+  真记录被 200 行保留上限逐轮顶出去，读端被告知"这轮什么都没跑"。
+- 修法：`graph_turn.run_trace(ctx, box)`（纯函数）→ 复用 `_append_flow_trace` 落同形记录
+  （`mode="pygraph"` / `seq`=逐节点事件（滤掉 `skip|mute|bypass|stubbed`）/ `segs`=按循环圈分段 /
+  `guards`=门拦 / `steps`=圈数 / `end`=停因）；共享尾巴加 `and not _pg_drove`，**图驱动轮跳过**
+  轨迹落盘 / 影子对拍 / 策略建议 / 控制流路线（它们的输入在图档恒空 ⇒ 产出的是谎报与误导）。
+- 判据：`TraceRecordTest` 5 例 + 点名批 52 例 OK；`graph_smoke` 4/4、`graph_step_probe` PASS（含 `--slots`）；
+  文件级取证 末行 `seq` **62–86 个节点**（含 `plan`/各门/工具）、`segs`=圈数+1；
+  读端 `GET :1250/api/flow/traces?name=…` **零改动**可消费。
+- ⚠ **两条没做的（记录，别当已完成）**：
+  ① **FlowEditor 的节点/边热力对 pygraph 档仍对不上** —— pygraph 节点 id（`tools_read`/`g_stall`）与
+  flow json 的节点名（`branch_work`/`tools`）**不是同一命名空间** + `flow_traces_api` 按 **flow json 的真实边**
+  过滤 ⇒ 边热力为空、节点热力只反映 pygraph 侧计数。**跨命名空间的热力归并**才是"能在编辑器里回放"的
+  最后一里（判据里那句话仍只有前半句达成）。
+  ② `_traces.seq`（逐节点、含循环体）与 `flow_evolve._LAST_RUN.seq`（引擎**外层拓扑序**、只到 `LoopStart`）
+  口径**不同** —— 未擅自统一（会改变 `optimize_agent` / `session_review` 的取证输入）。
 
 ## 6. P2：文档与测试缺口
 

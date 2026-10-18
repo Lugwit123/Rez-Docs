@@ -10,7 +10,7 @@
 
 | 已完成 | 自证（可复跑） |
 |---|---|
-| **canvas 渲染后端 P3/P4/P5**：>150 节点走 canvas，且**可编辑** —— 点选/框选/拖节点/拖端口连线/右键菜单（节点·边·空白）/双击居中/滚轮缩放/小地图（可点可拖）/分组框拖动缩放/循环区凸包/标志位徽标/耗时徽标/运行中脉冲/热边高亮 | `node …/tools/web_probe.cjs perf`（下面 1.2 的数字）；编辑器手点 |
+| **canvas 渲染后端 P3/P4/P5**：>150 节点走 canvas，且**可编辑** —— 点选/框选/拖节点/拖端口连线/右键菜单（节点·边·空白）/双击居中/滚轮缩放/小地图（可点可拖）/分组框拖动（**框里的节点跟着走**）与缩放/循环区凸包/标志位徽标/耗时徽标/运行中脉冲/热边高亮 | `node …/tools/web_probe.cjs perf`（下面 1.2 的数字）+ `… web_probe.cjs group`（两后端的整框搬运）；编辑器手点 |
 | **2000 节点性能收口** | `web_probe perf`：整理布局 **141ms**、稳态 `fillRect` **1/帧**、JS+提交 **0.58ms/帧**；`l_mindmap_mmd_web_test` 里 `layoutGraph` 2000 节点不超时 + 幂等 |
 | **`Input` 全 python 类型 + 自由类型表达式**：标量存真标量、容器存 **JSON 文本**、执行时 `coerce_param()` 转真对象；`type` 可写 `list[int]` / `dict[str, int]` / `np.ndarray` | `wuwor l_node_engine -- python …/tools/param_types_check.py` → **35 项全过**（含真跑图下游拿到真 `dict`/`list`/`tuple`、`base64:` 解码） |
 | **容器参数的结构化编辑**（S1）：`list` 类给数组行、`dict` 给键值行，JSON 文本域退成兜底视图（可切）；落盘**仍是 JSON 文本** | `web_probe types`（结构化行 + 切回文本视图 + 存回 `["x","y"]`）；`l_mindmap_mmd_web_test` 里 `containerShapeOf/rowsOfText/textOfRows/pairsOfText/textOfPairs` |
@@ -26,7 +26,7 @@
 | **文档与索引（S0）**：`AGENTS.md` 必读表加 `web_probe.md`；`l_mindmap_mmd.md` 补 `models/` 四路由 + 值口径 + `L_MINDMAP_MODEL_ROOTS`；源码里三处"canvas 只读"旧注释改掉 | `AGENTS.md` / `l_mindmap_mmd.md` / `CanvasSurface.jsx` |
 | **前端纯逻辑**：布局防重叠 + 幂等、参数口径、结构化行、凸包、分组框、策略包形状 | `wuwor l_mindmap_mmd -- l_mindmap_mmd_web_test` → **56 项全过** |
 | **多引擎（远端宿主）**：脑图可接多个后端引擎（`local` + 登记的远端），图随编辑器走、对象留在宿主进程、能力按 `features` 降级 | 契约：`Rez-Docs/Rez_pkg/远端引擎契约_v1.md`；自证：`tools/engine_contract_check.py`（本地 vs 假宿主 18 项）+ `web_probe engine`（下拉/切引擎/远端跑图/切回） |
-| **搜宿主的类 + 节点标引擎名**：左栏搜索框会多一节「🧩 类」（搜宿主**已导入模块**里的类，点一下落 `MakeInstance`）与「🔀 别的引擎才有的节点」；不属于当前引擎的节点卡片上标 `🔗 <引擎名>` | `GET /api/engines/nodes-index` + `GET /api/pygraphs/classes`；自证：`web_probe muse`（含"local 下标出 muse"与"搜类落节点"断言） |
+| **搜宿主的类 + 节点标引擎名**：左栏搜索框会多一节「🧩 类」（搜宿主**已导入模块**里的类，点一下落 `MakeInstance`）、一节「**ƒ 函数**」（2026-10-17 加：同一批模块里的函数，点一下落 `CallFunction`，见 `l_node_engine.md` 的 `functions.find_functions`）与「🔀 别的引擎才有的节点」；不属于当前引擎的节点卡片上标 `🔗 <引擎名>` | `GET /api/engines/nodes-index` + `GET /api/pygraphs/search`（⚠ 不是 `/classes`：那个路径被"类资产列表"占着，同路径 GET 先注册的赢 ⇒ 搜索那条以前从没被调到过）；自证：`web_probe muse`（"local 下标出 muse"与"搜类落节点"断言）+ `web_probe fnsearch`（搜函数 → 落 `CallFunction` → 端口按签名展开） |
 | **属性面板：本轮值**（连线字段不再只有"← 节点 x 第 n 个输出"）：一行摘要（类型+条目数+体积）+ 左侧 `▸` 展开 + `⧉` 复制；节点底部有「本轮输出」/`ui` | `web_probe muse`（摘要正则 / 没有铺开的 `<pre>` / 点 ▸ 看全）；`web/src/RunValue.jsx` |
 | **混引擎（一张图多台引擎）**：节点上标 `engine` → 跑图按**同引擎连通块**切片，段内交给那台引擎照旧跑（执行器不重造），**段间值走 JSON 交接**；UI：属性面板「引擎」下拉 + 卡片徽标 + 日志"▶ 段 x" | 口径与限制见 `l_mindmap_mmd.md`「混引擎」；自证：`web_probe mix`（绑引擎的卡片徽标 / 面板默认值 / 跑通 / 日志有段）+ `pySchema.test.mjs` 的"engine 不能丢"用例 |
 | **节点来源标记 + CSV 表格预览**：`/object_info` 带 `source`（`function`/`class`）→ 节点列表 `ƒ`/`◇`；`Preview(mode="csv")` 把 CSV 画成表格（`ui.table`） | `preview_csv_check.py`（10 项）+ `web_probe muse`（"CSV 预览画出表格"） |
@@ -39,7 +39,7 @@
 ### 1.1 canvas 渲染后端（>150 节点自动启用，P3/P4/P5 之后）
 
 能编辑：点选 / 框选 / 拖节点 / **拖端口连线** / 右键菜单（节点·边·空白）/ 双击居中 / 滚轮缩放 /
-小地图导航（可点可拖）/ 分组框拖动与缩放 / 循环区凸包（按 `data.hull`）/ 标志位徽标 / 耗时徽标 /
+小地图导航（可点可拖）/ 分组框拖动（框里的节点跟着走）与缩放 / 循环区凸包（按 `data.hull`）/ 标志位徽标 / 耗时徽标 /
 运行中脉冲 / 连线"热边"高亮 / 与 DOM 后端一致的配色 / `Input` 节点标题栏下的**值行**（LOD `zoom ≥ 0.45`，
 容器给 `[…] N 项` / `{…} N 键`）。
 
