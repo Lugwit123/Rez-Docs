@@ -219,12 +219,48 @@ POST /v1/chat/completions/multi
 | `vidu` | Vidu 生数科技（`api.vidu.cn`，鉴权 `Token <key>`） | `vidu` |
 | `fal` | fal.ai 队列 API（`queue.fal.run`，鉴权 `Key <key>`） | `fal` |
 | `agnes` | Agnes AI / Pavo（`apihub.agnes-ai.com/v1`，鉴权 **`x-api-key`**） | `agnes` |
+| `zhipu` | 智谱 CogVideoX（`open.bigmodel.cn/api/paas/v4`，**Flash 免费**） | `zhipu`（与 CogView 生图同一把） |
 | `minimax` | MiniMax 海螺（`api.minimaxi.com`） | `minimax_video` → 回落 `minimax` |
 | `seedance` | 火山方舟 ark（标准域 → plan 域兜底） | `volcengine_video`（+ `volcengine_video_model` 选模型） |
 | `siliconflow` | 硅基流动 Wan2.2 T2V/I2V | `siliconflow` |
 | `dashscope` | 阿里云百炼 DashScope 万相 | `dashscope`（**不是** `aliyun` 那把） |
 | `google` | Veo 3.1 / `gemini-omni-flash-preview` | `google`（Gemini API key） |
 | `kling` | 可灵（自签 JWT） | `kling_access` + `kling_secret`（**两个都要**） |
+
+**横向参数**（2026-10-19 第一批，节点 `AIVideo` 的那几个新框）：`POST /video/task` 多收
+`aspect_ratio` / `negative_prompt` / `seed`（-1 = 不在） / `fps`（0 = 不在） / `count`（1 = 不在） /
+`with_audio` / `enhance_prompt`，由 `VideoTaskBody.extras()` 只收"表过态"的，再交给各适配器
+`create(..., extras)` 自己挑（共享判定 `_x()`；不认识的**忽略**，不报错）：
+
+| 参数 | 谁认（映射到） |
+|---|---|
+| `aspect_ratio` | agnes（文生 `aspect_ratio`）· vidu（文生）· fal（文生）· kling（文生）· google（`aspectRatio`）· seedance（`--ratio`） |
+| `negative_prompt` | kling（`negative_prompt`）· siliconflow（`negative_prompt`）· dashscope（`input.negative_prompt`）· google（`negativePrompt`）· seedance（拼进正文） |
+| `seed` | vidu · fal · siliconflow · dashscope · seedance（`--seed`） |
+| `fps` | 智谱（`fps` 30/60） |
+| `count` | **目前没有一家认** —— Agnes 只收 `n=1`（2026-10-19 实测：给 2 回 `HTTP 400 n 必须为 1`），所以固定 1 |
+| `with_audio` | 智谱（`with_audio`） |
+| `enhance_prompt` | minimax（`prompt_optimizer`）· dashscope（`prompt_extend`）· fal（`prompt_expansion_mode=aggressive`） |
+
+**第二批**（2026-10-19，同一天）：`image_tail_url`（尾帧）/ `image_refs`（参考图，可多张）/
+`quality`（画质档）/ `options`（**厂商私有字段，JSON 原样并进上游请求体**）：
+
+| 参数 | 谁认（映射到） |
+|---|---|
+| `image_tail_url` | seedance（content `role=last_frame`）· kling（`image_tail`，需有首帧）· minimax（`last_frame_image`）· agnes（`last_frame`，**只在有首帧且是公网 URL 时**） |
+| `image_refs` | seedance（多条 `role=reference_image`）· kling（`image_list`，最多 4 张） |
+| `quality` | kling（`mode`：`std` / `pro` / `4k`，3.0 才有 4k） |
+| `options` | **全部 10 家**都并进自己的请求体（`_options()`；只挡 `model`/`prompt`/`image*`/`first_frame*` 这些会打坏语义的键）。多镜头分镜、动作控制、参考视频这类家私有字段走这里 |
+| `shots` | **只有 kling-v3**：映射成 `multi_shot=true` + `shot_type=customize` + `multi_prompt=[{index,prompt,duration:"N"}]`，**总时长 = 各分镜之和**（限 3~15s）且**根级 prompt 失效**；别的模型给 shots → 明确 400「多镜头只有可灵 3.0」 |
+
+**`supports` 能力表**（2026-10-19）：`GET /v1/video/models` 的每个厂商/模型都带
+`supports: [...]`（这家/这档认上面哪几个横向参数）。编辑器拿它把**当前模型不认的控件置灰**
+（不隐藏、不禁用 —— 值照旧能填，端口与接线不动）。口径与适配器里 `_x(extras, key)` 的调用点
+必须一致：**改一边就改另一边**。宿主的 `/api/pygraphs/video-providers` 会把这份 `providers`
+原样转给前端（下拉仍只读 `models`）。
+
+⚠ 各家独有的坑：Agnes 的 `last_frame` 要**公网 URL**（data URL 会被静默跳过，因为上游只收 URL）；
+Kling 的 `image_list` 是 omni 那档才有的口；Seedance 的参考素材走 `role` 而不是独立字段。
 
 ⚠ **两家钱的坑**（2026-10-15 用户实际问到的）：
 
@@ -235,8 +271,13 @@ POST /v1/chat/completions/multi
 - **Vidu 这把（`vda_…`）是"充值/额度制"**：出片扣积分；`GET /ent/v2/tasks/<不存在的 id>/creations`
   返回 `400 参数解析错`（而不是 `401`）就说明**鉴权已过** —— 这是免花钱验钥匙的办法。
   另外 Vidu 的产物 URL **24 小时过期**，所以节点必须当场下载落盘（我们的链路就是这么做）。
-- **Agnes AI / Pavo**（2026-10-15 实测，两条踩坑记录）：
-  - **两个站、key 不通用**：国内站 `https://api.agnes-ai.cn/v1`（平台 `platform.agnes-ai.cn`）、
+- **智谱 CogVideoX-Flash（免费；2026-10-19 接）**：提交
+  `POST /api/paas/v4/videos/generations`（`{model, prompt, image_url?, size?, fps?, duration?}` → `{id}`），
+  轮询 `GET /api/paas/v4/async-result/{id}`（`task_status` + `video_result[].url`）。
+  时长枚举 **5 / 10**，`size` 形如 `1920x1080`，`fps` 30/60；**首帧收 data URL**（不像 Agnes 要公网 URL）。
+  免费档常态是 `429 code 1305 该模型当前访问量过大，请您稍后再试` —— 与 Agnes 的 `503 队列已满`
+  同一类拥堵（不是配置错），节点按指数退避重试；`AUTO_ORDER` 里它紧跟 `agnes`（两个免费口轮着撞）。
+- **Agnes AI / Pavo**（2026-10-15 实测，两条踩坑记录）：  - **两个站、key 不通用**：国内站 `https://api.agnes-ai.cn/v1`（平台 `platform.agnes-ai.cn`）、
     国际站 `https://apihub.agnes-ai.com/v1`。适配器默认走**国内站**，换站设 `AGNES_API_BASE`。
   - ⚠ **鉴权头怎么发**：只发 `Authorization: Bearer` 就够（官方文档口径）。2026-10-15 试过"两个头都发"
     （想兼容国际站 `/v1/models` 那条只认 `x-api-key` 的口），但**适配器不打那条口**，多带没好处 ——

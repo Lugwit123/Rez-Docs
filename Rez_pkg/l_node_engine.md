@@ -527,6 +527,51 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 
 ⚠ **入参名不改**：中文入参名（`种子`）**只进悬停**，端口键仍是英文 —— 键就是连线协议，改了等于把已存的图打断。
 
+### 3.0f 入参中文 label（`param_labels.py`，2026-10-19）
+
+用户口径：「给每个节点的每个参数添加 label 属性，label 的值为中文」。
+
+`get_node_info()` 在拼元数据时给**每个入参**的 `opts` 加一个 **`label`**（中文），前端直接读
+`spec.opts.label`（画布行名 / 表单卡标签 / 提示），**不用再在前端写死译名表**。
+
+来源优先级（`param_labels.label_of()`）：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | 节点自己写在 `INPUT_TYPES` 的 `opts["label"]` | 动态节点 / 函数派生节点自己说了算 |
+| 2 | `PARAM_LABELS[类名][键]` | **本节点专属**（`Branch.to1` = "条件 1 的去向"） |
+| 3 | `EXTRA` | 别的包 `register()` 进来的（目前是 `l_tex_nodes.param_labels`，导入 `l_tex_nodes.nodes` 时注册） |
+| 4 | `COMMON[键]` | 跨节点同义的键（`a`/`digits`/`items`/`seed`…） |
+| — | 都没有 | **不发 `label`**（前端回落显示端口键，不会画错，只是那块是英文） |
+
+⚠ 端口键 / 类型 / tooltip 一个都不动（`label` 只是附加字段）；⚠ 覆盖口径是**每个节点的每个入参**：
+`l_node_engine_selftest` 第 38 组会逐节点逐参点出缺的那个（"这些入参没有中文 label：{类名: [键…]}"），
+`l_tex_nodes_selftest` 末尾同一条判据（覆盖贴图 / FX / MG / SBSAR 那 73 个）。
+comfy 上游节点不在其内（它们的译名走 §3.0e 的 locale 层）。
+
+### 3.0g 节点库文件 `.nlib`（一份 SQLite 装 N 个节点，2026-10-19）
+
+节点声明除了写在 `.py` 里，还能放在**库文件**里：`.nlib` 就是**一份合法 SQLite**
+（`PRAGMA application_id = 0x4C4E4C42 ('LNLB')`、`user_version` = 结构版本），
+表 `meta` / `nodes(id,version,category,label,search,enc,body,sha256)` / `blobs` / `assets`。
+实现在 `l_node_engine/nodelib.py`（**只用标准库**：`sqlite3` / `json` / `hashlib`）。
+
+| 入口 | 干什么 |
+|---|---|
+| `nodelib.pack(src, out)` | 作者源目录（`library.json` + `nodes/*.json` + `assets/`）→ `.nlib`；先写临时文件再 `os.replace`，并 `VACUUM` |
+| `nodelib.read_catalog(path)` | **只读目录**（`id/version/category/label/search`，**不需要 key**） |
+| `nodelib.load_library(path)` | **整库原子**注册：先建完所有类再动注册表；节点多带 `versions` / `latest` / `library` |
+| `nodelib.node_versions` / `get_versioned` | 版本表：注册表只挂 `latest`，旧版按需取；**未知版本报错不回落** |
+| `nodelib.discover()` | 扫 `L_NODE_ENGINE_NODELIBS` + `<包数据目录>/nodes` 里的 `*.nlib`（宿主启动时调，坏库只记一条） |
+| CLI | `l_node_engine_nodelib_pack` / `l_node_engine_nodelib_inspect` / `l_node_engine_nodelib_export`（`tools/nodelib_cli.py`） |
+
+⚠ 声明里 `exec` 只有两种：`{"kind":"callable","target":"pkg.mod:fn"}`（普通函数）或
+`{"kind":"class","target":"pkg.mod:Class"}`（**借另一个节点类的 `FUNCTION`** —— 把内置节点迁成文件节点就靠它）。
+`exec.target` 在**加载时**就解析：目标不存在 → 整库拒收并点名。
+⚠ **加密**（P4c）：`pack(encrypt=True, keyslot=…, lib_key=…)` 把 `body` / blob 用 **AES-256-GCM** 加密，\n目录列仍明文（**无 key 也能列清单**）；key 走 `L_NODE_ENGINE_LIB_KEY=<slot>:<hex>` 或 `<包数据目录>/license.json`，\nAAD 绑 `库|id|版本`（换行即失败）。签名两档：`ed25519`（推荐）/ `hmac-sha256`。\n都靠 `cryptography` —— **这是 `requires` 里唯一破例的依赖**（2026-10-19 用户口径「可以按需添加依赖」）。
+⚠ **`source_file` 对文件节点指向库文件本身**（`.nlib`），实现体在 `info.exec`（`{kind, target}`）\n—— 属性面板那一行「定义」显示的正是它（用户 2026-10-19 口径）。\n⚠ **不引 aiohttp**（同轮追问）：执行模型是**同步拓扑**，节点接口 `execute(**kwargs)` 同步；\n换 async 要贯穿图执行 / 宿主事件循环 / GUI，收益只是HTTP 客户端，而长任务（视频）早就是\n"建任务 + 轮询"、并发靠 `ForEachThread/Concurrent` + `PARALLEL` 节点。要现代 HTTP 客户端用 `httpx`（可选）即可。\n⚠ 样例：`nodelib_samples/ai_video/`（`AIVideoFile` = 内置 `AIVideo` 的迁移版，19 个入参一致）；
+自证：`l_node_engine_selftest` 第 39 组。
+
 **依赖留在插件层**（用户口径 2026-10-17：「comfyui 作为插件就行，我们的 pygraph 不直接依赖那些库，
 但是可以通过插件去添加这些依赖」）：
 
@@ -1212,10 +1257,32 @@ ContextVar，与 `emit`/`guard` 同一套"引擎只留钩子"的分工）。但*
   节点内**仍是同步阻塞**（一次 `execute` 不能中途 yield），所以"真正的百分比进度"没有
   （上游不给百分比，只有状态）—— 现在能看到的是状态 + 已等待秒数。
   配了 `L_NODE_AI_VIDEO_URL`（自建服务）时退回**同步**路径（那边没有 `/video/task`）。
-  **建任务有原地重试**（2026-10-15 补）：免费档常态是 `503 队列已满` / `429 速率限制`，
-  撞上这类"上游忙"的错误时自己重试 4 次 × 20s（`CREATE_RETRIES` / `CREATE_RETRY_INTERVAL`），
-  重试期间卡片上也会出现进度行（`建任务撞上游拥塞（…），20s 后重试（1/4）`）；
+  **建任务有原地重试**（2026-10-15 补，**2026-10-19 改成"次数是节点参数"**）：免费档常态是
+  `503 队列已满` / `429 速率限制`，撞上这类"上游忙"的错误时自己重试；**最多试几次 = 节点入参
+  `retries`**（INT，默认 **50**，可调 1~200 —— 用户口径「节点本身就能无限重试，最多 50 次，
+  并且把重试次数作为这个节点的参数」）。间隔为 `CREATE_RETRY_DELAYS = (20, 60, 120)` 秒、
+  **第 4 次起都按 120s 封顶**；**上游给了 `Retry-After` 就按它睡**（夹 5~180s，来源写进进度行：
+  `… （7/50 · 上游 Retry-After）` / `… （2/50 · 指数退避）`）。
+  为什么这样：固定 20s 会自己撞进 429 的分钟窗，越撞越久（2026-10-19 实测 4 拍只成 2 拍）。
+  `Retry-After` / `X-RateLimit-*` 由 hub `/video/task` 从**上游响应头**转进错误 JSON
+  （`retry_after` / `rate_headers`；`rate_headers` 只进日志、不参与调度）；
   **只对"上游忙"重试** —— 配置错（没钥匙/参数错）重试一万次也一样，直接抛。
+  ⚠ 节点里是**同步睡**：50 次 × 120s 最坏约 1.6 小时，**宿主墙钟超时会先到**
+  （编辑器按 `retries` 把 `AIVideo` 预算加到 `900 + (retries-1)*125` 秒，仍被宿主 3600s 夹住）。
+  **横向参数（2026-10-19 第一批）**：`aspect_ratio` / `negative_prompt` / `seed`（-1 = 不表态）/
+  `fps`（0 = 不表态）/ `count`（1 = 不表态，目前没有一家认 —— Agnes 只收 `n=1`）/ `with_audio` /
+  `enhance_prompt`。**默认全不表态** ⇒ 只有填了才写进 `/video/task`；认不认由各适配器决定
+  （映射表见 `l_model_hub.md` 视频那节）。
+  **第二批（同日）**：`image_tail`（尾帧，IMAGE）/ `reference_images`（参考图，每行一个 URL 或本机路径）/
+  `quality`（`std`/`pro`/`4k`，可灵用）/ `provider_options`（**厂商私有字段 JSON**，原样并进上游请求体 ——
+  多镜头、动作控制、参考视频这类没做成一等参数的走这里；坏 JSON 直接报错，不静默丢）
+  / `multi_shot`（**多镜头分镜**，每行 `秒数|提示词`，最多 6 段、总时长 3~15s；只 kling-v3 认，
+  别家明确报错；设了它根提示词失效）。
+  **置灰（2026-10-19 用户口径「切模型时不支持的参数自动隐藏么」→ 选"置灰"）**：卡片按
+  hub `supports` 能力表把**当前 model/provider 不认**的那几行标灰（`web/src/videoCaps.js`，
+  行加 `is-unsupported`、控件加 `is-muted`、悬停写"当前模型不认这个参数"）。**不隐藏也不禁用**：
+  值照旧能填、端口与接线不动（切回认它的模型就生效）。只对**能力参数**生效
+  （`CAP_KEYS`），`prompt`/`model`/`provider`/`image`/`seconds`/`resolution`/`retries` 永远不灰。
   自证：`l_node_engine_selftest` 的 AI 节点组（建任务载荷 / 轮询 URL 编码 / 落盘 / provider·resolution 透传 /
   非 hub 走同步）。
 - **HTTP 错误现在带响应体**（2026-10-15 改）：以前 `urllib` 只给一句 `HTTP Error 502: Bad Gateway`，
