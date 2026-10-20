@@ -311,7 +311,10 @@ nodelib_pack --patch x.nlib --node nodes\MyBlur.json    :: UPDATE 单行并重�
 | 工具 | `l_node_engine/tools/nodelib_cli.py` + `package.py` 三个别名 | ✅ `l_node_engine_nodelib_pack` / `_inspect` / `_export` |
 | 样例（AIVideo） | `l_node_engine/nodelib_samples/ai_video/`（作者源）+ `ai_video.nlib`（产物） | ✅ `nodes/AIVideoFile.json` 由 `nodelib_export AIVideo --id AIVideoFile` 生成（19 入参、中文 label、`exec.kind=class → l_node_engine.ai_nodes:AIVideo`） |
 | 宿主接线 | `l_mindmap_mmd/server._node_engine_impl` | ✅ 启动时 `l_node_engine.nodelib.discover()`（扫 `L_NODE_ENGINE_NODELIBS` + `<包数据目录>/nodes`），坏库只记一条 |
-| **签名 / 验签（P6 v1）** | `nodelib.verify` / `pack(sign_key=…, sign_key_name=…)` / CLI `inspect --verify` | ✅ **两种算法**：`ed25519`（推荐，私钥留发布机、公钥随包，要 `cryptography`——2026-10-19 用户口径「可以按需添加依赖」已加进 `requires`）与 `hmac-sha256`（纯标准库，team 内用）；三档 `verified` / `modified` / `unsigned`；密钥走 `L_NODE_ENGINE_SIGN_KEY=<名>:<hex>` 或 `<包>/trusted_keys/<名>.key`；`L_NODE_ENGINE_REQUIRE_SIGNED=1` 时才拒载。`meta.sig_alg` 决定用哪套 |\n| **节点版本（执行 + UI，P2）** | `nodelib.resolve_class` + `graph._execute_node` + `validate` + `PyNode` 徽标下拉 + `PyGraphEditor.infoFor` + `pySchema` 的 `asset_version` 白名单（`toStorage` / `normalizeGraph` / `toPrompt`） | ✅ 图里 `asset_version` 按版本取类、未知版本报错不回落；卡片头**版本下拉**（非最新高亮）、切换走 `mutate({step:true})` ⇒ Ctrl+Z；**每版端口/控件各自重算**（`/api/pygraphs/node_info?name=&version=`）；剩：增量指纹含版本 |\n| **行级加密（P4c 核心）** | `nodelib.pack(encrypt=True, keyslot=…, lib_key=…)` + `_read_rows` 解密 | ✅ AES-256-GCM（`cryptography`）；只加密 `body`/blob，**目录列仍明文**（无 key 也能列清单）；AAD 绑 `库\\|id\\|版本`（换行即失败）；key 走 `L_NODE_ENGINE_LIB_KEY` 或 `<包数据目录>/license.json`；**`l_nodelib` 这个新包不再必要** |\n| 自证 | `l_node_engine_selftest` 第 39 组 | ✅ 可复现打包 / 无 key 读目录 / 与内置 `AIVideo` 入参面完全一致（19）/ 借执行体真跑（桩掉网络）/ 多版本只挂 latest + 未知版本报错 / 坏库整库拒 / 冲突与卸载 |
+| **签名 / 验签（P6 v1）** | `nodelib.verify` / `pack(sign_key=…, sign_key_name=…)` / CLI `inspect --verify` | ✅ **两种算法**：`ed25519`（推荐，私钥留发布机、公钥随包，要 `cryptography`——2026-10-19 用户口径「可以按需添加依赖」已加进 `requires`）与 `hmac-sha256`（纯标准库，team 内用）；三档 `verified` / `modified` / `unsigned`；密钥走 `L_NODE_ENGINE_SIGN_KEY=<名>:<hex>` 或 `<包>/trusted_keys/<名>.key`；`L_NODE_ENGINE_REQUIRE_SIGNED=1` 时才拒载。`meta.sig_alg` 决定用哪套 |
+| **节点版本（执行 + UI，P2）** | `nodelib.resolve_class` + `graph._execute_node` + `validate` + `PyNode` 徽标下拉 + `PyGraphEditor.infoFor` + `pySchema` 的 `asset_version` 白名单（`toStorage` / `normalizeGraph` / `toPrompt`） | ✅ 图里 `asset_version` 按版本取类、未知版本报错不回落；卡片头**版本下拉**（非最新高亮）、切换走 `mutate({step:true})` ⇒ Ctrl+Z；**每版端口/控件各自重算**（`/api/pygraphs/node_info?name=&version=`）；剩：增量指纹含版本 |
+| **行级加密（P4c 核心）** | `nodelib.pack(encrypt=True, keyslot=…, lib_key=…)` + `_read_rows` 解密 | ✅ AES-256-GCM（`cryptography`）；只加密 `body`/blob，**目录列仍明文**（无 key 也能列清单）；AAD 绑 `库\\|id\\|版本`（换行即失败）；key 走 `L_NODE_ENGINE_LIB_KEY` 或 `<包数据目录>/license.json`；**`l_nodelib` 这个新包不再必要** |
+| 自证 | `l_node_engine_selftest` 第 39 组 | ✅ 可复现打包 / 无 key 读目录 / 与内置 `AIVideo` 入参面完全一致（19）/ 借执行体真跑（桩掉网络）/ 多版本只挂 latest + 未知版本报错 / 坏库整库拒 / 冲突与卸载 |
 
 **真机证据**（2026-10-19 23:35，`:8110` 重载后查 `/api/pygraphs/object_info`）：
 
@@ -322,11 +325,49 @@ category: l_node_engine/ai outputs: ['VIDEO']
 same_ports_as_builtin: True
 ```
 
-样例已按"用户安装"的方式放进 `<包数据目录>/nodes/ai_video.nlib`（`C:\Users\<用户>\.lugwit\main\l_mindmap_mmd\nodes\`），
+样例已按"用户安装"的方式放进 `<包数据目录>/nodes/ai_video.nlib`
+（`C:\Users\<用户>\.lugwit\main\l_mindmap_mmd\nodes\`），
 所以编辑器节点库里今天就能看到 `AIVideoFile`（分类 `l_node_engine/ai`）。
 
-**属性面板「定义」行**（2026-10-19 用户口径）：文件节点显示 `.nlib` 路径 + `exec` 实现（`kind → target`），\n手写节点显示 `源码文件:行号`；`NodeInspector`（查看全部字段）与右侧属性面板两处都加了。\n\n**本步刻意没做**（按 §0.4 分步）：签名（P6）/ 行级加密与 `l_nodelib`（P4c）/ 查看器的 `--verify`/`--diff` /
-图上"版本 ▸"菜单（P2 的 UI 半场）/ 目录里直接读 `nodes/*.json`（作者源只经 `nodelib_pack` 进库）。
+**属性面板「定义」行**（2026-10-19 用户口径）：文件节点显示 `.nlib` 路径 + `exec` 实现（`kind → target`），
+手写节点显示 `源码文件:行号`；`NodeInspector`（查看全部字段）与右侧属性面板两处都加了。
+
+### 0.6 完成度总表（2026-10-20 核对；**不是全实现了**）
+
+用户 2026-10-20 问「全部实现了么」→ **没有**。逐项核对结果如下（"证据"列能直接点开核）：
+
+| 项 | 状态 | 证据 / 缺什么 |
+|---|---|---|
+| **P4 库文件**（`.nlib` = SQLite、一库多节点、整库原子、冲突规则） | ✅ | `nodelib.py`；`selftest` 第 39 组 |
+| **P4c 行级加密**（AES-256-GCM，目录列明文） | ✅ | `pack(encrypt=…)` + `_read_rows`；CLI 实测 `加密：是（keyslot=demo）` |
+| **P4c 查看器（头 / 目录）** | ✅ | `nodelib_inspect`（无 key 也能列清单、`--verify`） |
+| **P6 签名**（Ed25519 / HMAC 两档、三档信任、`REQUIRE_SIGNED`） | ✅ | `selftest` 第 39 组 ⑧⑨；`trusted_keys/README.md` |
+| **P2 节点版本**（库内多版本、执行/校验按版本、卡片下拉切换、按版本端口） | ✅ | `resolve_class` / `validate` / `node_info` 端点 / `PyNode` 下拉；浏览器实测 v1→20 行、v2→18 行 |
+| **属性面板「定义」行** | ✅ | `NodeInspector` + 右侧属性面板 |
+| **P0 的 `min/max/step`** | ✅（前端早就会用） | `PyWidgetInput` 夹取 + 传 `step/min/max` |
+| **P0 的 `unit / group / order`** | ✅ | 卡片：`group` 归堆 + 组名小标题 + 组内 `order` 排序、`unit` 跟类型后显示；属性面板：`order` 排序 + `unit` 显示（**两处都有组标题**）；浏览器实测 `自由 / ##形状(半径,模式) / ##输出(甲,乙)`、`半径 FLOAT · px` |
+| **全部节点的帮助**（动态生成，2026-10-20） | ✅ | 不写 150+ 篇静态文档：`GET /api/pygraphs/help/node/<注册名或类名>` 按 `get_node_info()` **现生成**一页（说明 / 信息（分类·来源·定义文件:行号·exec·别名）/ 参数表（中文 label·端口键·类型·控件·默认·tooltip）/ 输出）；`GET /api/pygraphs/help/nodes` 是**全部节点目录**（按分类分组 + 搜索框，点进去即上面那页）；`HELP` 缺省也发 `help: "node/<类名>"` ⇒ 编辑器「❓ 节点帮助」对**每个节点**都有「📖 打开帮助」；实测：目录 **247 个节点 / 32 个分类**（含插件节点）、`AIVideo` 9.9KB / `TexBlur` 4.7KB / `2d_view`（按类名 `View2D` 解析）4.3KB；⚠ `helpDocUrl` 要**逐段编码**（`node/AIVideo` 不能把 `/` 编成 `%2F`，否则落到 `/help/{name}` 404） |
+| **「❓ 节点帮助」标签页**（2026-10-20） | ✅ | `pyLayout` 新标签 `nodehelp`（home=right，默认右栏排在「属性」后）；组件 `PyNodeHelp.jsx`：选中节点 → 名称/class_type/版本徽标 + 说明 + **信息**（分类/来源/定义文件与行号/`exec`/搜索别名）+ **参数表**（中文 label·端口键 / 类型 / 控件 / 默认值 / tooltip，可选行标 `?`）+ **输出端口**；顶部两个按钮：`📖 打开帮助`（节点声明了 `help` 时）/`📚 帮助中心`；节点元数据新增 `help` 字段（类写 `HELP="<名字>"`，库声明写 `"help": "<名字>"`，`nodelib_export` 会带出）；真机实测：tab 在、选 `AIVideo` → 参数 19 行 + 定义路径 + 两个按钮（`📖 打开帮助` / `📚 帮助中心`） |
+| **帮助页用真实画布组件**（2026-10-20） | ✅ | 新页面 `/uihelp`（服端复用 `flow.html` 壳，`main.jsx` 按 pathname 分流到 `help/HelpDemo.jsx`）：**直接 import 画布的 `PyNode`/`PyNote`**，同一个 `@xyflow/react` + 同一份 `style.css` + 引擎真元数据（只换值），因此与画布**像素级同源**；演示 AIVideo 表单卡 / 普通卡 / 注释卡三张，控件真能改（`onWidgetChange` 回显）；帮助首页与两篇文档都加了入口；**文档里可内嵌真组件**：`/uihelp?only=form|normal|note&embed=1`（`embed=1` 去掉标题/页脚/导航，只留卡片）；⚠ 三个坑：① `flow.html` 的 `<base>` 归一化正则要带上 `uihelp`（漏了 = 资源 404）；② 帮助页里的链接/iframe 必须写**相对路径**，并由服务端注入 `<base href="<前缀>/">`（写死 `/uihelp` 会被当站点根、绕过反篇前缀）；③ `embed=1` 时不画 `NavMenu`（否则盖在卡片上） |
+| **帮助中心 + 注释指向帮助**（2026-10-20） | ✅ | 文档在包里 `l_mindmap_mmd/help/*.html`（**可交互 + 动画**，改文件即更新）；端点 `GET /api/pygraphs/help`（首页）/ `/help/list`（清单）/ `/help/<名字>`（固定网址）；注释节点写一行 `help:<名字>` 就直接渲染那篇帮助（卡片 iframe / 🪟 同一固定网址）；编辑器顶栏加 **❓ 帮助**；实测：首页 3977B、`node_library` 10683B、`note_window&node=5` 返回同一篇帮助；帮助页点「版本」页签 + v2 → 行 5→7、主题切换生效 |
+| **HTML 注释 + 独立窗口**（案例演示） | ✅ | `Note.text` 以标签开头 → **sandbox iframe**（`allow-scripts`，不给 same-origin）渲染；**主题跟卡片底色走**（纸白→亮、其余→暗；注入 `color-scheme` + `--note-*` 变量，未写颜色的 HTML 自动跟随）；标题栏新增 **🪟 独立窗口查看**，且**同一注释节点网址固定**：`/api/pygraphs/note_window?graph=<图>&node=<id>&theme=<light|dark>`（`window.open(url, "note-<图>-<节点>")` 复用同一标签页；拿不到图地址才退 Blob）；演示图 `<工程>/demo/demo_nodelib_features.json`（**图文并茂**：暗/亮两张 HTML 注释用**内联 SVG + HTML/CSS 示意图**讲解 —— 含「🖥 在网页里大概长这样」的**浏览器窗口 / 画布节点卡 / 属性面板**示意；HTML 注释卡自动加宽到 560px；🪟 用 **Blob 单标签**打开，不再多留 about:blank）；浏览器实测 2 注释 / 1 iframe / 2 个 🪟、点击后 `window.open` 收到 2926 字符文档（含演示脚本） |
+| **内置 `AIVideo` 退休（由节点库提供）** | ✅ | `ai_nodes.NODE_CLASS_MAPPINGS` 去掉 `AIVideo`（**类保留** = 执行体/导出源）；样例节点改名 `AIVideoFile → AIVideo`，发布到 `<工程>/nodes/ai_video.nlib`；真机 `source=file · library=ai_video_sample · versions=[1] · 19 入参 · exec class → l_node_engine.ai_nodes:AIVideo`，`AIVideoFile` 已不存在；`demo_ai_video` 照常渲染（AIVideo 卡 20 行、零警告）；⚠ **删了节点库就没有 AIVideo 节点**（预期） |
+| **工程级节点库**（随工程走） | ✅ | 宿主扫 `<工程根>/nodes/`（`registered_projects`）与包数据目录**并列**；样例已发布到 `lugwit_agent_a/nodes/ai_video.nlib`（作者源仍在 `l_node_engine/nodelib_samples`），用户目录那份已删；真机 `AIVideoFile=True` 
+| **批量切版本** | ✅（多选未逐一视觉自证） | 右键节点「🏷 版本 ▸（N 个同类节点）」：选中的同类节点一起切 / 跟随最新；整批一次 `mutate({step:true})` ⇒ 一次 Ctrl+Z；单节点实测切 v1 后 `select=1 / is-pinned` 
+| **卡片页签栏** | ✅ | ≤3 页画可点页签、>3 页退下拉（`pyg-card-tabs`）；浏览器实测 `基本/高级/默认` 切换 → 行 `备注` ↔ `种子,步数` |
+| **参数页签**（`opts.tab`） | ✅ | 面板：`opts.tab` 分页 + 可点页签栏（换节点回到第一页）；卡片：可点页签栏（≤3 页）/ 下拉（>3 页），见下面「卡片页签栏」；浏览器实测 `基本 / 高级 / 默认` 三页切换、卡片 `##基本 / ##高级`；⚠ 页签清单必须算在 `selectedPorts` **之后**（写在前面 = TDZ 白屏） |
+| **P1 条件显隐**（`visible_when` / `disabled_when`） | ✅ | 引擎 `conditions.py`（DSL：等值/集合/all-any；**fail-open**）+ 前端 `pyConditions.js` 镜像；卡片行、表单卡、属性面板都过滤；`disabled_when` 在面板置灰不隐藏；selftest 第 40 组；浏览器实测 `mode` 切 a→b、`flag` 勾上后按 `all` 规则逐级显隐 |
+| **P3 节点钩子**（`on_create` / `on_param_change` / `on_loaded`） | ✅ | 引擎 `hooks.py`（只读、白名单、异常降级、返回值只认 opts/ui/warn）+ `get_node_info` 发 `hooks` 摘要（**不带 call**）+ 宿主 `POST /api/pygraphs/node_hook`（本机写接口要 Bearer）+ 前端「改参数→问钩子→补控件 opts」；selftest 第 41 组；`.nlib`/作者源声明里也能写 `hooks`（打包时校验钩子名与 `call`）；selftest ⑤e |
+| **P4b `exec.kind="pygraph"`** | ✅ | `EXEC_KINDS` 加 `pygraph`；`exec.graph` = 资产地址（`pro/…` / 工程名/… / 绝对路径）→ 宿主注入 `set_graph_resolver`（`_pygraph_path` 那套）；**加载时解析**（地址坏了整库拒）+ 执行走 `run_pygraph`（实参按图入参名注入、输出按声明顺序取）；selftest ⑤d；真机实测 `pg_demo.nlib` 里 `PgDemo` 注册成功（解析器**必须在 discover 之前**注册，晚注册=整库被拒） |
+| **直接加载作者源目录**（`library.json` + `nodes/*.json`） | ✅ | `nodelib.load_source_dir()`（与 `.nlib` **同一份** normalize/build/register）+ `discover()` 同时扫 `*.nlib` 与含 `library.json` 的目录；开发期改 json 刷新即生效；作者源**未签名** ⇒ `REQUIRE_SIGNED=1` 时拒收；selftest ⑪ + 真机 `DevDemo=True`（`<包数据目录>/nodes/devlib/`）；⚠ 别把 `.nlib` 放进作者源目录（同 id 会被扫两次） |
+| **增量指纹含版本**（P2 尾巴） | ✅ | `graph._node_fingerprint` 带 `@vN`；selftest ⑤c 断言同结构不同版本指纹不同 |
+| **查看器扩展** | ✅ | `--diff`（目录级差异，无 key 可跑）/ `--assets-dir`（导出资源、密文用库 key 解、不覆盖、挡越界）/ `--sql`（**只读**：单条 SELECT/WITH，密文列显示 `<N bytes>`）/ `--with-key`（**密文行用库 key 解**，错 key 明确「解密失败」）；四条都实测 |
+| **P5 参数提升**（一键 params + `GetParam` + dock 胶囊） | ✅ | 属性面板「提升到接口」下拉（`promoteParam`）：补 `graph.params` 一行 + 起 `GetParam` + `S.attachEndpointChip`，`mutate({step:true})` ⇒ Ctrl+Z；浏览器实测 chip 0→1、接口签名多出 `seconds: number = 5`、Ctrl+Z 退回 |
+| **§0.4 的 `--seal`**（整文件封印，可选） | ❌（本就不进 v1） | — |
+| **§八 4 条待拍板**（P0 字段名 / P1 DSL 边界 / P4 落点 / 命名空间） | 仍开着 | 落点事实上已按"包内 + 数据目录都扫"实现 |
+
+**一句话**：**"库 + 加密 + 签名 + 版本 + 参数提升"已通且自证；**HDA 对照表全部落地**（§0.6 已无 ❌ 项）。。**
+
 
 
 ## 一、HDA 到底是什么（六件，2026-10-19 口述核对）
@@ -500,7 +541,9 @@ HOOKS = {"on_param_change": {"param": "provider", "call": "mypkg.hooks:refresh_m
 - **同层重复 = 报错**（两个文件都点名）—— 不许静默后写赢，那会让"我加的节点没生效"变成谜；
 - **整文件原子**：任一条目校验失败（缺 `id`/`exec` 不认识/端口类型不在词表）→ **该文件整份不进**，
   报错写「文件 : 条目 : 原因」；不允许"一半节点进了注册表"的诡状态（HDA 也是整份拒收）；
-- 关掉/重载走既有插件的口子（`plugins.json` 里给这个库一个开关 + 面板「🔌 插件」里的重载按钮）；\n- **产物链**：作者写 `nodes/*.json` → `nodelib_pack` 生成 `*.sqlite`（明文库）→ 需要外发再加密成 `*.nlib`。\n  加载器三种都认，最终都归一到每节点一条声明再注册（见 P4d 的 schema）。
+- 关掉/重载走既有插件的口子（`plugins.json` 里给这个库一个开关 + 面板「🔌 插件」里的重载按钮）；
+- **产物链**：作者写 `nodes/*.json` → `nodelib_pack` 生成 `*.sqlite`（明文库）→ 需要外发再加密成 `*.nlib`。
+  加载器三种都认，最终都归一到每节点一条声明再注册（见 P4d 的 schema）。
 
 **仍与 `.py` 节点共用一条出口**：`get_node_info()` 只多认一类 `NODE_SOURCE="file"`（今天已有
 `class` / `comfy` / 函数派生三类先例）→ 画布 `PyNode`、canvas 后端、端口 API、增量缓存**都不用改**。
@@ -741,7 +784,10 @@ CREATE TABLE assets(path TEXT PRIMARY KEY, bytes BLOB, sha256 TEXT);
 | **保密**（别抄走算法） | **客户端做不到** | 只有一条靠谱路：**算法留在服务端**（走既有远端引擎契约 `/engine/run`，客户端只剩声明壳） |
 | **阻止别人改自己的副本** | 做不到（也没必要） | 我们**允许**改：改了就降级成"本地未签名"，企业开关 `nodes_require_signed: true` 时才拒载 |
 
-**三档信任状态**（`library.trust`，加载器算出来，不写死在文件里）：\n\n⚠ **v1 已经落地的是 HMAC-SHA256**（`nodelib.verify`，纯标准库；见 §0.5 那行）。Ed25519 需要 `cryptography`，\n等 `l_nodelib`（P4c）接上；`meta.sig_alg` 已留位，两套共用 `signature/signed_by` 字段，换算法不动 schema。
+**三档信任状态**（`library.trust`，加载器算出来，不写死在文件里）：
+
+⚠ **v1 已经落地的是 HMAC-SHA256**（`nodelib.verify`，纯标准库；见 §0.5 那行）。Ed25519 需要 `cryptography`，
+等 `l_nodelib`（P4c）接上；`meta.sig_alg` 已留位，两套共用 `signature/signed_by` 字段，换算法不动 schema。
 
 | 状态 | 条件 | UI |
 |---|---|---|

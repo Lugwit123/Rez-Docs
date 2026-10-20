@@ -1667,6 +1667,11 @@ AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目�
   `Input` 节点类型已于同日退休（`Input` → 图级 `params` + `GetParam`，`migrateInputNodes` 打开就迁）。
   ⚠ `texGpu.js` 的 `KINDS`/`SINK_KINDS` 也要有 `3d_view`（少一个整段退回 CPU）。细节见
   `l_tex_nodes.md` §6.2c；自证 `web_probe view3d`（9/9，含真图竹编：模型 + 材质都按 `v3d` 走）。
+- **`mesh` 那路谁来喂**（2026-10-20）：图里算出来的几何直接接 `3d_view.mesh` —— 老路子是
+  `math_shapes`（`CallFunction` / `ShapeSurface` 出 `(顶点, 面)`），新的是插件 **`mesh3d`**
+  （29 个 `Mesh*` 节点（含选择集/区域移动/Catmull-Clark/曲线+扫掠/删面/补洞/内缩/挤出/桥接/布尔/合并顶点），值 `{vertices, faces}`，见 `l_node_engine.md` §3.0d″；示例图
+  `lugwit_agent_a/Functions/demo_mesh3d` 程序化山石、`demo_teapot` 茶壶、`demo_mesh_edit` 挤出+布尔+桥接、`demo_lion` 风格化狮子、`demo_mesh_refine` 选择→捏→曲面细分、`demo_mesh_curve` 曲线扫掠+内缩）。宿主 `mesh_preview`
+  两种形状都认，链上任何一步都能看。
 - ⭐ **🔥 热力 = 一格面板**（2026-10-17 用户：「**删除热力按钮，使用热力面板替换**」）：顶栏那颗
   `📈 热力` 删了，开关 / 轮次 / 步骤 / 本轮元信息（`ts · mode · steps · dur · end=`＋门拦）/ 全量汇总
   （轮·节点·边 + 最热节点标签）全在「🔥 热力」那一格（`put("heat", …)` → `.pyg-heat`，住**底栏**）；
@@ -1916,6 +1921,29 @@ AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目�
     更是一段。）
   - ⚠ 别名：**"别的引擎才有的类"不再当结构错误**（`PyGraphEditor.jsx` 的 `validate()` 把它降成提示）——
     从前它会进 `errors`，把 ▶ 运行**拦死**（实测：混引擎图点运行一个 `/run` 请求都不发）。
+- **值交接瘦身（2026-10-20，用户口径「要高性能」→「先治值交接」）**：几何（`{vertices, faces}` /
+  `(顶点, 面)`）**不再随跑图结果走一遍**。实测同一张 demo 图（7.9k 顶点）：
+  SSE `result` **2,292,268 B / 0.58s** → 瘦身后 **53 KB / 0.30s**；20 万顶点的图是几十 MB 的差距。
+  - 判据与阈：`server._slim_outputs()`（`_SLIM_MIN_VERTS = 512`）—— 超过这个顶点数的几何换成
+    `{kind, format, __mesh_ref__: 节点id, vertices: N, faces: M, note}`；**小网格原样发**（几百顶点几 KB，
+    点开还能看见数字）。三元组里的元组 / `(顶点, 面)` 二元组 / `{"result": …}` 都会逐层换。
+  - 用在哪：SSE `result`（本地 / 混引擎 / 类方法三条路）＋ `_values_payload`（`values.json` 也跟着瘦）。
+    **只换送出去的那一份**：`_cache_renders` / `_cache_materials` / `_cache_meshes` 用的仍是原始 `outputs`
+    （它们在这之前跑），所以 3D 视图 / 缩略图 / 材质**一点不受影响**。
+  - 真几何怎么取：`GET /api/pygraphs/mesh?name=<图>&node=<节点>`（一直都有，`_MESH_SRC` 那份引用 +
+    磁盘 `_renders/<图>/m*.mesh.json` 兜重启）。面板「本轮值」里那行摘要变成
+    `mesh（7938 顶点 · 14400 面）· 几何按节点取（3D 视图见）`（`RunValue.valueSummary`）。
+  - 顺带修的两处：`_cache_meshes` 现在**先数顶点**再决定要不要转 payload —— 超过
+    `_MESH_DISK_MAX_VERTS`（60000）的本来就不落盘，以前却先白转一遍（几十万顶点要几百毫秒）；
+    `_persist_mesh_node` 改成**先判再写**（以前先写 `m<key>.mesh.json` 再判节点数，超了直接 return，
+    盘上留一堆没人引用的孤儿文件）。
+  - ⚠ **落盘节点数 8 → 24**（2026-10-20 截图时踩到）：拼装链（茶壶：壶身→+盖→+钮→+嘴→+把）光中间件
+    就 14 个，卡在 8 会把**最后那个整件**挤出去 ⇒ 重启后「🧊 3D 视图」跟着 `3d_view` 去看时，
+    `Viewer3DPanel` 发现那个节点不在清单里就把来源回退成"没填"，面板一片空（看着像"几何丢了"）。
+    现在另加**顶点总量预算** `_MESH_DISK_MAX_TOTAL_VERTS = 240000`（≈ 十几 MB JSON），节点放宽也不撑爆盘。
+  - 自证：`_slim_outputs` 六种形状（大 dict / 小 dict / 二元组 / 已是摘要 / `{result, ui}` / 字符串与对象）
+    + 真服务跑 demo 图（`POST …/demo_mesh3d/run` → 53 KB、`/api/pygraphs/meshes` 仍列 9 个几何节点、
+    `/api/pygraphs/mesh?node=7` 仍回 670 KB 全量几何、`models/*.obj` 照旧生成）。
 - **属性面板「本轮值」一览（2026-10-13）**：选中节点 → 右侧「🔧 属性」里那张表列出它**所有**入参/出参
   在本轮的值；**没跑过 = 全是 `?`**（面板会写"没跑过 → 全是 ?"）。短标量（数字/布尔/≤60 字无换行的串）
   **直接给原文**，容器与长串走可折叠的 `RunValue`（一行摘要 + ▸ 展开 + ⧉ 复制）。判据"这轮跑过没"=

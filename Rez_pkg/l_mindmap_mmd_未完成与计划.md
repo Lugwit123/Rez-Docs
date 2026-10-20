@@ -70,7 +70,7 @@
 
 口径细节见 `Rez-Docs/Rez_pkg/l_node_engine.md` §3.2（3D 模型）/ §3.3（值怎么存）。
 
-## 二、踩过的坑（7 条，别再踩）
+## 二、踩过的坑（8 条，别再踩）
 
 1. **容器值不能存数组**：`Input.value` 端口是 `*`，而"连线"的存储约定正是 `[源id, 下标]` 数组 ——
    存 `[1, 2]` 会被当成"连到节点 1 的第 2 个输出"，**值直接丢**，画布还看着像有连线。
@@ -88,6 +88,12 @@
    （实测整页白屏：`ReferenceError: lastSent is not defined`）。
 7. **服务热重启期间**（改了 `.py`）跑浏览器自证会以"没回 JSON / 找不到节点"失败 ——
    先 `wuwo svc status l_mindmap_mmd_server` 确认在线再跑。
+8. **`:hover` 里改 `filter` → 光标一直闪**（2026-10-20 用户报障「悬停在节点上那枚小图标时光标不断闪烁」）：
+   节点卡在**被缩放的画布**里，`filter` 一变 Chromium 就给这枚小字形重建合成层，命中测试跟着抖，
+   `elementFromPoint` 在父卡片（`cursor:grab`）与按钮（`cursor:pointer`）之间来回跳。
+   实测（headless Edge，同一坐标采样 30 次）：`.pyg-flag:hover { filter:none }` 那版**翻转 19 次**，
+   把 hover 的 filter 去掉（filter 固定、只用 `opacity` 提亮）后 **0 次**。
+   ⚠ 同类写法都别写：`filter` 必须是**静态**的；悬停反馈用 `opacity` / 背景色 / `box-shadow`。
 
 ## 三、自证命令（可直接抄）
 

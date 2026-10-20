@@ -154,9 +154,16 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 
 **运行队列 + 历史**（服务端）：
 
-- **队列**：同一时刻**只跑一张图**，多的按 FIFO 排队（`MAX_RUN_QUEUE = 4` 满则 `429`）。SSE 会先推 `queued`
+- **队列**：同一时刻**只跑一张图**，多的按 FIFO 排队（上限 `L_MINDMAP_RUN_QUEUE`，默认 **8**，1..64；满了 `429`。
+  2026-10-20 之前是写死的 4 —— 长节点一占几分钟，4 格一撞就 429）。SSE 会先推 `queued`
   （带"前面还有几个"）再推 `started`。以前靠前端掐 SSE，但**服务端线程杀不掉**，两轮 python 会叠着跑。
   排队计数**只在跑完/放弃时减**（早减会让"正在跑"的那个不算数，后来者以为没人占槽）。
+- **中止（2026-10-20）**：`POST /api/pygraphs/runs/<run_id>/cancel` 现在对**正在跑**的那次也有效 ——
+  宿主置一枚 `threading.Event` 传给 `execute_graph(cancel=…)`，引擎在**节点边界**（每个节点前、
+  循环每一轮/每一波前、并发批每一层前）检查，真中止就抛 `GraphCancelled`（**`BaseException` 子类**，
+  不进 `node_errors`、不写"哪个节点报错"）。SSE 收尾事件是 `cancelled`（带 `steps_done`）。
+  ⚠ 边界只在**节点之间**：正在执行的那个节点要跑完（Python 线程杀不掉）—— `AIVideo` 那种
+  长节点点完停止要等它这一步；节点内部的超长循环想响应中止，自己轮询 `graph.cancel_requested()`。
 - **历史**：`GET /api/pygraphs/history?name=<图名>&limit=50` 读 `pygraphs/runs.jsonl`（最近在前，可只取某张图）。
   面板底部「历史」一节显示每次运行的时间 / ✔✗ / 时长 / 摘要，失败的能展开看**每个节点的首条原因**
   （点即定位到该节点）；跑完自动刷新。留痕条目里新增 `reasons`（每节点首条原因，截 200 字，**不塞整份堆栈**）。
@@ -261,7 +268,19 @@ React Flow 的 d3-zoom 会 `stopPropagation`，冒泡阶段收不到），停手
 ⚠ 判据陷阱：这个现象在 **headless / 软件光栅化里复现不出来**（那种路径当场重画，实测 1× 与 3.4× 锐度持平），
 真机 GPU 合成才会糊 —— 别拿 headless 的"没差别"当"没这回事"。同类风险点：`.pyg-viewer-canvas`（2D 取景器）。
 
-## 三、节点清单（20 种基础 + 1 种 python 节点 + 2 种结构体 + 2 种类图 + 6 种 AI + 5 种数值/集合 + 1 种时间 + 5 种 agent = 42）
+## 三、节点清单（**83 种**，2026-10-20 核准）
+
+> 分块：基础 4（`Output`/`Reroute`/`Preview`/`SaveText`）+ 数值/集合 19 + 控制流 11
+> （`IfStart`/`IfEnd`/`ElseStart`/`LoopStart`/`LoopEnd`/`Branch`/`Select`/`Compare`/`And`/`Or`/`Not`）
+> + 结构体 2 + 类图 10 + 对象操作 4（`CallFunction`/`GetAttr`/`GetItem`/`CallMethod`）+ python 1
+> + 状态 2 + **遍历 5**（`Map`/`ForEach`/`ForEachConcurrent`/`ForEachThread`/`ForEachProcess`）
+> + 子图/工具 2 + 入参/常量 3（`GetParam`/`SetParam`/`Const`）+ AI 6 + 百度 5 + agent 4
+> + 引擎区 2（`EngineStart`/`EngineEnd`）+ 时间/问答/备注 3（`Time`/`Ask`/`Note`）= **83**。
+>
+> 核对方式（改完节点**顺手跑一次**，数字对不上就是文档该改了）：
+> `wuwor l_node_engine -- python -c "import l_node_engine as e; print(len(e.NODE_CLASS_MAPPINGS))"`
+> —— 自证跑起来会多出 5 个 `_` 开头的测试假节点（`AccNode`/`BoomNode`/`UpperNode`/`wrap_brackets`/`JoinPaths`），
+> 那时打印 88，不算在这里。
 
 > **算子不止这些**：图像处理那类（噪波/模糊/色阶/混合/法线…）在**包外**的 `l_tex_nodes` 里 ——
 > 引擎刻意只用标准库，带依赖的算子库挂进来即可（见 `l_tex_nodes.md`，39 个 `Tex*` 算子 + `TexSbsar` + 4 个 FX `Fx*`，注册进画布共 **44** 个）。
@@ -488,6 +507,162 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 `1 个包 → 11 个节点（4 个模块）`、`object_info` 里 `category:"fnprobe"` 出现且 HTTP **200**；
 停用 → `已停用（摘掉 11 个节点）`、`object_info` 里 `fnprobe` 消失。
 
+### 3.0d″ 「3D 程序化建模」插件（`mesh3d_plugin.py` + `mesh3d.py`，2026-10-20）
+
+用户口径：「给 pygraph 加一个插件，可以做基础的 3d 程序化模型制作」→ 追加「可以参考开源库，**要高性能**」。
+于是几何算法单独成 `mesh3d.py`（**numpy 向量化**，算法照 trimesh / Blender 那套：`np.add.at` 面法线累加、
+`np.unique(axis=0)` 边中点去重、`einsum` 算有符号体积），节点壳在 `mesh3d_plugin.py`。
+
+| 位 | 内容 |
+|---|---|
+| 插件 id | `mesh3d`（面板名「3D 程序化建模」，`runs_code=False` —— 只挂本包自己的纯函数） |
+| 字段 | `category`（text，默认 `mesh3d`）/ `max_vertices`（text，默认 `200000`，**0 = 不限**）/ `save_dir`（path，空 = `<图目录>/models`）/ **`deps`（list，可选依赖目录，给布尔的 `manifold3d` 用）** |
+| 状态 | `loaded` / `nodes[]` / `max_vertices` / `save_dir` / `deps[]` / `errors[]` / **`numpy`**（版本）/ **`boolean`**（manifold3d 在不在） |
+| 摘干净 | `sources()` = `["mesh3d"]`（21 个节点都带这个 `NODE_SOURCE`） |
+
+**P0/P1 共 29 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
+
+| 组 | 节点 |
+|---|---|
+| 图元 | `MeshBox` / `MeshSphere` / `MeshCylinder` / `MeshCone` / `MeshTorus` / `MeshPlane` / `MeshLathe`（轮廓绕 Y 转一圈） |
+| 变换 | `MeshTransform`（缩放→旋转 X→Y→Z→平移）/ `MeshArray`（阵列：偏移 + 每份旋转/缩放）/ `MeshMirror` |
+| 细节 | `MeshSubdivide`（线性细分，形状不变）/ `MeshSmooth`（Laplacian，可只磨选择集）/ `MeshDisplace`（**沿法线**分形噪声，可只推选择集） |
+| **曲线 / 扫掠（P1）** | **`CurvePath`**（点列 → Catmull-Rom 曲线，`CURVE` 端口）/ **`MeshSweep`**（圆截面沿曲线扫成管，起半径 + `taper` 收放） |
+| **开洞与收边（P1）** | **`MeshDelete`**（按选择集删面 = 开洞）/ **`MeshFillHole`**（中心点扇形封洞）/ **`MeshInset`**（面内缩 = 面板线/边框） |
+| **选择与细化（P0）** | **`MeshSelect`**（选择集：`normal`/`box`/`sphere`/`all` + `invert`）/ **`MeshMove`**（只捏选中的那一块：平移/旋转/缩放，绕选择集质心）/ **`MeshSubdivideSurface`**（Catmull-Clark 曲面细分） |
+| **多边形编辑** | **`MeshExtrude`**（区域挤出）/ **`MeshBridge`**（开放边界环对接）/ **`MeshBoolean`**（并差交，manifold3d）/ `MeshWeld`（**合并顶点** = 按距离焊接） |
+| 组织 | `MeshGroup`（`mesh` + `more` 两两串）/ `MeshJoin`（吃列表）/ `MeshInfo`（顶点/面/尺寸/中心） |
+| 落地 | `MeshSave`（写 `.obj` 到 `<图目录>/models`，**透传 mesh** + 出 path/url） |
+
+**P1 的口径**（曲线 / 扫掠 / 开洞 / 内缩，2026-10-20）：
+
+| 件 | 口径 | 坑 |
+|---|---|---|
+| `CurvePath` | 点列 → `{kind:"curve", points:[…]}`；`linear` 折线 / `smooth` = **Catmull-Rom**（每段 `samples` 份，首尾过控制点） | 少于 2 点报错；`smooth` 在两端做镜像延伸，别指望它保持切线方向 |
+| `MeshSweep` | 圆截面沿点列扫：`radius` 起半径、`taper` 末半径倍数、`sides` 截面段数、`caps` 封盖；**法线走平行移动**（Rodrigues 旋转） | ① 环不能复用 `_band_faces`（它按"哪圈 y 高"定绕向 ⇒ 管子朝任意方向会翻错），统一绕向后 `orient_outward`；② 连续重合点会算不出切线 → 先剔掉 |
+| `MeshDelete` | 按选择集删面，孤立顶点一起清（索引重排）；全删光报错 | 删完是**开口件**：布尔/CC 都会拒收，用前先想好补不补 |
+| `MeshFillHole` | 每个开放边界环 → 中心点扇形；`max_edges>0` 只补小洞 | 补面按边界环的**反向**走（边界边是"面内走向"），否则补片内翻 |
+| `MeshInset` | 逐面独立内缩（Blender 的 Inset Individual）：每个选中面往自己中心收 `amount`，边上一圈补边框 | ⚠ **真正的倒角（bevel）没做**：那要半边网格重构（顶点分裂 + 顶点多边形补片），风险远大于收益；视觉上先用 `MeshInset` + `MeshExtrude(inset=…)` 这一档 |
+
+**P0「选择 → 捏 → 收曲面」的口径**（用户口径 2026-10-20：「如果要细化模型，还得做哪些工具」→「开工」）：
+
+| 件 | 口径 | 三个坑 |
+|---|---|---|
+| `MeshSelect` | 输出 `SELECT` 端口的值 = **面索引表** `{kind:"select", faces:[…], verts:[…], count, note}`；`normal`（方向+角度）/`box`（中心±尺寸/2）/`sphere`（球心+半径）/`all`，`invert` 取反 | 索引是对**那一刻的网格**说的：中间插了细分/焊接/布尔就**要重选**（越界会明确报错，不静默） |
+| `MeshMove` | 只动**选择集覆盖的顶点**：绕选择集质心先缩放、再旋转（X→Y→Z）、最后平移；空选择集直接报错 | 整件变换用 `MeshTransform`；⚠ 未焊的网格（`MeshBox`）选顶面再动会**把面片拽开**（接缝处顶点不共享）⇒ 先 `MeshWeld` |
+| `MeshSubdivideSurface` | Catmull-Clark：每层每三角面 → 3 个四边形（6 个三角面），面数 **×6/层**；默认先 1e-6 焊一遍 | v1 **只吃闭合网格**（边界边的 crease 规则没做），遇到边界直接报数字数量 |
+
+**实测数字**（自证里钉住的）：球 `0.5088 → CC 一层 0.502`（只收 1.3%，说明不是"整件缩水"）；
+方块 `1.0 → 0.621`（一层的圆角方块）；`38v/72f`（1 层）→ `218v/432f`（2 层）。
+⚠ 踩过的坑：`_cc_once` 里"半边 → 面号"曾用 `np.repeat(arange(F), 3)`，而半边是**同类型聚在一起**
+（`[所有面(0,1)] + [所有面(1,2)] + [所有面(2,0)]`）⇒ 必须 `np.tile`。错了的表现很直观：
+边点飞到球另一侧、45% 的面片翻面、体积只剩一半（0.27）。
+
+**多边形编辑那四个的口径**（2026-10-20 用户口径：「没看到基本的多边形编辑节点，比如挤出，合并顶点，
+桥接，布尔」）：
+
+| 动作 | 怎么选 | 三个坑 |
+|---|---|---|
+| 挤出 `MeshExtrude` | 面法线 · `direction` ≥ cos(`angle`)；区域沿**平均法线**推 `distance`，`inset` 让顶面往中心收 | ① 侧墙绕向必须走 `(a→b)`（原来写反 ⇒ 体积 1.5 变 0.83）；② **先焊**再挤，`box` 每面自带顶点，不焊就留缝（节点默认 `weld=true`） |
+| 桥接 `MeshBridge` | 两件各自的**开放边界环**（`caps=false` 那种），`loop_a`/`loop_b` 选第几个环 | 两环**段数必须一样**（不一样直接报错并写出两个数量）；对齐自动做（转位 + 翻向取距离最小） |
+| 布尔 `MeshBoolean` | `union` / `difference`（A 减 B）/ `intersect` | ① 要 **`manifold3d`**（可选依赖：`pip install --target <目录> manifold3d` → 面板「依赖目录」填它 → 重载；本机默认装在 `<包数据目录>/mesh_deps`）；② 输入要**一致绕向 + 闭合**，不满足直接报 `NotManifold`（不糊弄）；③ 输入自动 `weld` + `orient_consistent` |
+| 合并顶点 `MeshWeld` | `tolerance` 格子 | 太大（比模型细节还大）会把形状焊塌 |
+
+⚠ **新加的 `orient_consistent()`**（`mesh3d.py`）：让相邻面沿公共边**反向**走 —— CSG 和"顶点法线求平均"
+都要求这个。快路径是向量化查冲突（没有就只做一次体积定号，`sphere(240×120)` 57ms 不受影响），
+有冲突才走 BFS（O(F) python 循环）。实测：球面的**极盖与腰带原来不同向**（82 条边同向），
+`manifold3d` 直接 `NotManifold`；修好后 `genus 0 / NoError`。
+
+⚠ **为什么要有 `MeshGroup`**（2026-10-20 做茶壶时补的）：图里**没有"造列表"的原语**，`MeshJoin` 只吃列表 ——
+所以"壶身 + 壶盖 + 壶钮 + 壶嘴 + 壶把"这种多零件拼装在图上是接不起来的。`MeshGroup(mesh, more)`
+两个口都是网格（`more` 也收一串），要几件就**串几层**：`组(组(身,盖),组(嘴,把))`。
+
+**数据契约**（`MESH` 端口，值就是这一个 dict —— 能 `json.dumps`，混引擎段间交接不会坏）：
+
+    {"kind": "mesh", "format": "mesh3d/1",
+     "vertices": [[x, y, z], ...], "faces": [[i, j, k], ...], "name": ""}
+
+面**一律三角**（多边形先扇形三角化）；`mesh_of()` 还收 `(顶点, 面)` 二元组（`math_shapes` 出的就是它）/
+`.vertices + .faces` 鸭式对象（trimesh / Open3D）/ 纯顶点表（当点云）——**老节点能直接接进这条链**。
+
+**3D 预览不用落盘**：宿主 `mesh_preview.mesh_payload()` 本来就认 `{vertices, faces}`（契约 ③），
+所以链上**任何一步**都能在 👁 / 底栏「🧊 3D 视图」里看；`MeshSave` 只是为了给外部工具一份文件。
+⚠ **几何不随"本轮值"走**（2026-10-20 宿主侧瘦身，见 `l_mindmap_mmd.md` 的「值交接瘦身」）：
+超过 512 顶点的网格在 SSE / `values.json` 里只是摘要（`__mesh_ref__` + 顶点/面数），真几何按节点取
+（`/api/pygraphs/mesh`）。所以夜里看"本轮值"只有数字是**正常**，不是值丢了。
+
+**实测性能**（本机，`wuwor l_mindmap_mmd -- python -m l_node_engine.mesh3d` 的表）：
+
+| 操作（2.9 万顶点 / 5.7 万面） | 耗时 |
+|---|---|
+| `transform` / `weld` | 30 / 38 ms |
+| `smooth`（1 遍）/ `displace`（3 层噪声） | 55 / 91 ms |
+| `subdivide`（→ 11.4 万顶点 / 22.8 万面） | 181 ms |
+| `obj_text`（写文本） | 134 ms |
+| 六节点链（球→置换→平滑→阵列→变换→导出，7.9 万顶点） | **821 ms** |
+
+**示例图**：
+- `lugwit_agent_a/Functions/demo_mesh3d`（方块 → 细分 → 置换 → 平滑 → 阵列 = 程序化山石；
+  另一支 `MeshLathe` 花瓶；两个 `MeshSave` 落 `procedural_rocks.obj` / `procedural_vase.obj`）。
+  真服务实测 2026-10-20：`POST /api/pygraphs/lugwit_agent_a%2FFunctions%2Fdemo_mesh3d/run` → HTTP 200、
+  `models/` 下两份 OBJ 都生成（石头 7938 顶点 / 14400 面 / 501KB）。
+- **`lugwit_agent_a/Functions/demo_teapot`（2026-10-20，用户口径「能否做一个茶壶的案例」）**：
+  壶身 = `MeshLathe`（10 点轮廓：底收 0 → 肚子 0.56 → 收颈 0.29 → 壶口 0.31，segments 64）、
+  壶盖 = `MeshLathe` 小穹顶（盖沿 0.33 压住壶口，`MeshTransform` 抬到 y=0.90）、壶钮 = `MeshSphere(0.05)`
+  抬到 1.12、壶嘴 = 锥形 `MeshLathe`（`cap=false` 开口管）`rz=-50°` + 挪到 (0.40, 0.36)、
+  壶把 = `MeshTorus(0.28, 0.05)` `rx=90°`（环面转到 XY 平面）挪到 (−0.48, 0.58)；
+  然后 `MeshGroup` **串四层** → `MeshSave('teapot')` + `3d_view`。
+  实测：整只壶 **1878 顶点 / 3664 面**，尺寸 1.75×1.17×1.10，`teapot.obj` 109KB；跑一轮 0.31s（HTTP）、
+  3D 视图「来源」下拉里 14 个中间件都能单独看（壶嘴 200v / 壶把 640v / 逐层组合 772→1038→1238→1878v）。
+  ⚠ 两个坑记在这儿：**绕 Z 转正角度是往 −X 倒**（壶嘴想朝 +X 得给负角度）；
+  **圆环默认在 XZ 平面**（绕 Y 轴），要竖起来当把手得 `rx=90`。
+- **`lugwit_agent_a/Functions/demo_mesh_curve`（2026-10-20，P1）**：① `CurvePath`（4 个控制点、
+  `smooth`、每段 8 份 ⇒ 25 个点）→ `MeshSweep(radius .18, taper .35, sides 20)` = 一根收尖的弯管
+  （**502 顶点 / 1000 面**，2.52×2.10×0.55）；② 方块 → 焊 → 选顶面 → `MeshInset(0.25)` = 面板线。
+  实跑：`swept_horn.obj` + `inset_panel.obj` 都生成。
+- **`lugwit_agent_a/Functions/demo_mesh_refine`（2026-10-20，P0）**：方块 → 焊 → `MeshSelect(+y)` →
+  `MeshMove(ty .55, scale 1.35)` → `MeshSubdivideSurface(1)` ⇒ **38v/72f** 的圆角锥台（截图那张）。
+- **`lugwit_agent_a/Functions/demo_lion`（2026-10-20，用户口径「现有多边形工具能做一个狮子么」）**：
+  62 个节点拼出来的**风格化**狮子（6098 顶点 / 12112 面，2.52×2.08×1.12）：躯干 = 3 个球拉扁、
+  头/嘴 = 球、脖子与四条腿 = 圆柱（腿 + 爪 用 `MeshMirror` 一次出左右）、耳朵 = 圆锥、眼睛 = 小球、
+  **鬃毛 = 两圈 `MeshTorus` 绕 Z 转 −90° + `MeshDisplace`（freq 12）+ 轻 `MeshSmooth`**、
+  尾巴 = 圆柱 + 噪声球穗，最后 `MeshGroup` 串成一棵（**60 个几何节点都进 3D 视图「来源」下拉**）。
+  实跑 1.8s（HTTP），`models/lion.obj` 生成。
+  ⚠ **诚实的能力边界**：这套工具只能做到"积木式/卡通"，**做不到写实** —— 没有自由顶点编辑与雕刻笔刷、
+  没有曲线放样（loft/sweep 沿路径）、没有 Catmull-Clark 细分曲面（只有线性细分 + Laplacian 平滑）、
+  没有毛发/贴图/骨骼。要往写实走，下一步该补的是：**曲线节点 + loft/sweep**、**顶点/面选择器**
+  （按区域/材质选，喂给挤出与移动）、**Catmull-Clark**、**UV/贴图**。
+- **`lugwit_agent_a/Functions/demo_mesh_edit`（2026-10-20）**：① `MeshBox` → `MeshExtrude(+y, 0.5)` →
+  `MeshBoolean(difference, 球)` = 长高一截的方块顶上挖个球孔（453 顶点 / 902 面，1.00×1.50×1.00）；
+  ② 两根 `MeshCylinder(caps=false, segments=24)` → `MeshBridge(loop_a=1, loop_b=0)` = 一根长管。
+  真服务实测：`POST …/demo_mesh_edit/run` → HTTP 200、`models/drilled_block.obj` + `bridged_tube.obj` 都生成、
+  3D 视图「来源」里 6 号（布尔结果）就是截图那张。
+
+**四条口径（改之前先看）**：
+1. **numpy 是"调用时才要"**：`l_node_engine` 内核仍是纯标准库（别的宿主 import 得起来），
+   缺 numpy 时节点**明确报错**（不是静默变慢）。所以引擎那个 env 跑 selftest 时几何段会**跳过并说明**，
+   真几何要跑 `wuwor l_mindmap_mmd -- …`（那个 env 有 numpy）。
+2. **盖的绕向由调用方说清**（`_fan_faces(..., up=True/False)`）：顶盖 / 底盖的圆心和它那一圈**同一个 y**，
+   靠"谁更高"推不出来（踩过：圆柱/圆锥体积算成 0 = 一半面内翻）。
+3. **细分前先 `MeshWeld`**：`box` 的 6 个面各自带顶点，不焊的话接缝处中点不会复用（面数一样、会出现缝）；
+   自证里就是 `weld(box)` → 8 顶点 → 细分 2 级 = 98 顶点（8 + 18 + 72）。
+4. **上限在 `LIMITS` 里**（面板 `max_vertices` → 引擎侧 `max_faces = 2×`）：超了**报错带数量**；
+   纯 python 时代几十万面会把整轮卡住，"静默慢"比"明确拒绝"难查。
+
+**不引 trimesh / manifold3d**：图元 / 变换 / 细分 / 平滑 / 置换 / IO 这一组已经覆盖，它们真正独有的是
+**CSG 布尔**（`manifold3d`）—— 那是"要不要为它加一个运行时依赖"的单独决定，不塞进"基础"里。
+将来要布尔：新增一个可选 `import manifold3d` 的 `boolean()`（接口与 `MeshJoin` 同形）即可。
+
+自证：`wuwor l_mindmap_mmd -- python -m l_node_engine.mesh3d`（38 项：图元数量/体积对得上、
+四边面三角化、细分中点复用、噪声确定性、weld、OBJ 行数、上限报错 + 上面那张性能表）
+＋ `l_node_engine_selftest` 的「插件 mesh3d」组（注册 / 分类 / `MESH` 入参是**连线**不是控件 /
+真跑图 / 停用摘净）+ 真服务（2026-10-20 实测）：
+
+```
+PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 18 个节点（顶点上限 200000）"
+GET /api/pygraphs/object_info                    → MeshBox / MeshLathe / MeshSave… 都在
+```
+
 ### 3.0e 节点译名（中文名 / 说明 / 入参悬停，`labels.py`，2026-10-15）
 
 节点库里全是英文类名（`CLIPTextEncode` / `CheckpointLoaderSimple`）时，"看得见"和"用得顺"是两回事。
@@ -549,6 +724,10 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 `l_tex_nodes_selftest` 末尾同一条判据（覆盖贴图 / FX / MG / SBSAR 那 73 个）。
 comfy 上游节点不在其内（它们的译名走 §3.0e 的 locale 层）。
 
+> ⚠ **`AIVideo` 已退休**（2026-10-20 用户口径「从并列推进到替换内置」）：`ai_nodes.NODE_CLASS_MAPPINGS` 里
+> 不再注册它，**节点由节点库提供**（`<工程>/nodes/ai_video.nlib`，`exec: class → l_node_engine.ai_nodes:AIVideo`）。
+> 类本身保留（执行体 + `nodelib_export` 的导出源）。**删了那个库就没有 AIVideo 节点** —— 这是预期，不是 bug。
+
 ### 3.0g 节点库文件 `.nlib`（一份 SQLite 装 N 个节点，2026-10-19）
 
 节点声明除了写在 `.py` 里，还能放在**库文件**里：`.nlib` 就是**一份合法 SQLite**
@@ -562,15 +741,63 @@ comfy 上游节点不在其内（它们的译名走 §3.0e 的 locale 层）。
 | `nodelib.read_catalog(path)` | **只读目录**（`id/version/category/label/search`，**不需要 key**） |
 | `nodelib.load_library(path)` | **整库原子**注册：先建完所有类再动注册表；节点多带 `versions` / `latest` / `library` |
 | `nodelib.node_versions` / `get_versioned` | 版本表：注册表只挂 `latest`，旧版按需取；**未知版本报错不回落** |
-| `nodelib.discover()` | 扫 `L_NODE_ENGINE_NODELIBS` + `<包数据目录>/nodes` 里的 `*.nlib`（宿主启动时调，坏库只记一条） |
-| CLI | `l_node_engine_nodelib_pack` / `l_node_engine_nodelib_inspect` / `l_node_engine_nodelib_export`（`tools/nodelib_cli.py`） |
+| `nodelib.discover()` | 扫 `L_NODE_ENGINE_NODELIBS` + `<包数据目录>/nodes` 里的 `*.nlib` **和作者源目录**（含 `library.json` + `nodes/` 的那种，`load_source_dir`）；坏库只记一条 |
+| CLI | `l_node_engine_nodelib_pack` / `_inspect`（`--verify` / `--diff` / `--assets-dir` / `--with-key` 解密密文 / `--sql` 只读查询）/ `_export`（`tools/nodelib_cli.py`） |
 
-⚠ 声明里 `exec` 只有两种：`{"kind":"callable","target":"pkg.mod:fn"}`（普通函数）或
-`{"kind":"class","target":"pkg.mod:Class"}`（**借另一个节点类的 `FUNCTION`** —— 把内置节点迁成文件节点就靠它）。
-`exec.target` 在**加载时**就解析：目标不存在 → 整库拒收并点名。
+⚠ 声明里 `exec` 现在**三种**：`{"kind":"callable","target":"pkg.mod:fn"}`（普通函数）／
+`{"kind":"class","target":"pkg.mod:Class"}`（**借另一个节点类的 `FUNCTION`** —— 把内置节点迁成文件节点就靠它）／
+`{"kind":"pygraph","graph":"pro/Tools/x"}`（**指向一张图**：参数 = 图入参、输出 = 图输出，走 `run_pygraph`）。
+`exec.target` / `exec.graph` 在**加载时**就解析：目标/图地址不存在 → 整库拒收并点名。
+⚠ `pygraph` 的地址解析**宿主注入**（`nodelib.set_graph_resolver`，`l_mindmap_mmd` 用 `_pygraph_path`）——
+引擎不认"工程/别名"；**必须在 `discover()` 之前注册**，否则加载期解析会走默认 loader（只认 pygraphs 根下的名字/绝对路径）。
 ⚠ **加密**（P4c）：`pack(encrypt=True, keyslot=…, lib_key=…)` 把 `body` / blob 用 **AES-256-GCM** 加密，\n目录列仍明文（**无 key 也能列清单**）；key 走 `L_NODE_ENGINE_LIB_KEY=<slot>:<hex>` 或 `<包数据目录>/license.json`，\nAAD 绑 `库|id|版本`（换行即失败）。签名两档：`ed25519`（推荐）/ `hmac-sha256`。\n都靠 `cryptography` —— **这是 `requires` 里唯一破例的依赖**（2026-10-19 用户口径「可以按需添加依赖」）。
+⚠ **`HELP`（帮助文档指针，2026-10-20）**：节点类写 `HELP = "<名字>"`（库声明写 `"help": "<名字>"`）→ `get_node_info()` 发 `help`，编辑器「❓ 节点帮助」给「📖 打开帮助」（`/api/pygraphs/help/<名字>`）；**没写 `HELP` 也发** `node/<类名>` —— 宿主按元数据现生成节点帮助页（`/api/pygraphs/help/node/<名字>`，目录 `/api/pygraphs/help/nodes`），所以每个节点都有帮助页，且永不与实现漂移。
 ⚠ **`source_file` 对文件节点指向库文件本身**（`.nlib`），实现体在 `info.exec`（`{kind, target}`）\n—— 属性面板那一行「定义」显示的正是它（用户 2026-10-19 口径）。\n⚠ **不引 aiohttp**（同轮追问）：执行模型是**同步拓扑**，节点接口 `execute(**kwargs)` 同步；\n换 async 要贯穿图执行 / 宿主事件循环 / GUI，收益只是HTTP 客户端，而长任务（视频）早就是\n"建任务 + 轮询"、并发靠 `ForEachThread/Concurrent` + `PARALLEL` 节点。要现代 HTTP 客户端用 `httpx`（可选）即可。\n⚠ 样例：`nodelib_samples/ai_video/`（`AIVideoFile` = 内置 `AIVideo` 的迁移版，19 个入参一致）；
 自证：`l_node_engine_selftest` 第 39 组。
+
+### 3.0h 参数条件显隐（`visible_when` / `disabled_when`，2026-10-20）
+
+节点在 `INPUT_TYPES` 的 opts 里写（`conditions.py`）：
+
+```python
+"image_tail": (..., {"visible_when":  {"multi_shot": True}}),
+"quality":    (..., {"disabled_when": {"provider": ["agnes", "vidu"]}}),
+```
+
+DSL（**受限，禁 eval**）：`{参数: 字面量}`（等值，数字/布尔宽松）、`{参数: [值…]}`（属于集合）、
+`{"all": […]}` / `{"any": […]}`（组合）。
+
+口径：
+- **只影响显示与可编辑**：隐藏/置灰的参数**照旧参与执行**（值还在），必填判据仍看 `spec.required`；
+- **fail-open**：规则写坏 / 引用的参数不存在 / 值类型不认识 → 当"没有这条规则"（宁可多显示一个控件）；
+- 前端 `l_mindmap_mmd/web/src/pyConditions.js` 是**同一份语义的镜像**（即时显隐），权威在引擎；
+  卡片行 / 表单卡 / 属性面板三处都过滤；`disabled_when` 在面板**置灰不隐藏**；
+- ⚠ **端口不隐藏**（只藏行/控件）：端口没了会把已有连线变成悬空；
+- 自证：`l_node_engine_selftest` 第 40 组。
+
+### 3.0i 节点钩子（`HOOKS`，2026-10-20）
+
+节点类声明（`hooks.py`）：
+
+```python
+HOOKS = {
+    "on_param_change": {"param": "provider", "call": "mypkg.hooks:refresh_models"},
+    "on_create":       {"call": "mypkg.hooks:init_defaults"},
+    "on_loaded":       {"call": "mypkg.hooks:after_load"},
+}
+```
+
+钩子函数：`def fn(values=None, param=None, node=None, dry_run=False) -> dict|None`，
+返回 `{"opts": {参数名: opts 补丁}, "ui": {…}, "warn": "一句话"}`（**其它键丢弃**）。
+
+口径：
+- **只读**：不许改图结构、不许写盘；`call` 走 `load_callable` ⇒ **导入白名单**同 PythonCode；
+- **异常降级**：抛异常 / 被白名单拦 / 返回值不是 dict → `ok:false + warn`，**永不抛**、不阻断执行；
+- `get_node_info()` 发 `hooks` 摘要（`on_param_change` 带 `param`），**不发 `call`**；
+- 宿主 `POST /api/pygraphs/node_hook {name,hook,param,values}`（本机写接口要 Bearer）；前端改参数时自动问，
+  把返回的 `opts` 只补**那一行**（内存态，不落盘）；
+- ⚠ `.nlib` / 作者源声明里也能写 `hooks`（`_normalize_decl` 打包时校验钩子名与 `call`）；\n
+- 自证：`l_node_engine_selftest` 第 41 组。
 
 **依赖留在插件层**（用户口径 2026-10-17：「comfyui 作为插件就行，我们的 pygraph 不直接依赖那些库，
 但是可以通过插件去添加这些依赖」）：
@@ -938,7 +1165,7 @@ ContextVar，与 `emit`/`guard` 同一套"引擎只留钩子"的分工）。但*
 `…/io` | `Const` | **常量**（任意类型，2026-10-17 新增）：`value` + `type`（python 类型表达式，编辑器按它给控件、`execute` 按它把值转成真对象）。⚠ **`Input` 节点类型同轮退休** —— 入参的**声明**搬到了**图级 `graph["params"]`**（「⇄ 接口」面板里增删改；形状 = `{name, type, value, optional, description, label, widget, options, values}`），图上要用某个入参走 `GetParam`（引用）/ `SetParam`（设置），写死的值用 `Const`。老图里的 `Input` 节点：**读**这一侧由 `graph_params()` 双读、**跑**这一侧由 `graph._rewrite_legacy_inputs` 就地重写成 `GetParam`（连 `type` 一起带，值仍由接口那份提供）⇒ 老图不用手改就能跑。**值怎么存见 §3.3** |
 | | `Output` | 图的**返回值出口**（= 工具返回）。按 ComfyUI 约定返回 `{"result": …, "ui": …}`，`ui` 供画布内联预览 |
 | | `Preview` | 显示任意结果：**原样透传**（插在链中间不断流），同时把值交给画布渲染。`mode` = `auto`（默认）/`text`/`json`/`repr`/`csv`；`rows`（默认 50）控表格行数。**`auto` 会认表**：`.csv`/`.tsv` 文件、多行且分隔符一致的文本、`list[list]`、`list[dict]` → 给 `ui.table`（画布画成真表格，首行当表头，最多 12 列），认得不像就照旧当文本/JSON（要文本显式写 `mode="text"`，别误伤多行日志）。编辑器里表格预览的折叠条右侧有个 `⤢`：**悬浮放大窗**里是同一张表（12px 字、不设尺寸上限；`Esc` 或点空白关） |
-| `…/note` | `Note` | **画布注释**（2026-10-12）：`text` 是 Markdown，画布上渲染成便签、**双击就地编辑**（`Esc` 放弃）。**不参与执行** —— `execute` 返回空 tuple，跑图时就是个空操作（但必须注册：没注册的 class_type 执行器会报 `Unknown node class`）。前端渲染见 `l_mindmap_mmd` 的 `PyNote.jsx` + `markdown.js`：**marked 解析 + DOMPurify 消毒**（两步都要 —— marked 不做消毒，注释里的 `<script>`/`onerror`/`javascript:` 全靠 DOMPurify 删；实测探针通过） |
+| `…/note` | `Note` | **画布注释**（2026-10-12）：`text` 是 Markdown，画布上渲染成便签、**双击就地编辑**（`Esc` 放弃）。**不参与执行** —— `execute` 返回空 tuple，跑图时就是个空操作（但必须注册：没注册的 class_type 执行器会报 `Unknown node class`）。前端渲染见 `l_mindmap_mmd` 的 `PyNote.jsx` + `markdown.js`：**marked 解析 + DOMPurify 消毒**（两步都要 —— marked 不做消毒，注释里的 `<script>`/`onerror`/`javascript:` 全靠 DOMPurify 删；实测探针通过）。**2026-10-20 起也认 HTML**：`text` 以标签开头 → 卡片里走 **sandbox iframe**（`allow-scripts`，**不给** same-origin），**主题跟卡片底色**（纸白→亮 / 其余→暗；注入 `color-scheme` + `--note-*`），标题栏 **🪟** 打开的是**固定网址** `/api/pygraphs/note_window?graph=<图>&node=<id>&theme=<light|dark>`（可刷新/收藏/分享；同名窗口复用同一标签页）；示例图 `<工程>/demo/demo_nodelib_features`（暗/亮各一张）；**也能指向帮助文档**：`text` 只写一行 `help:<名字>` → 卡片渲染包里 `l_mindmap_mmd/help/<名字>.html`（固定网址 `/api/pygraphs/help/<名字>`，改文件即更新） |
 | `…/io` | `Ask` | **人在环**（2026-10-12）：跑图到此**暂停**问人（`prompt` / `options` 逗号候选 / `default`），答完继续、`answer` 往下流。实现 = 引擎钩子 `set_ask(fn)`（与 `set_guard` 同形状）+ 宿主通道：`l_mindmap_mmd` 把问题推成 SSE 的 `ask` 事件，浏览器在运行日志上方的询问条作答 → `POST /api/pygraphs/runs/{run_id}/input` 唤醒线程。**宿主没挂钩子时明确报错**（绝不静默返回空串 —— 审批被跳过却继续跑比报错危险）。超时 `L_MINDMAP_ASK_TIMEOUT`（默认 180s） |
 | | `StateIn` / `StateOut` | **跨轮状态**（2026-10-12，会话续跑）：`StateIn(name, default)` 读上次存的值（`default` 是 **JSON 文本**，读不动退化成普通字符串）；`StateOut(name, value)` 原样透传给下游、**跑完由宿主落盘**。引擎**不碰磁盘**（它不知道"会话"是什么）：宿主跑前把会话里 `name` 的值灌进 `StateIn.default`，跑后把 `StateOut` 的输出写回 —— `l_mindmap_mmd` 落成 `pygraphs/_sessions/<图名>/<会话id>.json`，跑图带 `{"session": "<id>"}` 才启用 | `…/subgraph` | `SubGraph` | **子图**（2026-10-12）：把**另一张图**当一步跑。契约 = 嵌套图的 `Input`（= 本节点参数端口，按 `name` 注入）/ `Output`（= 返回值，**2026-10-13 起可多个**：全按 `name` 排序返回、下游按下标取）。`sub` 是**内联 prompt、不是图名** —— 引擎宿主无关（图名解析是宿主的活），且增量指纹必须随内容变（只放名字会"内容改了还复用旧结果"）。深度上限 8、**按内容哈希**判成环、护栏接力（`active_guard()`，显式传入的 guard 不能被子图绕过）；`sub` 的指纹走**整体 sha1**（`_safe_repr` 会截断 → 会撞，见坑 14）；失败用 `SubGraphError` **原样上抛不套娃**（见坑 15）；子图内**不接**增量缓存（key 是节点 id，会撞外层）。**图名 → 内联 prompt** 走 `subgraph.resolve_graph_names`（节点类用 `GRAPH_NAME_PORT` 声明"哪个输入是图名、内联写进哪个键"，引擎仍不认目录 —— loader 是宿主给的；递归解开子图的子图，按**名字**拦环 / 拦深度，报错带节点路径 `GraphNameError`）。宿主侧（图名→内联 / 参数端口 / 编辑器 UI）与它的第一个用家 `TexFxMap` **已做**（2026-10-12）：逐条清单与实测判据见 `子图与FX-Map_计划.md`。**双击进内层图**（Substance 那种）：节点类声明 `GRAPH_SKELETON`（图文件模板）→ `get_node_info` 带成 `graph_skeleton`，宿主"双击没接图的节点"时照它建一张并接上（`SubGraph` 的模板是直通 `Input → Output`）。**图级 `root`**（2026-10-14，"根节点就是这张图的输出"，SD 的 FX-Map 那套）：节点类用 `ROOT_WRAP = (收口节点类名, (要搬过去的字面量参数…))` 声明"多出怎么收成一个值"（如 `FxQuadrant` → `("FxTile", ("width","height"))`）；`pygraph.graph_prompt` 里的 `_apply_root` 把它收成一个 `Output`（**单出**直接接第 0 个出，多出才用收口节点；`carry` 的字面量照搬、其余口按 0..N 接上）—— 于是"根"在引擎里仍然只是 `Input/Output` 那套，跑图 / 校验 / 子图内联 / A-B **全都自洽**，引擎**不认识任何具体节点类名**。`kind:"fx"` 的图**必须有 root**；坏 root（缺 / 指向不存在的节点 / 收口不了 / 类没注册）抛 `GraphRootError`（宿主映射成 400；自证第 29 组）。 |
 | `…/code` | `PythonCode` | **python 节点**（2026-10-13）：在节点里写代码、**端口自己定**。取值 `inputs["a"]`、出值 `outputs["y"] = …`；端口表存 `ports`（JSON）。细节见下面的 §3.1.1 |
@@ -1199,14 +1426,35 @@ ContextVar，与 `emit`/`guard` 同一套"引擎只留钩子"的分工）。但*
   撞上超时的表现：宿主发一条 `error`（`执行超时（Ns）。工作线程无法强杀…`）—— 脚本/前端**很容易漏看**，
   现场就只剩"耗时正好 N 秒 + 输出空"（实测踩过）。⚠ 另：**超时常常是症状不是病**：
   把整棵树的路径都塞进提示词那种"题目太大"，调到 300s 也回不来（实测）——先看提示词有多大。
-- **没有 map / filter / 自定义函数**（数值那半 2026-10-13 已补，见 §3.1 的 `l_node_engine/data`）：
-  `Calc`/`Count`/`Sum`/`GroupCount`/`ToText` 覆盖"算一次 / 数个数 / 求和 / 分组计数排序 / 成文本"，
-  多路**值**选择有 `Select`；多路**控制流**（多路 goto）2026-10-14 起有 `Branch`；
-  **`else` 2026-10-16 起可直写**（`IfStart … ElseStart … IfEnd` 三件套），
-  else-if 链仍用"嵌套 `IfStart` + `Not`"（嵌套 2026-10-13 起支持），
-  "跑到条件满足"用 `LoopStart(until_stop=True)`。
-  但"对每个元素做同一件事"（map）与"自己写个函数节点"仍不行 → 要 `LoopStart` 手工展开，
-  或把那段做成子图/宿主函数。做"把智能体控制流搬进图"时，这是**与"没有 goto/回边"并列**的硬缺口。
+- **map / 遍历：2026-10-18 起有了**（这条原先写"没有"，是旧口径）：`Map`（跑**子图**模板，
+  `items/template/item_param/shared/parallel` → `results/errors/ok_count`）、`ForEach`（串行）、
+  `ForEachConcurrent`（线程池，默认开满 8）、`ForEachThread`（**每项一个新线程**，
+  上限 `L_NODE_ENGINE_THREAD_MAX` 默认 64）、`ForEachProcess`（**每项一个子进程**，
+  `L_NODE_ENGINE_PROCESS_MAX` 默认 8；跨进程只收结果、参数必须可 pickle）。
+  另有 `Calc`/`Count`/`Sum`/`GroupCount`/`ToText`、"跑到条件满足"的 `LoopStart(until_stop=True)`、
+  多路**值**选择 `Select`、多路**控制流** `Branch`、`else` 三件套。
+  **两个静默跑歪的防线（2026-10-20）**：
+  ① `item_param` 打错字（内层 `GetParam` 读不到就是 `None`，每项结果全空且不报错）→ 现在
+     内层**真声明过参数**却对不上时当场 `ValueError`（报错里列出它声明了哪些名字）；
+     内层一个参数都没声明的（不需要 item）照旧放行。
+  ② **全局线程预算** `L_NODE_ENGINE_THREAD_TOTAL`（默认 32，`thread_budget.py`）：三处并发
+     —— `Map`/foreach 的逐项线程、`LoopStart.parallel` 的波次、并发批的同层 worker ——
+     **共用一本账**（以前各守自己上限，乘起来能到 8×8=64）。拿不到名额就**就地串行**
+     （安全优先）；`map_node.active_threads()` / `l_node_engine.active_threads()` 可看占用。
+     自证：预算掐到 1 时循环波次与并发批都降级串行、结果正确、跑完归零。
+  **仍没有**：`filter`（拿 `Map` + `IfStart` 筛，或 `PythonCode` 一行 list comprehension）、
+  一等"自定义函数节点"（单节点胶水用 `PythonCode`；要复用就抽子图，或用「函数节点」插件
+  `functions_plugin.py` 把某个包的函数批量接成节点）。
+- **循环 / if 的嵌套边界（2026-10-20 复核）**：`if` 套 `if`、`if` 在循环体里、**循环套循环都支持**
+  （自证里是 2×3、三层 2×2×2、外层 `parallel=2` 里套内层）；**深度没有上限**（`_run_loop` 递归、
+  区解析是扁平的）。**仍明确拒**：if 与循环区**跨边界**（一个括号在里一个在外）、
+  内层两个循环括号不都在外层区里、`LoopEnd.state` 与 `LoopStart.parallel>1` 同用 —— 全都报
+  `GraphPlanError` / 明确错误，不静默跑错。
+  ⚠ 接线坑（踩过两次）：内层 `LoopStart.state` 接外层 `state` 时，**外层自己也要有 `state` 来源**，
+  否则内层首轮拿到 `None`（`Calc` 会明确报"别拿它当 0"，不静默算 0）。
+- **`node_errors` 的并发记账（2026-10-20 修）**：并行轮次里同一个节点失败，旧写法是"先 `get` 再 `set`"
+  —— 两个线程都看到 `None` 就各建一份，后写的把前一份丢了。现在统一走 `_record_error()`
+  （模块级锁 + **追加**），失败条数不丢（判据：`parallel=2` 里同一个节点两轮都失败 → 至少 2 条）。
 - **`if` 区放进循环体：** ~~不支持~~ → **2026-10-12 起支持**（智能体的循环体里必然有分支，
   这条不放开，"把控制流搬进图"就堵死）。实现要点（改这块先看这三条，都踩过）：
   ① **规划顺序** —— if 配对要先算，循环区靠它把括号 + **条件那一段**补进区里
@@ -1234,10 +1482,36 @@ ContextVar，与 `emit`/`guard` 同一套"引擎只留钩子"的分工）。但*
   排序同 `collect_outputs`：先 `name`、再 id 的**数字**大小），下游按**下标**取（`["sub", 1]` = 第二个）；
   宿主/编辑器要列端口用 `list_graph_outputs(prompt)`（**不跑图**，顺序与运行期一致），
   宿主的 `/api/pygraphs/ports?kind=subgraph&target=<图>` 已带结构化 `outputs`。
-  ⚠ **编辑器还按静态 `RETURN_TYPES` 画一个端口**（画多端口那步还没做）—— 引擎/宿主两侧的数据已备好。
-- **子图内不接增量缓存**（缓存的 key 是节点 id，嵌套 id 会和外层撞）：改子图里任意一处 →
-  整个子图重跑。子图**内容**变了外层那个 `SubGraph` 节点的指纹会跟着变，所以不会拿到旧结果。
-- 队列只有"深度 4 的 FIFO"（没有优先级 / 取消排队；正在跑的那个杀不掉 —— 同"超时只能放弃等待"）。
+  **画布早就是多端口了**（2026-10-20 复核：`pySchema.outputHandles` 按 `info.output` 逐个画
+  `out{i}` 句柄，端口表节点用 `portsOfNode` 的 `outputs` 覆盖；DOM 与 canvas 两个后端都走它）——
+  以前这里写"编辑器只画一个端口"是旧口径，已作废。
+- **代码节点准入门（2026-10-20，优化清单 #11）**：`PythonCode` 与宿主**同权限**（能 import、能读写文件），
+  所以至少给了两道闸：`L_NODE_ENGINE_ALLOW_CODE=0` 直接关掉这一类节点（明确报错，不静默跳过）；
+  宿主可以用 `set_code_guard(fn)` 挂审批钩子（`fn(code)` 抛异常 = 拒这段代码）。
+  **默认全放**（老图/老行为不变）—— 这是"能不能拦"，不是"默认拦"。⚠ 它**不是沙箱**。
+- **旧内核边界（2026-10-20，优化清单 #7）**：`l_comfyui_backend/prompt_executor.py` 与我们同源但更旧，
+  已在它的模块头标 **LEGACY**：引擎语义（拓扑/循环/缓存/并发/事件）只改 `l_node_engine`，
+  那边只接 ComfyUI 上游兼容。自证里有一条 `_check_no_legacy_import` 断言**引擎源码里不许出现
+  `comfyui_backend` 的 import**（防止两套语义被反向绑死）。
+- **子图接增量缓存（2026-10-20）**：以前整段不缓存（缓存键是节点 id，内外层都叫 "1" 会撞）。
+  现在 `graph.active_cache()` 把宿主那份递进节点，`subgraph._ScopedCache` 给内层键加命名空间：
+  `sub:<外层节点id>:<内层内容哈希>/<内层节点id>` —— 同一个调用点内容没变才命中，子图一改前缀就变。
+  ⚠ 外层那个 `SubGraph` 节点自己也缓存 ⇒ 它命中时内层根本不会跑（正常现象，别拿"没看到内层 cached
+  事件"当"内层没接上"）。自证：键带前缀 / 代理四条方法透传 / 内容一改不命中。
+- 队列只有 FIFO（没有优先级）；**中止**：`/runs/<id>/cancel` 能在**节点边界**停（`GraphCancelled`，
+  2026-10-20），但正在执行的那个节点打断不了 —— 节点内部的长循环要自己轮询 `graph.cancel_requested()`。
+- **断点 / 单步（2026-10-20）**：引擎侧只有 `execute_graph(pause=…)`（每个节点执行前调一次
+  `pause(node_id)`；钩子想停就阻塞、想中止就抛 `GraphCancelled`，钩子自己抛别的只记日志）。
+  "断点"是**宿主的语义**：`POST /run` 带 `pause_mode`（`breakpoints` = 只停挂了
+  `nodes[id].flags.breakpoint` 的节点 / `every` = 每个节点都停），命中了发 SSE `paused`
+  并阻塞，前端用 `POST /runs/<id>/resume {"action": "continue|step|stop"}` 放行。
+  ⚠ 命中缓存的节点原本不执行（`_run_node` 走不到）→ 缓存命中那一支也补了一次 `_maybe_pause`，
+  否则"断点在那儿但图被增量缓存跳过"= 永远不停。
+  ⚠ 暂停期间**流不判超时**（收到 `paused` 就把墙钟预算重置一轮），否则人还在看断点就被判超时。
+- **规划缓存（2026-10-20）**：`_plan_graph` 按**结构哈希**（id + `class_type` + 连线引用）缓存
+  规划结果（LRU 32），实时模式/时间线那种"同图反复跑"不再每次重算 4 遍全图；
+  改字面量参数不换键（规划只吃拓扑），换连线才重算。`register_node` 会顺手清缓存（括号角色会变），
+  `L_NODE_ENGINE_PLAN_CACHE=0` 可关，`plan_cache_info()` 看现状。
 - 分组框是**视觉框**（不做父子绑定、成员不被裁剪），但**拖框会带上框里的节点**（成员起拖时现算；2026-10-16 起）。循环区包裹框仍是自动生成、不可交互。
 - **hub 的视频那条已真跑（2026-10-15）；图片那条仍未测**。LLM 那条**已验证**（只用 lugwit 账号密码，见 §3.0 第 4 条）。
   视频实测：`AIVideo`（真 hub、真上游）→
