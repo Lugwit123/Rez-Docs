@@ -1669,8 +1669,8 @@ AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目�
   `l_tex_nodes.md` §6.2c；自证 `web_probe view3d`（9/9，含真图竹编：模型 + 材质都按 `v3d` 走）。
 - **`mesh` 那路谁来喂**（2026-10-20）：图里算出来的几何直接接 `3d_view.mesh` —— 老路子是
   `math_shapes`（`CallFunction` / `ShapeSurface` 出 `(顶点, 面)`），新的是插件 **`mesh3d`**
-  （29 个 `Mesh*` 节点（含选择集/区域移动/Catmull-Clark/曲线+扫掠/删面/补洞/内缩/挤出/桥接/布尔/合并顶点），值 `{vertices, faces}`，见 `l_node_engine.md` §3.0d″；示例图
-  `lugwit_agent_a/Functions/demo_mesh3d` 程序化山石、`demo_teapot` 茶壶、`demo_mesh_edit` 挤出+布尔+桥接、`demo_lion` 风格化狮子、`demo_mesh_refine` 选择→捏→曲面细分、`demo_mesh_curve` 曲线扫掠+内缩）。宿主 `mesh_preview`
+  （37 个 `Mesh*` 节点（含**绑定 MeshRig/MeshSkin/MeshPose**、**属性 AttrSet/AttrGet/AttrPromote**、**减面 MeshDecimate**、**UV 投影**、**OBJ 带 vt/MTL 与 PLY 带顶点色**、选择集/区域移动/Catmull-Clark/曲线+扫掠/删面/补洞/内缩/挤出/桥接/布尔/合并顶点），值 `{vertices, faces}`，见 `l_node_engine.md` §3.0d″；示例图
+  `lugwit_agent_a/Functions/demo_mesh3d` 程序化山石、`demo_teapot` 茶壶、`demo_mesh_edit` 挤出+布尔+桥接、`demo_lion` 风格化狮子、`demo_mesh_refine` 选择→捏→曲面细分、`demo_mesh_curve` 曲线扫掠+内缩、`demo_geo_attrs` 属性 Cd 上色）。宿主 `mesh_preview`
   两种形状都认，链上任何一步都能看。
 - ⭐ **🔥 热力 = 一格面板**（2026-10-17 用户：「**删除热力按钮，使用热力面板替换**」）：顶栏那颗
   `📈 热力` 删了，开关 / 轮次 / 步骤 / 本轮元信息（`ts · mode · steps · dur · end=`＋门拦）/ 全量汇总

@@ -509,6 +509,10 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 
 ### 3.0d″ 「3D 程序化建模」插件（`mesh3d_plugin.py` + `mesh3d.py`，2026-10-20）
 
+> ⚠ **2026-10-21 起这些代码不在本包了**：3D 建模拆成独立 rez 包 **`l_mesh_nodes`**（插件形态 B：
+> 宿主 `requires` 不含它，`plugins.load_external()` 按 `external_plugins.json` 解析 rez 路径再 import）。
+> 下面这一节保留为**机制/口径的权威说明**；包结构、接入与自证见 `Rez-Docs/Rez_pkg/l_mesh_nodes.md`。
+
 用户口径：「给 pygraph 加一个插件，可以做基础的 3d 程序化模型制作」→ 追加「可以参考开源库，**要高性能**」。
 于是几何算法单独成 `mesh3d.py`（**numpy 向量化**，算法照 trimesh / Blender 那套：`np.add.at` 面法线累加、
 `np.unique(axis=0)` 边中点去重、`einsum` 算有符号体积），节点壳在 `mesh3d_plugin.py`。
@@ -516,20 +520,96 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 | 位 | 内容 |
 |---|---|
 | 插件 id | `mesh3d`（面板名「3D 程序化建模」，`runs_code=False` —— 只挂本包自己的纯函数） |
-| 字段 | `category`（text，默认 `mesh3d`）/ `max_vertices`（text，默认 `200000`，**0 = 不限**）/ `save_dir`（path，空 = `<图目录>/models`）/ **`deps`（list，可选依赖目录，给布尔的 `manifold3d` 用）** |
+| 字段 | `category`（text，默认 `mesh3d`）/ `max_vertices`（text，默认 `200000`，**0 = 不限**）/ `save_dir`（path，空 = `<图目录>/models`）/ **`deps`（list，可选依赖目录：`manifold3d`、以及 torch / cupy）** / **`gpu`（`off`/`auto`/`on`）+ `gpu_backend`（`auto`/`torch`/`cupy`）+ `gpu_min`（元素数门槛，默认 `200000`）+ `numba`（`auto`/`off`/`on`，`remesh` 栅格化的 `@njit`）** |
+| CPU JIT（2026-10-21） | `mesh3d_njit.py`：**`taubin`（numba → GPU → numpy 的第一顺位）** + `remesh` 的**逐三角形栅格化**。实测（RTX 4080 同机）：`taubin` 32.5k 顶点 numpy 175 → **numba 4.5 ms（39×）**、torch 40 ms（4.3×）；栅格化 48³ 658→**2 ms（426×）**、64³ 815→**1 ms（560×）**，整个 `remesh` 64³ 608→**328 ms（1.85×）**；**泛洪不用 numba**（numpy 切片 128³ 7.5 ms，numba 78 ms）。用不了 JIT 回 numpy 版（逐位一致），`detail.remesh.jit` 记这一轮走没走 |
+| GPU（可选，2026-10-21 已实测） | 依赖挂在插件层（「依赖目录」填带 torch 的目录，本机 = comfy 那份 `torch 2.8.0+cu128`）→ `mesh3d_gpu.backend_for(元素数)` **torch 优先**、其次 cupy、都没有回 numpy；两个后端都带**冒烟自检**（import 成功≠能算），失败永久回落并在 `status().gpu` 写原因。**走 GPU 的只有 `taubin` 与 `remesh` 的泛洪/膨胀**；实测（RTX 4080）`taubin` 65k 顶点 462→96 ms（**4.8×**）、`remesh` 96³ 7.97→7.91 s（**1.01×**，瓶颈是逐三角形栅格化的 python 循环）。cupy 在无 CUDA toolkit 的机器上不可用（`Failed to find CUDA headers`，装 `[ctk]`+nvcc 也未解决）⇒ 用 torch。⚠ 插件跑在宿主进程里，后端加载即常驻 |
 | 状态 | `loaded` / `nodes[]` / `max_vertices` / `save_dir` / `deps[]` / `errors[]` / **`numpy`**（版本）/ **`boolean`**（manifold3d 在不在） |
-| 摘干净 | `sources()` = `["mesh3d"]`（21 个节点都带这个 `NODE_SOURCE`） |
+| 摘干净 | `sources()` = `["mesh3d"]`（48 个节点都带这个 `NODE_SOURCE`） |
 
-**P0/P1 共 29 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
+**属性（Houdini 口径，2026-10-20 重构；值格式 `mesh3d/2`）**：
+
+用户口径：「houdini 并没有每个属性一个端点，有一个属性面板可以查询所有属性，流动的是上游传下来的属性，
+不一定要全部端点都连接」→「重构，不兼容老图」。**属性放值里、不占端口**：
+
+    {"kind":"mesh","format":"mesh3d/2","vertices":[…],"faces":[…],        # vertices 就是 P
+     "attrs":{"point":  {"Cd":[[r,g,b],…],"wear":[0.1,…]},               # 逐顶点（长度 = 顶点数）
+              "vertex": {"uv":[[u,v],…]},                                # **面角**（长度 = 3×面数，三角面）
+              "prim":   {"mat":[0,1,…]},                                 # 逐面（长度 = 面数）
+              "detail": {"seed":3}}}                                     # 整体常量（一个值）
+
+**四层口径**（Houdini 那套；用户口径 2026-10-21「点、面、顶点、detail 层级都应该有属性」）：
+`point` = 顶点、`vertex` = **面角**（每个面的每个角，三角面 ⇒ 3×面数）、`prim` = 面、`detail` = 整体。
+`const` 是 `detail` 的旧名（当别名认）。`AttrPromote` 四层之间可任意升：`point→vertex`（按面角复制）、
+`vertex→prim`（每面聚三个角）、`vertex→point`（每个点聚相邻角）、`→detail`（整体聚合）、
+`detail→任意`（广播）。
+
+| 件 | 口径 |
+|---|---|
+| **长度必须对得上** | `point` = 顶点数、`vertex` = 3×面数、`prim` = 面数、`detail` = 1；对不上**直接报错**（不静默截断 —— 那是最难查的一类） |
+| **搬运规则** | 老顶点照搬、细分/CC 的新点取平均、子面继承父面、拼接按顺序拼（缺的补零）、焊接按组平均；**`vertex` 类**不改拓扑的算子原样带、改拓扑的（细分/CC）从**同名 point 属性**按新面角重建、没有就丢（其余算子目前也丢，要带就 `AttrPromote` 再升一次） |
+| **已搬运的算子** | `transform` / `mirror` / `array` / `join` / `MeshGroup` / `subdivide` / `MeshSubdivideSurface` / `weld` / `delete_faces` / `smooth` / `displace` / `orient_*` / **`extrude`**（顶面继承、侧墙零值）/ **`inset_faces`**（内圈取面均、边框继承父面）/ **`fill_holes`**（中心取环均）/ **`bridge`**（两份拼接、桥面零值）/ **`boolean`**（**走 manifold3d 的 `vert_properties` 第 4 列起**，CSG 会一起插值） |
+| **目前不带的** | `MeshSweep` / `CurvePath` —— 它们**新造**几何（曲线上没有属性可继承）；要带就在 `CurvePath` 上加属性（下一步） |
+| **几何表（属性面板）** | 底部「🧊 3D 视图」的头部有 **`🧬 属性 N`** 按钮 → 展开一张表：`类 / 名字 / 类型 / 条数 / min / max / mean`（`GET /api/pygraphs/attrs?name=<图>&node=<节点>`，读**内存里那次运行**的原值 —— 重启后要重跑）；**点任一行 → 逐行明细**（`GET /api/pygraphs/attr-rows?...&cls=&attr=&offset=&limit=&sort=`，一页 100 行、`◀ ▶` 翻页、**按值排序**，见截图左下）。这就是 Houdini Geometry Spreadsheet 的对应物；还没有的是"选中某行 → 3D 里高亮"和独立标签页 |
+
+**绑定（骨架 / 蒙皮 / 姿势；2026-10-21 用户口径「添加绑定，让狮子动起来」）**：
+
+| 件 | 口径 |
+|---|---|
+| `MeshRig` | `RIG` 端口的值 = `{kind:"rig", joints:[{name,parent,pos}]}`；文本每行 `名字, 父关节, x, y, z`（**绝对坐标**，父留空/`-`/`none` = 根；**父必须写在子前**，否则报错点名）。重名/未知父都直接报错 |
+| `MeshSkin` | 每根骨段（父位置 → 自己位置）算点到线段的距离，权重 `1/(d+1e-4)^falloff`；每点只留 `max_bones` 根（默认 2）后**归一化**，写 `attrs.point['W:<关节名>']`。零配置，但和手工权重没法比 |
+| `MeshPose` | LBS：`世界旋转[子] = 世界旋转[父] @ 局部旋转`，`M_i = T(P_i)·R_i·T(−P_i)`，`p' = Σ w_i·M_i·p`；`blend` 在静止与姿势之间插值 |
+| **角度可以写 `t`** | `rotations` 里每一项是 `关节:rx,ry,rz`，三个分量都能写表达式 —— 白名单只有数字 / `t` / 四则 / 括号 / `sin cos tan abs min max sqrt floor round pi tau`，`eval` 时 `__builtins__` 为空。例：`tail2:0,sin(t*3)*26,0; head:sin(t*1.5)*6,0,0` |
+| **怎么动起来** | `t` 接 `Time` 的 `time` → **时间线 ▶ 播放**时每帧重跑图，3D 视图逐帧更新（「⚡实时」默认关；拖动帧也会重跑）。实测：连跑两次，节点 102 的几何**逐次不同** |
+
+⚠ 三个坑：① 关节坐标是**绝对**的（不是相对父的偏移），摆错一位整只狮子会散；② `pose` 没接 `MeshSkin`（没有 `W:` 权重）会明确报错；③ 权重用的是**到骨段的距离**，细长件（尾巴）建议把关节排密一点，否则一节会带不动下一节。
+
+**录制时间线动画（2026-10-21 用户口径「添加录制时间线动画的功能」）——两条路**：
+
+| 路子 | 怎么做 | 状态 |
+|---|---|---|
+| **面板录制**（`MeshViewer`） | 3D 视图头部多了 **`⏺ 录制`** 按钮：`canvas.captureStream(30)` + 浏览器自带 `MediaRecorder`（**不引第三方库**）→ 停止时自动下载 `.webm`；停止时把字节数写画布的 `data-rec-size`（探针用）。用法：点录制 → 时间线 ▶（或拖帧）/ 点画布 ▶ 跑一轮 → 点「⏹ 停止」 | **已实测**（2026-10-21）：录了 54s → 下载 `pygraph-_102-….webm`（**2.28 MB**，EBML 魔数 `1A 45 DF A3` 对），留在仓库根 `lion_record.webm` |
+| **离线烤帧**（`tools/record_timeline.py`） | 按帧改一个输入（默认 `t`）→ 跑整张图 → 取某节点几何 → z-buffer 光栅 → GIF/WebP。不依赖 UI、可批处理。用法：`wuwor l_mindmap_mmd -- python tools/record_timeline.py --file <图.json> --node 102 --param t --frames 16 --period 2.09 --out lion.gif`（`--decimate` 降面预览、`--size` 尺寸） | **已验证**：`demo_lion` 16 帧 640×480 130ms/帧 → `lion_anim.gif` |
+
+⚠ 两个探针/排障的坑（2026-10-21 实测踩过）：
+1. **`canvas` 个数 = 0 不代表编辑器坏了** —— ≤150 节点走 DOM/ReactFlow 后端（**SVG**），canvas 只在 >150 节点时才有。查"编辑器有没有渲染"看 `.react-flow` + `.react-flow__node` 的个数（本次 104 个 ✓）。
+2. **3D 视图标签可能"被关掉"**：布局里 `layout.closed` 会记墓碑（右键删除标签页留下的），此时 `.pyg-tab[data-key=viewer3d]` 不在 DOM 里。用该面板标题栏的 **「＋」**（`.pyg-tab-plus`）→ 菜单里点「🧊 3D 视图」叫回来（本次存储的 `closed` 里就带着 `viewer3d`）。
+| **非数值属性** | 不改拓扑的算子照搬；改拓扑的**丢弃**（字符串没法插值，绝不静默变成 0） |
+| `AttrSet` | 写属性：`constant`（可三通道）/ `position`（包围盒归一化 → 拿来当 `Cd`）/ `noise` / `radial`，可只写选择集 |
+| `AttrGet` | 按名字读：`values` 全量、`mean/min/max` 一个数；**读不到会列出这一类现有的属性名** |
+| `AttrPromote` | `point → prim`（每面取三点聚合）/ `prim → point`（每点取相邻面聚合），`mean/min/max/first` |
+| `MeshDecimate` | **顶点聚类减面**：按 `cell` 格子吸顶点、丢退化/重复面（`mean` 取质心 / `first` 取一个）。⚠ 不做二次误差度量，`cell` 要跟特征尺寸同量级（单位方块的 CC 结果：0.3 不动、**0.45 → 26v/48f**、0.6 → 22v/40f，0.9 会拍没——会报错） |
+| `MeshSave(fmt=ply)` | **PLY 才存得下 `Cd`**（OBJ 没有顶点色）：头里 `property uchar red/green/blue`，0..1 或 0..255 都吃 |
+| `MeshProjectUV` | `planar`（XZ：`u=x, v=z`）/ `cylindrical`（绕 Y：`u` 一圈、`v` 归一化高度），写 `attrs.point.uv`；⚠ **逐顶点** UV（整件投影，接缝处会拉伸） |
+| **`MeshUnwrap`（2026-10-21，P1.2）** | **分岛 + 打包**：二面角 ≥ `angle` 的边当接缝 → 连通块分岛 → 每岛取**面积加权平均法线**做切平面投影（岛内不拉伸）→ 等比缩放 + 货架式排进 0..1（`margin` 留白）→ 写 `attrs.point.uv`，**沿缝分裂顶点**（`(顶点, 岛)` 去重）。岛数落 `detail.islands`、口径落 `detail.unwrap`。单位方块 `angle=60` → **6 岛**；圆柱 → 3 岛（侧面 + 两盖）；`angle=180` → 1 岛 |
+| OBJ 导出带 UV/材质 | 有 `uv` → 写 `vt` 且面写 `f v/vt`；有 `Cd` → 顺手写 `<stem>.mtl`（`Kd` = `Cd` 均值）并在 OBJ 里 `mtllib`/`usemtl`；**有 `prim.mat` → 多材质**：`.mtl` 每槽一条 `newmtl mat<号>`（色 = 该槽面角均色，没 `Cd` 用调色板）、OBJ 逐段 `usemtl`；`MeshSave` 的 `texture` / `bump` 字段写进 `map_Kd` / `map_Bump`（**文件自己放同目录**，不搬） |
+| **多材质槽（2026-10-21，P1.1）** | 口径：槽号 = `prim.mat` 整数，**用 `AttrSet(mat, prim)` 打标**（不需要额外的"材质清单"节点）。宿主 `mesh_preview` 把它翻成 `groups`（`[[start,count,slot],…]`，铺平索引的连续段）+ `mats`（每槽色），`MeshViewer` 用 `geometry.addGroup` + **材质数组**画 ⇒ 3D 视图里一眼分得清（`canvas.dataset.matslots` = 槽数，状态行也写「N 个材质槽」）。⚠ `attrs.prim.mat` 经 `subdivide` 等改拓扑的算子照样跟着走（每父面 4 个子面） |
+| 生成几何贴图 | payload 带 `uv` → `MeshViewer` 把生成网格也交给"贴图那套"（`meshesRef`），`l_tex_nodes` 的材质通道就能贴到图里算出来的网格上 |
+| 3D 视图 | 有 `attrs.point.Cd` 就**按顶点色画**（`mesh_preview._point_colors` → payload `colors` → `MeshViewer.vertexColors`；>1 的按最大值归一） |
+
+自证（`mesh3d` 的「属性」两组）：`Cd` 长度/归一化、`stats` 对得上、读不存在的属性报错带清单、
+长度不对报错；`transform` 原样、`mirror`/`array`/`join` 复制拼接、`subdivide` 中点=两端平均、
+CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、面属性 ×4（细分）、非数值属性该丢的丢；
+**挤出/内缩/封洞/桥接/布尔** 五个也都断言"属性条数 = 新几何的顶点数/面数"。
+示例图 `demo_geo_attrs`（方块 → CC → `AttrSet(Cd, position)` + `AttrSet(wear, noise)` → `AttrGet(Cd, mean)`），
+3D 视图按 `Cd` 上色、`🧬 属性 2` 那张表就是截图左下角（`Cd vec3 38` / `wear float 38`）。
+
+
+**P0/P1 + 属性 + 绑定 + 雕刻/晶格 + UV 展开 + P3 建模工具共 48 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
 
 | 组 | 节点 |
 |---|---|
+| **P3 收尾（2026-10-21）** | **`CurveEdit`**（改/插/删控制点：`3 = x,y,z` / `+3 x,y,z` / `-1`）/ **`MeshScatter`**（按面积撒点，`align` normal/up/random + `tilt`/`jitter`/`scale_var`；⚠ v1 是真几何不是 instancer）/ **`MeshRemesh`**（体素重拓扑：栅格化 → 填实心 → 表面方块面 → Taubin 平滑 → 沿法线收回 1.2 格；**丢属性**、闭合无自交） |
+| **P3 建模工具（2026-10-21）** | **`MeshBevel`**（边倒角：二面角 ≥ `angle` 的硬边或接 `MeshSelectEdge` 的边 → 面组退 `width` + 边缝补四边形 + 顶点洞补扇形 ⇒ 仍闭合）/ **`MeshLoft`**（多截面放样：`|` 分隔的若干**同点数**环 / 一串 CURVE）；**选择增强**：`MeshSelectEdge`（`angle`/`all`，输出带 `edges`）+ `MeshSelectGrow`（按相邻面扩散 / `shrink` 收一圈）；`MeshSculpt` 加 `symmetry=x/y/z`（镜像处同雕一笔）、`MeshSweep` 加 `roll` / `twist`（截面转角 / 累积扭转） |
+| **雕刻 / 变形 / 折痕（2026-10-21）** | **`MeshCrease`**（二面角 > 阈值 → 标折痕，接 CC 保棱角）/ **`MeshSculpt`**（球刷：inflate/pinch/flatten/grab，中心+半径+衰减+强度，可只雕选择集；`symmetry` 对称雕）/ **`MeshLattice`**（晶格 FFD：`nx×ny×nz` 格 + 控制点偏移表，三线性插值） | 肌肉/眉骨/鼻梁靠雕，胸肩收腰靠晶格 |
+| **绑定（2026-10-21）** | **`MeshRig`**（骨架 `RIG` 端口：`名字, 父关节, x, y, z`）/ **`MeshSkin`**（按到骨段距离算权重 → `point.W:<关节>`）/ **`MeshPose`**（LBS 摆姿势，角度可写 `t` 的表达式 ⇒ 动画） |
+| **属性** | **`AttrSet`**（写：constant / position / noise / radial，可只写选择集）/ **`AttrGet`**（按名字读：全量或 mean/min/max）/ **`AttrPromote`**（point↔prim 升降，mean/min/max/first） |
+| **UV / 减面 / 导出** | **`MeshProjectUV`**（planar / cylindrical 逐顶点 UV → `attrs.point.uv`）/ **`MeshUnwrap`**（分岛展开 + 打包，缝上分裂顶点 ⇒ 不拉伸）/ **`MeshDecimate`**（顶点聚类减面）/ `MeshSave`（`fmt=obj` 或 **`ply`（带 `Cd` 顶点色）**；`texture`/`bump` 写 MTL 的 `map_Kd`/`map_Bump`；有 `prim.mat` 就写多材质 MTL） |
 | 图元 | `MeshBox` / `MeshSphere` / `MeshCylinder` / `MeshCone` / `MeshTorus` / `MeshPlane` / `MeshLathe`（轮廓绕 Y 转一圈） |
 | 变换 | `MeshTransform`（缩放→旋转 X→Y→Z→平移）/ `MeshArray`（阵列：偏移 + 每份旋转/缩放）/ `MeshMirror` |
-| 细节 | `MeshSubdivide`（线性细分，形状不变）/ `MeshSmooth`（Laplacian，可只磨选择集）/ `MeshDisplace`（**沿法线**分形噪声，可只推选择集） |
-| **曲线 / 扫掠（P1）** | **`CurvePath`**（点列 → Catmull-Rom 曲线，`CURVE` 端口）/ **`MeshSweep`**（圆截面沿曲线扫成管，起半径 + `taper` 收放） |
+| 细节 | `MeshSubdivide`（线性细分，形状不变）/ `MeshSmooth`（Laplacian，可只磨选择集）/ `MeshDisplace`（**沿法线**：默认分形噪声；接 `image`（PNG 路径 / `{width,height,pixels}` / 二维表）就**按 `uv` 采样贴图置换**，`repeat` 平铺、中灰 0.5 = 不动；可只推选择集；没 `uv` 明确报错不退回噪声） |
+| **曲线 / 扫掠（P1）** | **`CurvePath`**（点列 → Catmull-Rom 曲线，`CURVE` 端口）/ **`CurveEdit`**（改/插/删控制点）/ **`MeshSweep`**（圆截面沿曲线扫成管，起半径 + `taper` 收放 + `roll` 截面转角 / `twist` 累积扭转）/ **`MeshLoft`**（多截面放样） |
 | **开洞与收边（P1）** | **`MeshDelete`**（按选择集删面 = 开洞）/ **`MeshFillHole`**（中心点扇形封洞）/ **`MeshInset`**（面内缩 = 面板线/边框） |
-| **选择与细化（P0）** | **`MeshSelect`**（选择集：`normal`/`box`/`sphere`/`all` + `invert`）/ **`MeshMove`**（只捏选中的那一块：平移/旋转/缩放，绕选择集质心）/ **`MeshSubdivideSurface`**（Catmull-Clark 曲面细分） |
+| **选择与细化（P0）** | **`MeshSelect`**（选择集：`normal`/`box`/`sphere`/`all` + `invert`）/ **`MeshSelectEdge`**（选边：`angle` 硬边 / `all`；输出带 `edges`）/ **`MeshSelectGrow`**（圈扩散 / `shrink`）/ **`MeshMove`**（只捏选中的那一块：平移/旋转/缩放，绕选择集质心）/ **`MeshSubdivideSurface`**（Catmull-Clark 曲面细分） |
 | **多边形编辑** | **`MeshExtrude`**（区域挤出）/ **`MeshBridge`**（开放边界环对接）/ **`MeshBoolean`**（并差交，manifold3d）/ `MeshWeld`（**合并顶点** = 按距离焊接） |
 | 组织 | `MeshGroup`（`mesh` + `more` 两两串）/ `MeshJoin`（吃列表）/ `MeshInfo`（顶点/面/尺寸/中心） |
 | 落地 | `MeshSave`（写 `.obj` 到 `<图目录>/models`，**透传 mesh** + 出 path/url） |
@@ -579,8 +659,12 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 
 **数据契约**（`MESH` 端口，值就是这一个 dict —— 能 `json.dumps`，混引擎段间交接不会坏）：
 
-    {"kind": "mesh", "format": "mesh3d/1",
-     "vertices": [[x, y, z], ...], "faces": [[i, j, k], ...], "name": ""}
+    {"kind": "mesh", "format": "mesh3d/2",
+     "vertices": [[x, y, z], ...], "faces": [[i, j, k], ...], "name": "",
+     "attrs": {"point": {...}, "vertex": {...}, "prim": {...}, "detail": {...}}}
+
+> ⚠ `mesh3d/1` 是**历史格式**（只有几何、没有属性）：`mesh_of()` 仍能读老缓存里的值（当作没有属性），
+> 但新值一律写 `mesh3d/2`；**不兼容老图**是用户明确要求。
 
 面**一律三角**（多边形先扇形三角化）；`mesh_of()` 还收 `(顶点, 面)` 二元组（`math_shapes` 出的就是它）/
 `.vertices + .faces` 鸭式对象（trimesh / Open3D）/ 纯顶点表（当点云）——**老节点能直接接进这条链**。
@@ -606,14 +690,15 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
   另一支 `MeshLathe` 花瓶；两个 `MeshSave` 落 `procedural_rocks.obj` / `procedural_vase.obj`）。
   真服务实测 2026-10-20：`POST /api/pygraphs/lugwit_agent_a%2FFunctions%2Fdemo_mesh3d/run` → HTTP 200、
   `models/` 下两份 OBJ 都生成（石头 7938 顶点 / 14400 面 / 501KB）。
-- **`lugwit_agent_a/Functions/demo_teapot`（2026-10-20，用户口径「能否做一个茶壶的案例」）**：
+- **`lugwit_agent_a/Functions/demo_teapot`（2026-10-20，用户口径「能否做一个茶壶的案例」；2026-10-21 形状精修）**：
   壶身 = `MeshLathe`（10 点轮廓：底收 0 → 肚子 0.56 → 收颈 0.29 → 壶口 0.31，segments 64）、
-  壶盖 = `MeshLathe` 小穹顶（盖沿 0.33 压住壶口，`MeshTransform` 抬到 y=0.90）、壶钮 = `MeshSphere(0.05)`
-  抬到 1.12、壶嘴 = 锥形 `MeshLathe`（`cap=false` 开口管）`rz=-50°` + 挪到 (0.40, 0.36)、
-  壶把 = `MeshTorus(0.28, 0.05)` `rx=90°`（环面转到 XY 平面）挪到 (−0.48, 0.58)；
+  壶盖 = `MeshLathe` 小穹顶（盖沿 0.33 压住壶口，`MeshTransform` 抬到 y=0.885 → 盖沿啃进壶口不再飘）、
+  壶钮 = `MeshSphere(0.05)` 抬到 1.12、壶嘴 = 锥形 `MeshLathe`（5 点轮廓，底半径 **0.17**、`cap=false` 开口管）
+  `rz=-46°` + 挪到 (0.35, 0.33)（**底环整个埋在壶身里**，接缝不再露出一圈切口）、
+  壶把 = `MeshTorus(0.30, 0.055)` `rx=90°`（环面转到 XY 平面）+ `sy=1.12` 拉成椭圆握把，挪到 (−0.50, 0.56)；
   然后 `MeshGroup` **串四层** → `MeshSave('teapot')` + `3d_view`。
-  实测：整只壶 **1878 顶点 / 3664 面**，尺寸 1.75×1.17×1.10，`teapot.obj` 109KB；跑一轮 0.31s（HTTP）、
-  3D 视图「来源」下拉里 14 个中间件都能单独看（壶嘴 200v / 壶把 640v / 逐层组合 772→1038→1238→1878v）。
+  实测：整只壶 **1878 顶点 / 3664 面**（**边界环 2 = 壶嘴开口，闭合件其余部分无洞**），
+  尺寸 1.75×1.17×1.10；3D 视图「来源」下拉里 14 个中间件都能单独看（壶嘴 200v / 壶把 640v / 逐层组合 772→1038→1238→1878v）。
   ⚠ 两个坑记在这儿：**绕 Z 转正角度是往 −X 倒**（壶嘴想朝 +X 得给负角度）；
   **圆环默认在 XZ 平面**（绕 Y 轴），要竖起来当把手得 `rx=90`。
 - **`lugwit_agent_a/Functions/demo_mesh_curve`（2026-10-20，P1）**：① `CurvePath`（4 个控制点、
@@ -622,16 +707,18 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
   实跑：`swept_horn.obj` + `inset_panel.obj` 都生成。
 - **`lugwit_agent_a/Functions/demo_mesh_refine`（2026-10-20，P0）**：方块 → 焊 → `MeshSelect(+y)` →
   `MeshMove(ty .55, scale 1.35)` → `MeshSubdivideSurface(1)` ⇒ **38v/72f** 的圆角锥台（截图那张）。
-- **`lugwit_agent_a/Functions/demo_lion`（2026-10-20，用户口径「现有多边形工具能做一个狮子么」）**：
-  62 个节点拼出来的**风格化**狮子（6098 顶点 / 12112 面，2.52×2.08×1.12）：躯干 = 3 个球拉扁、
-  头/嘴 = 球、脖子与四条腿 = 圆柱（腿 + 爪 用 `MeshMirror` 一次出左右）、耳朵 = 圆锥、眼睛 = 小球、
-  **鬃毛 = 两圈 `MeshTorus` 绕 Z 转 −90° + `MeshDisplace`（freq 12）+ 轻 `MeshSmooth`**、
-  尾巴 = 圆柱 + 噪声球穗，最后 `MeshGroup` 串成一棵（**60 个几何节点都进 3D 视图「来源」下拉**）。
-  实跑 1.8s（HTTP），`models/lion.obj` 生成。
-  ⚠ **诚实的能力边界**：这套工具只能做到"积木式/卡通"，**做不到写实** —— 没有自由顶点编辑与雕刻笔刷、
-  没有曲线放样（loft/sweep 沿路径）、没有 Catmull-Clark 细分曲面（只有线性细分 + Laplacian 平滑）、
-  没有毛发/贴图/骨骼。要往写实走，下一步该补的是：**曲线节点 + loft/sweep**、**顶点/面选择器**
-  （按区域/材质选，喂给挤出与移动）、**Catmull-Clark**、**UV/贴图**。
+- **`lugwit_agent_a/Functions/demo_lion`（2026-10-20/21；「能否做一个狮子」→「重做一个细致的狮子」）**：
+  **98 个节点**、**16310 顶点 / 32496 面**（2.72×2.22×1.24）。做法：
+  躯干 = 三个球 **`MeshBoolean(union)`** 并成一件 → `MeshSubdivideSurface(1)` 收圆；
+  脖子 / 四条腿 / 尾巴 = `CurvePath`（Catmull-Rom）→ `MeshSweep`（起半径 + `taper` 收放）；
+  头 / 吻 / 鼻 = 球；**鬃毛 = 12 簇锥体绕头一圈**（按角度绕 X 排成径向）+ 一圈托
+  （2026-10-21 精修：锥 **0.15×0.54**、托圈 **0.38/0.17** ⇒ 鬃毛成圈包住头，不再是一排"莫西干"；
+  吻部 0.16→**0.14** 并前移到 (1.22, 1.45)、鼻子贴到吻部表面）；眼睛/耳朵镜像成对。
+  颜色按部位用 `AttrSet(Cd, constant)`（土黄 / 深棕鬃毛 / 奶油吻部与四蹄 / 近黑鼻眼），
+  `MeshSave(fmt=ply)` 带顶点色、另存一份 `.obj`。
+  ⚠ **顶点色是反照率**：3D 视图里一旦有 `Cd`，`MeshViewer` 会把材质改成哑光（metalness 0 / roughness .85）
+  并把 **`scene.environmentIntensity` 压到 0.35** —— 否则 HDR 环境会把 0.5 的底色照成白色（实测踩过）。
+  ⚠ 这仍是**顶点色材质**，不是贴图材质：没有 UV 展开（只有平面/柱面投影）、没有多材质槽。
 - **`lugwit_agent_a/Functions/demo_mesh_edit`（2026-10-20）**：① `MeshBox` → `MeshExtrude(+y, 0.5)` →
   `MeshBoolean(difference, 球)` = 长高一截的方块顶上挖个球孔（453 顶点 / 902 面，1.00×1.50×1.00）；
   ② 两根 `MeshCylinder(caps=false, segments=24)` → `MeshBridge(loop_a=1, loop_b=0)` = 一根长管。
@@ -659,7 +746,7 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 真跑图 / 停用摘净）+ 真服务（2026-10-20 实测）：
 
 ```
-PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 18 个节点（顶点上限 200000）"
+PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 48 个节点（顶点上限 200000）"
 GET /api/pygraphs/object_info                    → MeshBox / MeshLathe / MeshSave… 都在
 ```
 
