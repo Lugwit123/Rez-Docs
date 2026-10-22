@@ -41,10 +41,10 @@ wuwo svc restart l_mindmap_mmd_server          # 最后手段，会中断在用�
 
 | 别名 | 执行面 | 绑定 |
 |---|---|---|
-`l_mindmap_mmd_server` | **关**（`POST /run` 返回 403） | `127.0.0.1` |
-`l_mindmap_mmd_server_exec` | **开**（`L_MINDMAP_ALLOW_RUN=1`） | `127.0.0.1` |
+`l_mindmap_mmd_server` | **开**（2026-10-22 起自带 `L_MINDMAP_ALLOW_RUN=1`；之前是关的，跑图 403） | `127.0.0.1` |
+`l_mindmap_mmd_server_net` | 开（同一端口，`0.0.0.0`，给别的托盘编辑这台） | `0.0.0.0` |
 
-卡片（`l_homepage` 的 `l_mindmap_mmd_server`）目前指向 `l_mindmap_mmd_server_exec`；想关就把 `run_args` 换回 `l_mindmap_mmd_server`（`wuwo svc` 用 `packages + run_args` 拼命令，`run_cmd` 只是展示）。
+卡片（`l_homepage` 的 `l_mindmap_mmd_server`）就用日常别名；想**关**执行面就把别名命令里的 `set L_MINDMAP_ALLOW_RUN=1` 去掉（`wuwo svc` 用 `packages + run_args` 拼命令，`run_cmd` 只是展示）。
 
 其它旋钮：`L_MINDMAP_RUN_TIMEOUT`（墙钟超时，默认 60s；**2026-10-12 起可被请求体的 `{"timeout": N}` 覆盖**）、留痕 `~/.lugwit/main/l_mindmap_mmd/pygraphs/runs.jsonl`。
 **别在公网部署机上开这个开关，也别把 `--host` 改回 `0.0.0.0`。**
@@ -55,7 +55,7 @@ wuwo svc restart l_mindmap_mmd_server          # 最后手段，会中断在用�
 
 1. 环境变量 `L_NODE_ENGINE_ALLOW_PKGS=json;mypkg`（**设了就以它为准**）
 2. 文件 `~/.lugwit/main/l_mindmap_mmd/pygraphs/allow.json`：`{"packages": ["json", "mypkg"]}`（卡片只能带参数带不了 env，才有这一档；改完**立即生效**，`allowed_packages()` 每次调用都重读）
-3. 卡片启动参数：`run_args: ["l_mindmap_mmd_server_exec", "--allow-import", "json;mypkg"]`
+3. 卡片启动参数：`run_args: ["l_mindmap_mmd_server", "--allow-import", "json;mypkg"]`
 
 被拒绝时错误信息会**直接写出这两个办法**（含 `allow.json` 的绝对路径）—— 别把它当成"路径写错了"。
 
@@ -115,7 +115,7 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 `＋ 分组框` | 画一个**视觉分区框**：可拖、可缩放（选中后拖右下角）、可命名（面板里改）。**拖框 = 整框搬运**：框里的节点跟着一起走（成员**起拖那一刻**定：卡片与框有重叠即算，拖到一半路过别的节点不会被顺走；2026-10-16 用户口径），节点自己拖不受框影响、也不被裁剪；**不参与执行** | 图文件顶层 `groups`（与 `nodes` 平级；`toPrompt()` 从不输出它）；成员判据 `pySchema.rectsOverlap` / `groupMembers`（两后端共用；手势分别在 `PyGraphEditor.onNodeDragStart` 与 `CanvasSurface.groupMembersOf`） |
 **AI 服务 ▸** | AI 节点的后端配置（hub 基址 / lugwit 账号+密码 / 接入密钥 / STT 地址）→ 写 `ai.json`（**数据目录**，与 `pygraphs/` 平级）；**密钥与密码只显示"配了没"**，输入框永远从空开始；**清空某项 = 删掉它** | `ai.json`（见 §3.0.1；优先级 env > 文件 > 默认） |
 
-**节点标志位（6 个，前三个有执行语义）**
+**节点标志位（7 个，前三个有执行语义）**
 
 | 标志位 | 语义 | 谁实现 |
 |---|---|---|
@@ -125,9 +125,18 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 `pin`（📌 固定） | **整理布局时保持原位**（pin 的真实语义） | 编辑器 |
 `lock_params`（🔒 锁定） | 面板里的**参数控件只读**（标志位那一行不锁，否则解不开） | 编辑器 |
 `bookmark`（⭐ 收藏） | 纯标记 | — |
+`autorun`（🔄 开图即跑） | **打开/切到这张图时自动「运行到本节点」**（它 + 上游，内联 prompt、不落盘）；每张图只跑一次、多个只取 id 最前那个 | 编辑器 |
 
 标志位是**图的属性**（`node.flags`），随图存盘；`graph_prompt`/`toPrompt`/`toStorage` 都必须带它，
 否则"编辑器点了跳过、跑起来没跳过"。`bypass`/`mute` 的节点**不参与必填校验**（它们不跑）。
+`autorun` 是**纯宿主语义**（引擎不解释），所以放进图里也不影响 `graph_prompt` 之外的执行。
+
+> **术语对齐 Houdini**（2026-10-22 用户口径「变量命名、注释请和 houdini 一致」）：UI 显示名与注释一律用
+> Houdini 的叫法 —— `Bypass`（= **Bypass flag**，同名同义）、`Lock params`（= **parameter lock**，
+> **不是** Lock flag，那面旗锁的是几何）；`Mute` / `Debug` / `Pin` / `Bookmark` / `Auto-run` 是 **Houdini 没有的旗标**，
+> 每个的 `note` 里写明"Houdini 对应什么/为什么没有"。**键名不改**（`bypass` / `lock_params`… 是图文件里的 wire 格式，
+> 老图里就写着它们）；改的只有 `label` / `note` / 菜单文案 / 运行日志文案（`node_base.NODE_FLAGS`、
+> `PyNode.FLAG_EMOJI`、`PyGraphEditor` 的右键菜单与 `toggleFlag` 回执）。
 
 **上游失败会逐级点名**：节点失败/静音/跳过且无可透传值时，它的下游会报
 `上游节点 N 没有产出（失败 / 被静音 / 被跳过且无可透传值）：输入 'x' 拿不到值。先看那个节点的错误。`
@@ -457,7 +466,7 @@ env 是"机器级老通道"（卡片带不了环境变量），面板是"人的�
 
 自证：`l_node_engine_selftest` 第 36 组（默认关 / 坏 JSON 当没配过 / 面板视图只用类型词表 /
 启用→真加载 / **重载幂等** / 停用→摘净 / `bootstrap` 只跑已启用的）。
-真服务那半（2026-10-15 实测，`l_mindmap_mmd_server_exec`）：
+真服务那半（2026-10-15 实测，`l_mindmap_mmd_server`）：
 
 ```
 GET  /api/pygraphs/plugins                      → comfy + 4 个字段 + allow_edit:true
@@ -503,7 +512,7 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 
 自证：`l_node_engine_selftest` 的"插件 functions"组（临时包 → 启用：端口按注解 / `source=function` /
 私有与零参跳过 / **不可序列化默认值退 repr** / **节点真能跑**（`add(a=3)`→5）；停用 → 一个不剩）。
-真服务（2026-10-17 实测 `l_mindmap_mmd_server_exec`）：`PUT …/plugins/functions` + `json` 包 →
+真服务（2026-10-17 实测 `l_mindmap_mmd_server`）：`PUT …/plugins/functions` + `json` 包 →
 `1 个包 → 11 个节点（4 个模块）`、`object_info` 里 `category:"fnprobe"` 出现且 HTTP **200**；
 停用 → `已停用（摘掉 11 个节点）`、`object_info` 里 `fnprobe` 消失。
 
@@ -549,7 +558,7 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 | **搬运规则** | 老顶点照搬、细分/CC 的新点取平均、子面继承父面、拼接按顺序拼（缺的补零）、焊接按组平均；**`vertex` 类**不改拓扑的算子原样带、改拓扑的（细分/CC）从**同名 point 属性**按新面角重建、没有就丢（其余算子目前也丢，要带就 `AttrPromote` 再升一次） |
 | **已搬运的算子** | `transform` / `mirror` / `array` / `join` / `MeshGroup` / `subdivide` / `MeshSubdivideSurface` / `weld` / `delete_faces` / `smooth` / `displace` / `orient_*` / **`extrude`**（顶面继承、侧墙零值）/ **`inset_faces`**（内圈取面均、边框继承父面）/ **`fill_holes`**（中心取环均）/ **`bridge`**（两份拼接、桥面零值）/ **`boolean`**（**走 manifold3d 的 `vert_properties` 第 4 列起**，CSG 会一起插值） |
 | **目前不带的** | `MeshSweep` / `CurvePath` —— 它们**新造**几何（曲线上没有属性可继承）；要带就在 `CurvePath` 上加属性（下一步） |
-| **几何表（属性面板）** | 底部「🧊 3D 视图」的头部有 **`🧬 属性 N`** 按钮 → 展开一张表：`类 / 名字 / 类型 / 条数 / min / max / mean`（`GET /api/pygraphs/attrs?name=<图>&node=<节点>`，读**内存里那次运行**的原值 —— 重启后要重跑）；**点任一行 → 逐行明细**（`GET /api/pygraphs/attr-rows?...&cls=&attr=&offset=&limit=&sort=`，一页 100 行、`◀ ▶` 翻页、**按值排序**，见截图左下）。这就是 Houdini Geometry Spreadsheet 的对应物；还没有的是"选中某行 → 3D 里高亮"和独立标签页 |
+| **几何表（属性面板）** | 两个入口，同一份数据（宿主内存 `_MESH_SRC`，重启后要重跑）：<br>①**底部「🧊 3D 视图」头部 `🧬 属性 N`** → 浮层汇总表 `类 / 名字 / 类型 / 条数 / min / max / mean`（`GET /api/pygraphs/attrs`），点任一行 → 逐行明细（`GET /api/pygraphs/attr-rows`，一页 100、`◀ ▶`、按值排序）；<br>②**独立标签页「🧬 几何表」（`geoattrs`，2026-10-22 用户口径「我要独立的属性扩展表单面板，可以查看点线面的属性，最基本的是 P 属性」）**：`GeoAttrsPanel.jsx`，域页签 **点 / 线（面角）/ 面 / 整体**（各自行数），整张表 `# + P + 该域所有属性`，分页 100 行、**点数值列表头**升→降→取消，数据走 `GET /api/pygraphs/geo-table?name=&node=&cls=&offset=&limit=&sort=&by=`。<br>**`P` 不在 `attrs` 里，按域现算**（`server._geo_domain_arrays`）：`point` = 顶点坐标、`vertex` = 面角坐标、`prim` = 面重心、`detail` 没有 —— `/attrs` 与 `/attr-rows` 也一起认 `P`；**`detail` 是"整张几何一份"**：`geo-table&cls=detail` 固定 **1 行**、每列就是那个常量（`AttrSet(cls="detail")` 写进来的），所以别拿它当"每元素一行"去取 `[i]`。就是 Houdini Geometry Spreadsheet 的对应物；**另外两口（2026-10-22）**：① **点一行 → 3D 视口里标出来**（那一行的 `P`：点 = 顶点 / 线 = 面角 / 面 = 重心；`MeshViewer` 在模型局部坐标里画红球 + 三根十字线，判据 = `canvas.dataset.hl`；再点同一行取消；**视图看的节点要和表里选的是同一个**才画）；② **`⤓ CSV`** 导出整张表（`geo-table?…&fmt=csv`，向量写成 `x y z`）。还没有的是"明细里直接改值" |
 
 **绑定（骨架 / 蒙皮 / 姿势；2026-10-21 用户口径「添加绑定，让狮子动起来」）**：
 
@@ -611,7 +620,7 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 | **开洞与收边（P1）** | **`MeshDelete`**（按选择集删面 = 开洞）/ **`MeshFillHole`**（中心点扇形封洞）/ **`MeshInset`**（面内缩 = 面板线/边框） |
 | **选择与细化（P0）** | **`MeshSelect`**（选择集：`normal`/`box`/`sphere`/`all` + `invert`）/ **`MeshSelectEdge`**（选边：`angle` 硬边 / `all`；输出带 `edges`）/ **`MeshSelectGrow`**（圈扩散 / `shrink`）/ **`MeshMove`**（只捏选中的那一块：平移/旋转/缩放，绕选择集质心）/ **`MeshSubdivideSurface`**（Catmull-Clark 曲面细分） |
 | **多边形编辑** | **`MeshExtrude`**（区域挤出）/ **`MeshBridge`**（开放边界环对接）/ **`MeshBoolean`**（并差交，manifold3d）/ `MeshWeld`（**合并顶点** = 按距离焊接） |
-| 组织 | `MeshGroup`（`mesh` + `more` 两两串）/ `MeshJoin`（吃列表）/ `MeshInfo`（顶点/面/尺寸/中心） |
+| 组织 | `MeshGroup`（**可变口** `mesh` / `mesh.2`…，最多 16；老 `more` 仍可用）/ `MeshJoin`（吃列表）/ `MeshInfo`（顶点/面/尺寸/中心） |
 | 落地 | `MeshSave`（写 `.obj` 到 `<图目录>/models`，**透传 mesh** + 出 path/url） |
 
 **P1 的口径**（曲线 / 扫掠 / 开洞 / 内缩，2026-10-20）：
@@ -628,7 +637,7 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 
 | 件 | 口径 | 三个坑 |
 |---|---|---|
-| `MeshSelect` | 输出 `SELECT` 端口的值 = **面索引表** `{kind:"select", faces:[…], verts:[…], count, note}`；`normal`（方向+角度）/`box`（中心±尺寸/2）/`sphere`（球心+半径）/`all`，`invert` 取反 | 索引是对**那一刻的网格**说的：中间插了细分/焊接/布尔就**要重选**（越界会明确报错，不静默） |
+| `MeshSelect` | 输出 `SELECT` 端口的值 = **面索引表** `{kind:"select", faces:[…], verts:[…], count, note}`；`normal`（方向+角度）/`box`（中心±尺寸/2）/`sphere`（球心+半径）/`picked`（**3D 视图里点出来的面号**，`picked` 文本 `"12, 40, 90-94"`，部分越界静默丢掉）/`attr`（**按属性**：`attr`/`attr_op`/`attr_value`/`component`，Houdini 的 `@Cd > 0.5`）/`all`，`invert` 取反 | 索引是对**那一刻的网格**说的：中间插了细分/焊接/布尔就**要重选**（全越界会明确报错，不静默） |
 | `MeshMove` | 只动**选择集覆盖的顶点**：绕选择集质心先缩放、再旋转（X→Y→Z）、最后平移；空选择集直接报错 | 整件变换用 `MeshTransform`；⚠ 未焊的网格（`MeshBox`）选顶面再动会**把面片拽开**（接缝处顶点不共享）⇒ 先 `MeshWeld` |
 | `MeshSubdivideSurface` | Catmull-Clark：每层每三角面 → 3 个四边形（6 个三角面），面数 **×6/层**；默认先 1e-6 焊一遍 | v1 **只吃闭合网格**（边界边的 crease 规则没做），遇到边界直接报数字数量 |
 
@@ -654,8 +663,63 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 `manifold3d` 直接 `NotManifold`；修好后 `genus 0 / NoError`。
 
 ⚠ **为什么要有 `MeshGroup`**（2026-10-20 做茶壶时补的）：图里**没有"造列表"的原语**，`MeshJoin` 只吃列表 ——
-所以"壶身 + 壶盖 + 壶钮 + 壶嘴 + 壶把"这种多零件拼装在图上是接不起来的。`MeshGroup(mesh, more)`
-两个口都是网格（`more` 也收一串），要几件就**串几层**：`组(组(身,盖),组(嘴,把))`。
+所以"壶身 + 壶盖 + 壶钮 + 壶嘴 + 壶把"这种多零件拼装在图上是接不起来的。
+**2026-10-22 起它和 `MeshBoolean` 都是「可变口」**（用户口径「merge 节点，布尔节点应该支持多个端口」）：
+
+| 件 | 口 | 语义 |
+|---|---|---|
+| `MeshGroup` | `mesh` / `mesh.2` … `mesh.16`（＋ 老口径 `more`） | 接几路并几路，不接的自动跳过；`mesh.16` = `opts.multi_max` |
+| `MeshBoolean` | `a` / `a.2`…（并起来当 A）+ `b` / `b.2`…（依次叠） | `a.2+` 先并进 A；`b` 那几路按顺序依次 `union/difference/intersect` |
+
+机制（三处一起，缺一处就"能画不能跑"）：
+① **引擎**：类上 `DYNAMIC_PORTS = True`（`validate` 才不把 `mesh.2` 报成 `extra_input`）+
+`INPUT_TYPES` 里给那行写 `{"multi": True, "multi_max": 16}`；`execute(self, mesh=None, …, **rest)` 用
+`_multi_keys(rest, "mesh")` 按**序号**排（不是字典序：`mesh.10` 排在 `mesh.2` 后）；
+② **图**：连线仍是 `inputs["mesh.2"] = [源, 0]`（一对一存法没变）；卡片额外记 `nodes[id].multi_ports = {mesh: 4}`
+（`＋ 接一路` 加它；`pySchema.toStorage` 白名单里必须有这个键，否则存一次就丢）；
+③ **前端**：`PyNode` 的 `rows` 把 `opts.multi` 展开成 `名字` / `名字.2`…（路数 = max(2, 已接最大序号 + 1,
+`multi_ports[名字]`)，上限 `multi_max`，**永远留一个空口**方便直接拖线）；表单卡脚上是「＋ 接一路」
+（`data.onAddPort` → 编辑器 `addNodePort`）。canvas 后端读同一份 `rows`，不用另写。
+⚠ `data.linked` 才是"已接哪些口"的真来源（`data.widgets` 只收字面量，拿它数会数成 0 → 端口少画 → 边被 RF 丢掉）。
+
+自证：`wuwor l_mesh_nodes -- l_mesh_nodes_plugin_selftest`（49 节点 OK）+ 直接跑
+`MeshGroup().execute(mesh=b1, **{"mesh.2": b2, "mesh.3": b3})` → 3 个 box = 72 顶点 / 36 面；
+`MeshBoolean().execute(a=…, b=…, **{"b.2": …})` 也能跑。
+
+**参数编辑面板（Houdini parm pane 那味，2026-10-22）**：右栏「🔧 属性」的**参数区**（`pygraph/NodePropPanel.jsx`）：
+- 顶上一条 **filter**（搜 名字 / 中文名 / 组名；参数 ≤6 个时不占位）、右边显示命中数；
+- **组可折叠**（`opts.group` → `.pyg-parm-ghead`，▾/▸ 记住折叠状态；无组名的排最前、不画组头）；
+- 每行**两列**（`.pyg-prow`：左 = 中文名 + `类型 · 单位 · 可选`，右 = 控件）；
+- 行上有 **↺ 恢复默认**（写回类里声明的 `default`；没默认值不显示）、**⧉ 复制值** 与 **⏱ 关键帧**（时间线，右键给全套）；
+- **改动标记**：值 ≠ `default` 时行加 `is-changed`、名字后一个**琥珀小圆点**（Houdini 那种一眼看出改过哪儿）；
+  ⚠ 接线行不参与（值由上游决定）；
+- **整组恢复默认**：组头右侧一枚 `↺`（悬停才亮），只重置本组里有 `default` 且**没接线**的行；
+- **同行参数**（`opts.row` / `opts.row_label`，Houdini 的 inline parms：`tx ty tz` 一行）：同一 `row` 名的一串参数
+  并成**一行**，左 = 总标签（`row_label`），右按个数均分格子、每格自带小标题 + `↺`/`⏱` + 控件
+  （`.pyg-inline` / `.pyg-inline-cell`）。已接线的格子显示 `← 源.槽` + 断开。例：`MeshBox` 的 `宽/高/深` = `row:"size"`；
+- **表达式显隐**：就是 `opts.visible_when`（受限 DSL，禁 eval、fail-open、只影响显示不影响执行）——
+  过滤发生在**归堆之前**，所以藏掉的参数**不占格子**（同行参数里藏一格，剩下几格自动重分宽度）。
+  可写 `{"all": [...]}` / `{"any": [...]}` 组合，前端镜像在 `pyConditions.js`；
+- `visible_when` 过滤、`disabled_when` 置灰、`opts.tab` 页签、`opts.order` 排序口径**不变**；
+- 搜索词与折叠都是**纯界面状态**（不写进图）；节点换人时自动按新节点的组重算。
+
+**📝 定义模式（参数定义覆盖层，2026-10-22）**：面板顶上多一档 `值 | 📝 定义`。
+- **值** = 这张图里这个节点的参数值（随图存盘）；**定义** = 这个**类**的参数声明；
+- 定义模式里逐参数编辑 `label / group / order / row / row_label / tab / unit / default / min / max / step /
+  visible_when / disabled_when / tooltip / card / multi`，**空着 = 跟随源码**；
+- 保存落 `<pygraphs>/_node_param_overrides.json`（`{类名: {参数名: {opts 补丁}}}`，原子写），
+  `/object_info` 出表时由 `_patch_param_ovr()` 并进那行的 opts ⇒ **卡片 / 属性面板 / 节点帮助 / 连线控件一起变**；
+- 端点：`GET /api/pygraphs/param-overrides`（读全表）、`PUT`（`{class, inputs:{参数:补丁}}` 或 `{class, reset:true}`）；
+  保存后清 `_OBJECT_INFO_CACHE` 自动重建；面板随即 `loadInfo()` 刷新元数据（`onSavedDef`）；
+- ⚠ **只覆盖 `opts`，不动端口与类型**：`type`/名字/端口集合归引擎（改了会让图里的连线与值对不上）；
+  真要加参数/改类型 = 改类或 `.nlib` 作者源再 reload 插件；
+- ⚠ `PUT` 要登录态（本机直连只读，写会被 401）—— 界面上操作不用管，脚本里要带 cookie/令牌。
+
+**分区（美化，2026-10-22 用户口径「属性面板太乱」）**：值档下整栏折成三节（`<Section>`，可折叠、记住的是组件内状态）：
+「**节点**」注释/引擎/标志位 → 「**参数**」方法下拉/提升到接口/搜索/页签/组/行 → 「**高级**」（默认收起）端口表入口/参数卡/本轮值；
+危险动作（🗑 删除节点）单独放最底下、一条红线隔开。密度口径：面板里 `.pyg-field` 行高 24px、标签 10px、注释框 1 行起。
+
+
 
 **数据契约**（`MESH` 端口，值就是这一个 dict —— 能 `json.dumps`，混引擎段间交接不会坏）：
 
@@ -861,6 +925,13 @@ DSL（**受限，禁 eval**）：`{参数: 字面量}`（等值，数字/布尔�
   卡片行 / 表单卡 / 属性面板三处都过滤；`disabled_when` 在面板**置灰不隐藏**；
 - ⚠ **端口不隐藏**（只藏行/控件）：端口没了会把已有连线变成悬空；
 - 自证：`l_node_engine_selftest` 第 40 组。
+
+**卡片上只摆少量参数**（2026-10-22 用户口径：「节点上仅仅显示少量参数，完整的参数在属性面板…节点上显示的参数要布局美观，和输入输出端口无关」）：
+建模表单卡（`.pyg-form-mesh`）只画 **≤ 4 个**参数（`PyNode.jsx` 的 `CARD_MAX`）—— 先取类里标了
+`{"card": True}` 的行（作者点名的关键参数），不够按声明顺序补；剩下的**全在「🔧 属性」面板**，
+卡片底部只留一句 `＋N 个参数 · 属性面板`。参数行是**两列网格**（标签左 / 控件右，76px + 1fr），
+`.pyg-form-key`/`.pyg-form-type` 在卡上不显示（悬停 title 与面板里有）—— **与端口无关**：
+端口照旧只贴卡片左右两端（左 = 真数据口、右 = 输出），大多数建模节点就是 **1 进 1 出**。
 
 ### 3.0i 节点钩子（`HOOKS`，2026-10-20）
 
@@ -1406,7 +1477,7 @@ ContextVar，与 `emit`/`guard` 同一套"引擎只留钩子"的分工）。但*
    要 HEAD 就用 `@app.api_route(..., methods=["GET", "HEAD"])`。
    2026-10-12 修：两个节点执行前用 `introspect.keyword_names()` 只收**当前签名认的**键
    （带 `**kwargs` / 签名读不出 → 照旧全收），忽略的键打 WARNING —— 宿主挂了 `l_node_engine` 的
-   WARNING handler，能在 `wuwo svc log l_mindmap_mmd_server_exec` 里看到。
+   WARNING handler，能在 `wuwo svc log l_mindmap_mmd_server` 里看到。
    ⚠ 副作用：参数名**打错**也只会被忽略 + 一条警告（不再报错），排错要看日志。
    另一条相关口径（**2026-10-12 已修**）：函数自己的参数名以前会撞节点的**固定输入名**
    （`path`/`kwargs_json`；`CallMethod` 还有 `target`/`method`），撞上就永远拿不到端口、只能走 `kwargs_json`

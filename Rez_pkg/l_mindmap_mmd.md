@@ -26,10 +26,12 @@ wuwo svc log l_mindmap_mmd -f
 wuwo svc open l_mindmap_mmd
 ```
 
-- 服务别名：`l_mindmap_mmd_server`（= `python -m l_mindmap_mmd.server --host 127.0.0.1 --port 8110`，
-  **只绑本机**：`/api/pygraphs/{name}/run` 是任意 python 执行面，不许对外暴露）、
-  `l_mindmap_mmd_server_exec`（同上但 `L_MINDMAP_ALLOW_RUN=1`，**打开执行面**；卡片当前指这条）与
+- 服务别名（**同样功能只留一条**，2026-10-22 用户口径「请唯一，不需要兼容」）：
+  `l_mindmap_mmd_server`（= `cmd /c "set L_MINDMAP_ALLOW_RUN=1 && …python -m l_mindmap_mmd.server
+  --host 127.0.0.1 --port 8110"`，**只绑本机**且**执行面开**：`/api/pygraphs/{name}/run` 是任意 python
+  执行面，不许对外暴露）与
   `l_mindmap_mmd_server_net`（**同一端口 8110，只把 host 换成 `0.0.0.0`**，执行面同样开 —— 见下面「托盘服务」）。
+  ⚠ 老的 `_exec` 别名**已删**（它就是"同一条命令 + 执行面"，和日常这条重复）；主页只留「稳版 + vite 版」两张卡。
 - **🖥 托盘面板 = exec 服务（`/docs`）+ **树状资源浏览器**（读写托盘那台的盘）**
   （2026-10-18 用户口径：「仅仅显示 19527/docs 服务就行了」+「让 19527 为 pygraph 提供访问托盘服务
   所在主机的文件的能力」+「默认授权所有目录」+「请使用树状图来显示才对」）：
@@ -1639,6 +1641,33 @@ AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目�
 `GET /api/pygraphs/video-providers`（**视频厂商**：转模型中心 `/v1/video/models`，把六家塞进
 `models` 形状 —— `key` = provider id、`available` = 配没配钥匙；`AIVideo.provider` 的下拉读它）。
 
+## 编辑器文件拆分（`web/src/PyGraphEditor.jsx` 与 `web/src/pygraph/`）
+
+主文件是**一张大组件**（画布 + 全部面板体 + 全部菜单 + 跑图），拆的时候只有一个口径：
+**能"只收 props、不读编辑器 state/ref"的块才搬**，搬出去的东西**类名一个字不许改**（样式全在 `style.css`）。
+
+| 文件 | 内容 |
+|---|---|
+| `PyGraphEditor.jsx` | 画布、手势、跑图 SSE、菜单、时间线（仍是大头，**2026-10-22 起 8561 → 7342 行**） |
+| `pygraph/Panels.jsx` | 只读面板：问题 / A/B 回放 / A/B 审计 / 轨迹 / 历史 |
+| `pygraph/IoPane.jsx` | 「⇄ 接口」（入参声明表 + 出参 + 签名 + `ioDefHint`） |
+| `pygraph/RefsPane.jsx` | 「🔗 引用」（谁引用我 / 我引用谁） |
+| `pygraph/ContentBrowser.jsx` | 「📂 内容浏览器」（567 行；**状态仍在编辑器**，这里只是那棵树） |
+| `pygraph/NodePropPanel.jsx` | 「🔧 属性」面板（分组框 / 节点 / 参数行 / 本轮值一览） |
+| `pygraph/EditorToolbar.jsx` / `CanvasTools.jsx` / `RunBars.jsx` / `menuItems.jsx` / `useGraphRun.js` | 工具栏 / 画布工具 / 运行条 / 菜单项 / 跑图 hook |
+
+搬法（2026-10-22 实操）：大块 JSX 用 **PowerShell 切片脚本**搬（`Temp/split_*.ps1` 那种做法），
+不要手抄 —— 567 行那段手抄必走样。三个坑：
+① `.ps1` 里带中文必须存成 **UTF-8 带 BOM**（否则 PS 按 GBK 读 → 莫名 `ParserError`）；
+② `-match '^        \)\}\)$'` 经 cmd 传参会把反斜杠吃掉 → 用 `'^\s+\)\)\}$'`；
+③ 切片**先用 `findstr /n` 确认首尾行号**，脚本里再断言一次（首行 `const xxx = (`、末行 `);`）——
+我曾一次把收尾匹配到 80 行外，撤了半段 JSX，靠"读上下文 + 按读到的原文补全"才救回来。
+
+⚠ **2026-10-22 的坑**：这几件在 10-20 就抽过一次，但同一天那次 `PyGraphEditor.damaged.jsx` /
+`.restore.jsx` 回滚把它们**整批退回内联**（`Panels.jsx` 一度是死代码，没人 import）。所以：
+**改完记得确认 `PyGraphEditor.jsx` 里真的 import 了**，别只看文件存在。
+剩下的可拆（按风险）：时间线（~350 行，耦合播放头）、点选/端口引出（手势）、跑图 SSE（`useGraphRun.js` 已有骨架没接）。
+
 ## pygraph 的 `models/` 读口与参数值口径
 
 **两个路由**（`server.py`）：编辑器预览、以及"值到底存不存在"都看它们。值里存的是**文件名**，
@@ -1716,6 +1745,14 @@ AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目�
   **提示降成悬停**（chrome 上 `🧊 3D 视图` 那个 `title`）、**来源下拉与 ↻ 塞进 `.mshv-head`**
   （`MeshViewer` 新增 `headSlot`，只有停靠那处传）—— 标题 / 信息 / 来源 / ↻ / 手感提示同一行。
   空态（没有可看的模型 / 取几何失败）仍走 `Viewer3DPanel` 自己那行 `.pyg-log-head` 的 `bar`。
+- **3D 面板「大部分被参数占据」的收口（2026-10-22 用户口径）**：两处折叠 ——
+  ① **视口工具条**（`Viewer3DPanel` 的 `brushBar`：点选/雕刻/选面/框选/半径/新开一笔/拖拽/手柄模式…）改成
+  `pyg-pickbar` 的 **head + body**：默认只占 **23px 一行**（`🖌 视口工具 · 点选关 · 拖拽关 · 最后一次回执`），
+  点开才铺那 8 个控件（约 80px）；
+  ② **MeshViewer 头部的次要控件**（🫧 平滑 / ↺ / ⏺ 录制 / 照明状态 / 手感提示）收进原生
+  `<details class="mshv-more">`（`⋯`），默认只留一枚小按钮 ⇒ `.mshv-head` 从 ~60px（3 排）回到 **35px（1 排）**，
+  画布可用高度 621 → **645px**。判据：`.mshv-head` 的 `offsetHeight`、`.pyg-pickbar` 的 `offsetHeight`、
+  `.mshv-more.open`。
 - **模型一律双面**（`MeshViewer.forceDoubleSide()`，2026-10-13 用户要求）：薄壳 / 单面网格（竹席那种平面、
   莫比乌斯带）从背面看是全空，看起来像"模型没加载"；glTF/FBX **自带**的材质（导出成 `doubleSided: false`）
   也一起改。⚠ three 是 effect 里 `await import("three")` 动态加载的 → 任何 new 出来的 helper

@@ -135,7 +135,7 @@
    "这个类没有输出"分成两句不同的错（不然同一条假消息掩盖两件事）。
 8. **`Output` 回的是 `{"result": (值,), "ui": …}`**（带 ui 的节点形状）：拿它的输出要**先拆字典再索引**
    ——`dict[0]` 是 `KeyError`（`l_tex_nodes` 与引擎自证都踩过，两处都留了注释）。
-9. **改了 `l_tex_nodes`（骨架在那边）必须 `wuwo svc reload l_mindmap_mmd_server_exec`**：宿主进程里
+9. **改了 `l_tex_nodes`（骨架在那边）必须 `wuwo svc reload l_mindmap_mmd_server`**：宿主进程里
    那份模块是启动时 import 的，不 reload 就"改完还是老骨架"（P2 实测踩到：骨架里还是 `gen`/`out`）。
 10. **canvas 探针的"点一下触发重画"别点左上角**：`x+12, y+12` 落在**标尺角**上，事件不到画布 →
    不重画 → `__rects`/`__txt` 全空 → 两条**假失败**（"横排 0 条 / 没抓到 🌳 根"）。点空白处（右下角）才对。
@@ -156,7 +156,7 @@
 wuwor l_tex_nodes  -- l_tex_nodes_selftest              :: FX 节点组（P0 判据 ①–⑤）
 wuwor l_node_engine -- l_node_engine_selftest           :: 子图 / 根 / 指纹那一层
 wuwor l_mindmap_mmd -- l_mindmap_mmd_web_build           :: 改过 web/ 必须重建产物
-wuwo svc reload l_mindmap_mmd_server_exec                :: 改 l_tex_nodes 不会热更宿主，必须手动
+wuwo svc reload l_mindmap_mmd_server                :: 改 l_tex_nodes 不会热更宿主，必须手动
 node rez-package-source/l_mindmap_mmd/999.0/tools/web_probe.cjs fx    :: 竖排 + 4/4（两后端）
 ```
 

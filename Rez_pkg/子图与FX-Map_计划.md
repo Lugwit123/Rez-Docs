@@ -185,8 +185,8 @@
 wuwor l_node_engine -- l_node_engine_selftest      :: 21 组（子图那组是第 21）
 wuwor l_tex_nodes  -- l_tex_nodes_selftest         :: 11 组（FX-Map 那组是第 9）
 wuwor l_mindmap_mmd -- l_mindmap_mmd_web_build     :: 改过 web/ 就要重建产物
-wuwo svc reload l_mindmap_mmd_server_exec          :: 改 l_tex_nodes 不会触发宿主热更，必须手动
-wuwo svc status l_mindmap_mmd_server_exec          :: 改宿主源码前先看：在热更就等它自己起来
+wuwo svc reload l_mindmap_mmd_server          :: 改 l_tex_nodes 不会触发宿主热更，必须手动
+wuwo svc status l_mindmap_mmd_server          :: 改宿主源码前先看：在热更就等它自己起来
 ```
 
 宿主真跑（本机直连免登录；POST 要带 token，见 §3.5）：

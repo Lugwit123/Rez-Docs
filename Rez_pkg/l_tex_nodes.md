@@ -210,7 +210,7 @@ Substance 那个"点节点看结果"的 2D 视图。**贴图节点不必先接 `
   `value, scale 12`、`TexDistance` 改喂硬边遮罩 —— 见下面两点）。
   自证仍是一条：`wuwor l_tex_nodes -- l_tex_nodes_selftest`（示例表逐个真跑）。
   ⚠ 改 `samples.py` 后**宿主要重启**：示例图在 `_PALETTE_CACHE`（进程内），不重启还是旧图
-  （`wuwo svc reload l_mindmap_mmd_server_exec`）。
+  （`wuwo svc reload l_mindmap_mmd_server`）。
 - **产图节点画的是自己的输出，不是图标**（用户口径 2026-10-16：「**噪波节点就应该显示噪波本身的形状**」）
   —— 所以 `TexNoise` 的示例特意用 `value, scale 12`（96² 下 std **.223**，一眼看得出细胞状图案）；
   老那组 `fbm, octaves=5` 多层按 1/2 加权平均把对比拉平（std **.058**），小格子里就是一块灰糊。
@@ -571,7 +571,7 @@ fBm 教程），节点**竖着连**。本包 2026-10-14 把这三类补齐（`fx
 自证：`wuwor l_tex_nodes -- l_tex_nodes_selftest`（第 10 组：四出 = 四象限且 raster 顺序 / 链两级不重排 /
 逐档变换确定性 / Iterate 轮数生效 / Switch 选择与缺图报错 / Tile 落位）；引擎自证第 29 组测"根 → 输出"；
 宿主真跑：三张示例图 `validate ok` + `run 200` + `node_errors` 空（FX 图那条 `__root__` → `__output__`）。
-⚠ 改本包后**必须 `wuwo svc reload l_mindmap_mmd_server_exec`**（宿主启动时就 import 了那份模块，
+⚠ 改本包后**必须 `wuwo svc reload l_mindmap_mmd_server`**（宿主启动时就 import 了那份模块，
 不 reload 跑的还是老骨架/老算子 —— 实测踩到）。
 
 ## 八、已知未做 / 下一步
