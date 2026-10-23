@@ -577,7 +577,7 @@ PUT  /api/pygraphs/plugins/comfy {"enabled":false}
 | 路子 | 怎么做 | 状态 |
 |---|---|---|
 | **面板录制**（`MeshViewer`） | 3D 视图头部多了 **`⏺ 录制`** 按钮：`canvas.captureStream(30)` + 浏览器自带 `MediaRecorder`（**不引第三方库**）→ 停止时自动下载 `.webm`；停止时把字节数写画布的 `data-rec-size`（探针用）。用法：点录制 → 时间线 ▶（或拖帧）/ 点画布 ▶ 跑一轮 → 点「⏹ 停止」 | **已实测**（2026-10-21）：录了 54s → 下载 `pygraph-_102-….webm`（**2.28 MB**，EBML 魔数 `1A 45 DF A3` 对），留在仓库根 `lion_record.webm` |
-| **离线烤帧**（`tools/record_timeline.py`） | 按帧改一个输入（默认 `t`）→ 跑整张图 → 取某节点几何 → z-buffer 光栅 → GIF/WebP。不依赖 UI、可批处理。用法：`wuwor l_mindmap_mmd -- python tools/record_timeline.py --file <图.json> --node 102 --param t --frames 16 --period 2.09 --out lion.gif`（`--decimate` 降面预览、`--size` 尺寸） | **已验证**：`demo_lion` 16 帧 640×480 130ms/帧 → `lion_anim.gif` |
+| **离线烤帧**（`tools/record_timeline.py`） | 按帧改一个输入（默认 `t`）→ 跑整张图 → 取某节点几何 → z-buffer 光栅 → GIF/WebP。不依赖 UI、可批处理。用法：`wuwor l_mindmap_mmd -- python tools/record_timeline.py --file <图.json> --node 102 --param t --frames 16 --period 2.09 --out lion.gif`（`--decimate` 降面预览、`--size` 尺寸、**`--static` = 不改任何输入只出一张**（图里没有 `t` 时看"这节点现在长啥样"）、**`--mat <槽:材质节点>` = 把它的 basecolor 按顶点 uv 采到顶点色上**（`--mat 309` = 整只；`--mat "0:309, 1:325"` = 按材质槽各贴各的，对应宿主 `3d_view.material` + `slot_mat`；给了它就不降面，因为降面会丢 uv/顶点色；**只换写了的那几个槽的顶点色**，其余槽保持纯色）） | **已验证**：`demo_lion` 16 帧 640×480 130ms/帧 → `lion_anim.gif`；`demo_lion4` `--static` 单帧 720×540 → 融球狮子外观复核；`demo_lion5 --mat 309` → 带毛皮贴图的静帧 |
 
 ⚠ 两个探针/排障的坑（2026-10-21 实测踩过）：
 1. **`canvas` 个数 = 0 不代表编辑器坏了** —— ≤150 节点走 DOM/ReactFlow 后端（**SVG**），canvas 只在 >150 节点时才有。查"编辑器有没有渲染"看 `.react-flow` + `.react-flow__node` 的个数（本次 104 个 ✓）。
@@ -603,16 +603,18 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 3D 视图按 `Cd` 上色、`🧬 属性 2` 那张表就是截图左下角（`Cd vec3 38` / `wear float 38`）。
 
 
-**P0/P1 + 属性 + 绑定 + 雕刻/晶格 + UV 展开 + P3 建模工具共 48 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
+**P0/P1 + 属性 + 绑定 + 雕刻/晶格 + UV 展开 + P3 建模工具 + 抄 three.js `examples/jsm` 那批 + 图元补遗/数据进出共 72 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
 
 | 组 | 节点 |
 |---|---|
-| **P3 收尾（2026-10-21）** | **`CurveEdit`**（改/插/删控制点：`3 = x,y,z` / `+3 x,y,z` / `-1`）/ **`MeshScatter`**（按面积撒点，`align` normal/up/random + `tilt`/`jitter`/`scale_var`；⚠ v1 是真几何不是 instancer）/ **`MeshRemesh`**（体素重拓扑：栅格化 → 填实心 → 表面方块面 → Taubin 平滑 → 沿法线收回 1.2 格；**丢属性**、闭合无自交） |
+| **P3 收尾（2026-10-21）** | **`CurveEdit`**（改/插/删控制点：`3 = x,y,z` / `+3 x,y,z` / `-1`）/ **`MeshScatter`**（按面积撒点，`align` normal/up/random + `tilt`/`jitter`/`scale_var`；**`bias`/`bias_amount`/`bias_falloff` = 方向偏置**（2026-10-23：毛往后倒，纯随机 tilt 是炸毛球）；⚠ v1 是真几何不是 instancer）/ **`MeshRemesh`**（体素重拓扑：栅格化 → 填实心 → 表面方块面 → Taubin 平滑 → 沿法线收回 1.2 格；**丢属性**、闭合无自交） |
 | **P3 建模工具（2026-10-21）** | **`MeshBevel`**（边倒角：二面角 ≥ `angle` 的硬边或接 `MeshSelectEdge` 的边 → 面组退 `width` + 边缝补四边形 + 顶点洞补扇形 ⇒ 仍闭合）/ **`MeshLoft`**（多截面放样：`|` 分隔的若干**同点数**环 / 一串 CURVE）；**选择增强**：`MeshSelectEdge`（`angle`/`all`，输出带 `edges`）+ `MeshSelectGrow`（按相邻面扩散 / `shrink` 收一圈）；`MeshSculpt` 加 `symmetry=x/y/z`（镜像处同雕一笔）、`MeshSweep` 加 `roll` / `twist`（截面转角 / 累积扭转） |
 | **雕刻 / 变形 / 折痕（2026-10-21）** | **`MeshCrease`**（二面角 > 阈值 → 标折痕，接 CC 保棱角）/ **`MeshSculpt`**（球刷：inflate/pinch/flatten/grab，中心+半径+衰减+强度，可只雕选择集；`symmetry` 对称雕）/ **`MeshLattice`**（晶格 FFD：`nx×ny×nz` 格 + 控制点偏移表，三线性插值） | 肌肉/眉骨/鼻梁靠雕，胸肩收腰靠晶格 |
 | **绑定（2026-10-21）** | **`MeshRig`**（骨架 `RIG` 端口：`名字, 父关节, x, y, z`）/ **`MeshSkin`**（按到骨段距离算权重 → `point.W:<关节>`）/ **`MeshPose`**（LBS 摆姿势，角度可写 `t` 的表达式 ⇒ 动画） |
 | **属性** | **`AttrSet`**（写：constant / position / noise / radial，可只写选择集）/ **`AttrGet`**（按名字读：全量或 mean/min/max）/ **`AttrPromote`**（point↔prim 升降，mean/min/max/first） |
 | **UV / 减面 / 导出** | **`MeshProjectUV`**（planar / cylindrical 逐顶点 UV → `attrs.point.uv`）/ **`MeshUnwrap`**（分岛展开 + 打包，缝上分裂顶点 ⇒ 不拉伸）/ **`MeshDecimate`**（顶点聚类减面）/ `MeshSave`（`fmt=obj` 或 **`ply`（带 `Cd` 顶点色）**；`texture`/`bump` 写 MTL 的 `map_Kd`/`map_Bump`；有 `prim.mat` 就写多材质 MTL） |
+| **抄 three.js `examples/jsm`（2026-10-23）** |**`MeshSimplify`**（QEM 二次误差边折叠减面，`ratio`/`target`/`passes`；区别于 `MeshDecimate` 的聚类）/ **`MeshConvexHull`**（QuickHull 三维凸包）/ **`MeshOBB`**（最小体积定向包围盒 + `align` 摆正；`detail.obb` 给三边）/ **`MeshCurveDeform`**（沿曲线弯曲整件，`twist` 累计扭）/ **`CurveNurbs`**（真 NURBS 曲线，`weights` = 有理）/ **`MeshNurbs`**（控制网格 → 全四边形 `ngons`）/ **`MeshTessellate`**（保形加密：只劈最长边、**原顶点不动**）/ **`MeshEdgeSplit`**（按二面角分平滑组 + 按组复制顶点 = `toCreasedNormals`）；另 `MeshDisplace.noise=simplex`、`MeshSave(fmt=glb).compress`（八面体法线）。口径与实测见 `l_mesh_nodes.md` §8.1f |
+| **图元补遗 + 数据进出（2026-10-23）** | **`MeshCapsule`**（圆柱+两半球）/ **`MeshCircle`**（圆盘·扇形）/ **`MeshRing`**（内外半径之间的**四边形**环）/ **`MeshShape`**（任意简单多边形填充片，不挤出）/ **`MeshRoundedBox`**（SDF 圆角盒，一步出光滑圆角）/ **`MeshParametric`**（`u,v → x,y,z` 三条表达式 → 四边网格，沙箱 eval）/ **`MeshMetaball`**（融合球：四面体版 MarchingCubes 抽等值面）/ **`MeshImport`**（OBJ/PLY/STL/glb 读进图，带 uv·Cd·多材质槽；`MeshSave` 多一档 `fmt=stl`）。口径与实测见 `l_mesh_nodes.md` §8.1g |
 | 图元 | `MeshBox` / `MeshSphere` / `MeshCylinder` / `MeshCone` / `MeshTorus` / `MeshPlane` / `MeshLathe`（轮廓绕 Y 转一圈） |
 | 变换 | `MeshTransform`（缩放→旋转 X→Y→Z→平移）/ `MeshArray`（阵列：偏移 + 每份旋转/缩放）/ `MeshMirror` |
 | 细节 | `MeshSubdivide`（线性细分，形状不变）/ `MeshSmooth`（Laplacian，可只磨选择集）/ `MeshDisplace`（**沿法线**：默认分形噪声；接 `image`（PNG 路径 / `{width,height,pixels}` / 二维表）就**按 `uv` 采样贴图置换**，`repeat` 平铺、中灰 0.5 = 不动；可只推选择集；没 `uv` 明确报错不退回噪声） |
@@ -810,7 +812,7 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 真跑图 / 停用摘净）+ 真服务（2026-10-20 实测）：
 
 ```
-PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 48 个节点（顶点上限 200000）"
+PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 72 个节点（顶点上限 200000）"
 GET /api/pygraphs/object_info                    → MeshBox / MeshLathe / MeshSave… 都在
 ```
 

@@ -255,6 +255,12 @@ wuwo svc open l_mindmap_mmd
     —— 直接拿内存 `graph` 存会把用户**还没保存的编辑**一起写进去。
   - **`localStorage["pygraph.ui"]` 彻底退场**：`usePyLayout` 传 `persistLocal: false`，编辑器也不再存按名字的草稿
     （2026-10-18 用户口径「请不要使用草稿布局」）—— 布局只有"服务端那份"和"内存里没保存的拖动"两种状态。
+    ⚠ **2026-10-23 改口径**（用户：「刷新要保留刷新前的布局，只有手动点恢复布局才真正恢复」）：
+    多出一份**当前摆法自己的工作副本** `localStorage["pygraph.ui.working"] = {name, tree}`（防抖 400ms 写，
+    只有一份、带布局名）。**刷新/重开时优先贴它**（`apply effect` 里 `readWorkCopy()` 命中同名就 `replaceLayout(work.tree)`，
+    并说一句"已恢复刷新前的摆法"）；**服务端存档不动** ⇒ 「↺ 复位到已保存」照旧真回退（那一步先
+    `removeItem(WORK_KEY)` 再 `replaceLayout(table[cur])`）。显式「💾 保存到这一套」也会清掉它（服务端已等于当前）。
+    判据：刷新后 `.pyg-tab.on` 的那一组仍是刷新前的；点复位后回到服务端那份；`localStorage` 里那个键名。
   - ⚠ **三个坑**（都实测踩过）：① 弄乱布局**别用"拆分"**（新组是空的、会被 `prune` 剪掉 → 跟存的那份对不上），
     用**折叠**；② **判据别读早**：写盘是异步的，"复位完立刻读"会拿到上一份；③ **开图时别用本地布局去盖存档**
     （老实现 `.finally` 无条件推一次，那一刻 `tabsRef` 还是**套用存档之前**的本地布局）。
@@ -1753,6 +1759,27 @@ AI 节点的地址与凭据也**不用环境变量**：`ai.json`（**数据目�
   `<details class="mshv-more">`（`⋯`），默认只留一枚小按钮 ⇒ `.mshv-head` 从 ~60px（3 排）回到 **35px（1 排）**，
   画布可用高度 621 → **645px**。判据：`.mshv-head` 的 `offsetHeight`、`.pyg-pickbar` 的 `offsetHeight`、
   `.mshv-more.open`。
+  ②′ **材质/贴图调整**（材质来源 / 平铺 / ↻ 取贴图 / 通道 / 每槽参数，2026-10-23 用户口径「贴图调整工具也收起来」）：
+  开关是头部那枚 **`🎨`**（`matOpen`，只在"看模型文件"时出现），收起时那排 **一行都不占**（用 `hidden` 而不是 details
+  —— 底栏默认只给这个面板 ~120px，多一行 22px 就是 1/5 视口）。实测：收起 `matsH=0`、画布 86px；展开 36px、画布 50px。
+  ⚠ 坑：`.mshv-mats` 自己 `display:flex` 会**盖掉 `[hidden]`** 的 `display:none`（特异性低）⇒ 必须补
+  `.mshv-mats[hidden] { display:none !important }`，否则 hidden=true 照样占 36px。
+
+**3D 几何"刷新延迟大"的三处修（2026-10-23 用户口径「3d 视图显示几何体延迟很大怎么办」）**
+1. **别把 payload 先置空**（`Viewer3DPanel` 取 `/mesh` 的 effect）：以前每次 `refreshKey` 变都
+   `setPayload(null)` → 画布卸载 → three 场景重建 + **相机复位** → 等 JSON 回来才重画。现在保留旧几何，
+   只在真换了才替换；
+2. **几何指纹 `sha1`**（宿主 `mesh_preview._geo_sha1`，写进 `/mesh` 的 payload）：重跑一次 `ts` 必变，
+   但几何常常一模一样；前端 `prev.sha1 === j.sha1` 就直接**不替换 payload** ⇒ `MeshViewer` 不重建
+   （`key` 只跟 node + count 走）。没有 sha1 时退回旧判据（ts + count）；
+3. **宿主侧 memo 复用**（`server._cache_meshes`）：落盘那段本来就要 `mesh_payload()` 转一遍，现在转完
+   **直接塞进 `_MESH_JSON`**，`/mesh` 不再转第二遍（20 万顶点那份转换是几百毫秒）。
+判据：重跑几何不变时 `.mshv-canvas` **同一个 DOM 节点**（打 `dataset.mark` 后仍在）、相机不跳；
+`GET /api/pygraphs/mesh` 的 payload 里带 `sha1`（16 位十六进制）。
+  ③ **来源合成一个下拉**（2026-10-23）：原来"模型文件"和"节点几何"是**两个互斥下拉**、各占一栏；现在一项，
+  值编码 `""` = 跟随图 / `n:<节点id>` = 节点几何 / `m:<模型名>` = 模型文件，候选用 `<optgroup>` 分组
+  （`节点几何（跑过一次才有）` / `模型文件`）。⚠ 切模型要顺手 `setNode("")`、切节点别名留着 `pick` 不管
+  —— 否则"看文件"和"看节点"会互相盖。
 - **模型一律双面**（`MeshViewer.forceDoubleSide()`，2026-10-13 用户要求）：薄壳 / 单面网格（竹席那种平面、
   莫比乌斯带）从背面看是全空，看起来像"模型没加载"；glTF/FBX **自带**的材质（导出成 `doubleSided: false`）
   也一起改。⚠ three 是 effect 里 `await import("three")` 动态加载的 → 任何 new 出来的 helper
