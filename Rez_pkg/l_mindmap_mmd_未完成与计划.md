@@ -95,6 +95,18 @@
    把 hover 的 filter 去掉（filter 固定、只用 `opacity` 提亮）后 **0 次**。
    ⚠ 同类写法都别写：`filter` 必须是**静态**的；悬停反馈用 `opacity` / 背景色 / `box-shadow`。
 
+9. **⚠ 未查清（2026-10-24 00:06，真事故）**：浏览器端跑完 `Functions/demo_lion5`（178 节点）之后，
+   磁盘上那份 `demo_lion5.json` 被写成了**空图骨架**（95 字节：`{"name":…,"note":"","groups":[],
+   "params":[],"nodes":{}}`）。之后所有 `?name=…` 读到空图（`/run` 回 `"nodes": 0`）、3D 面板永远等不到
+   `.mshv-canvas`；而**同一份文件用 `record_timeline.py` 直接跑是好的**（说明不是生成器的锅）。
+   现在探针 `web_probe.cjs lion5` 第 ⑧ 条会读回磁盘那份确认节点还在，但**写空图的触发条件仍未知**
+   （候选：`3d_view` 的 `flags.autorun` + 某种保存时机 / 归一化写回）。**在查清前**：跑浏览器自证前先
+   备份图 JSON，跑完核对节点数，被写了就重新生成（`wuwor l_mesh_nodes -- l_mesh_nodes_lion5`）。
+   **2026-10-24 20:13 又发生一次**（这次是 `demo_teapot.json`，22 节点 → 96 字节，无 git 可回滚 ⇒
+   补了生成器 `l_mesh_nodes_teapot`）。**已加服务端护栏**（`PUT /api/pygraphs/{name}`）：
+   盘上那份**有节点**、这次要写**空** ⇒ **409**（文案提示"可能是编辑器在没加载成功的状态下自动保存；
+   真清空请先 DELETE"）。也就是说**再也不会被存成空图**了，但"谁在写空"这个根因仍待查（浏览器侧日志）。
+
 ## 三、自证命令（可直接抄）
 
 ```cmd

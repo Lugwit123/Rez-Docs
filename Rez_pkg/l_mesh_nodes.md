@@ -504,7 +504,12 @@ NURBS / 曲线弯曲）→ `MeshGroup` 并成一件 → **一个** `3d_view`（�
 
 **判据（贴图这条腿）**：宿主 `mesh_payload` 里 **`uv` 81084 / `count` 81084**（齐了才会 `dataset.uv=1`）、
 `groups 28 / mats 7`；离线带贴图出片 `record_timeline.py --node 124 --mat "0:309, 1:325"` →
-`Temp\lion5_tex6.gif`（身体毛皮渐变 + 鬃毛更暗的毛丝层 + 牙白/鼻黑/眼亮，说明两套材质各在各的槽）。
+`Temp\lion5_tex6.gif`（身体毛皮渐变 + 鬃毛更暗的毛丝层 + 牙白/鼻黑/眼亮，说明两套材质各在各的槽）；
+**服务端那半边（2026-10-24）**：`POST /api/pygraphs/lugwit_agent_a%2FFunctions%2Fdemo_lion5/run` →
+**178 节点 / 6.7s**；`GET /api/pygraphs/meshes?name=…` 里有 `124`；
+`GET /api/pygraphs/mesh?…&node=124` → **12.2 MB**（含 `uv`）；`GET /api/pygraphs/material?…&node=309` →
+`basecolor/normal/roughness`、`node=325` → `basecolor/normal`，`channel=basecolor` 出 **1024×1024 rgb PNG**；
+真宿主探针 `node tools/web_probe.cjs lion5`（uv / matslots / 「已贴：基色…」/ `slotmaps` 含 1 / **磁盘那份图还在**）。
 
 **踩到的**：
 1. `MeshLoft` 的文本是**截面间 `|`、点间 `;`**（`loft()` 里 `ring()` 生成一条，别写反）。
@@ -527,6 +532,163 @@ NURBS / 曲线弯曲）→ `MeshGroup` 并成一件 → **一个** `3d_view`（�
 14. **一槽一套材质要 `3d_view.slot_mat="1:325"`**（`槽号:材质节点 id`）；没写 `slot_mat` 的槽恒为纯色，
     写错的槽号**静默不生效**（面板「槽」那排能看出哪几个槽吃到了图）。离线对拍用
     `record_timeline.py --mat "0:309, 1:325"`（同一份口径）。
+
+### 8.1j 立体文字 `MeshText` / `demo_text`（2026-10-24，5 节点）
+
+three.js 的 `TextGeometry` 要现成的 `typeface.json`；我们直接读**系统字体二进制**（`fontTools`），
+所以任意字体、任意字符（含中文）都能用，不必再带一份坐标表。
+
+| 步骤 | 做法 | 关键点 |
+|---|---|---|
+| 轮廓 | `TTFont` + `getGlyphSet()` + `RecordingPen` 录 `moveTo/lineTo/qCurveTo/curveTo/closePath` | `qCurveTo` 末位是 `None` = **TrueType 连续二次曲线**（隐含中点要对半算） |
+| 折线化 | 二次/三次贝塞尔按 `samples` 等分 | `samples 6~8` 够用（默认 6） |
+| 排版 | 每个字形按 `advance` 前进、`\n` 换行、`align` 居中 | 字体缺字 → 留 0.3em 空位（别静默挤在一起） |
+| 端面 | **扫描线 + 绕数（winding）填充** | 见下面坑 1 |
+| 挤出 | 端面两点 + 侧壁，沿 **Z** | 侧壁**另起顶点**（见坑 2） |
+
+判据：`tests/test_mesh3d.py::TextGeometryTest` **6/6**（`H`/`I` 有面、`depth` 真给厚度、`O` 面积
+远小于 bbox（洞被切掉）、居中/左对齐、两行更高、空文字/找不到字体报错）；
+面积守恒实测（`Temp\dbg_glyph.py` 那套口径）：`B 1.000 / 8 1.000 / @ 1.000 / o 1.000 / G 1.000`；
+出片 `record_timeline.py --node 3 --static --decimate 0 --yaw -22 --pitch -8` → `Temp\text7.png`
+（`LUGWIT` + `B8@o`，两行都是立体、洞是透的）。
+
+**怎么用**：`MeshText(text="LUGWIT\nB8@o", font="", size=1.0, depth=0.22, samples=8)`；
+`font` 留空走内置候选（Arial Bold → 微软雅黑 → 黑体），也可写 `arial` / `msyh` 这类**家族名**
+（在系统字体目录里模糊匹配），或直接给 `.ttf/.ttc/.otf` 路径。
+生成器：`wuwor l_mesh_nodes -- l_mesh_nodes_text` → `<工程>/Functions/demo_text.json`。
+
+**踩到的**（5 条，都是这轮实测出来的）：
+1. **端面别用"洞桥接 + 耳切"**：桥上选错可见点就自交 —— 带洞字形面积**超标 4%~34%**、几十个反向三角
+   （`B` 1.036 / `8` 1.146 / `@` 1.343）；`mesh3d._triangulate_2d` 在桥接多边形上还会半路停下
+   （`if not cut: break`，`B` 只出 36 个三角 = 面积 20%）。**扫描线绕数填充一行不出错**。
+2. **扫描线按"奇偶配对"也会错**（曲线字形掉到 0.67~0.89）：极值点处同一 x 有两个交点，配对准位。
+   改**绕数**（洞反向绕 ⇒ 归零 ⇒ 自动空出来），并且判"这条边跨不跨条带"要用**条带中线**判一次
+   （拿上下边界判会漏边 → 条带命中数是奇数）。
+3. **端面与侧壁不能共用顶点**：共用时端面边缘的法线被侧壁平均进去，平端面被 Gouraud 外插成
+   "一条条横带"。侧壁另起一份顶点后干净。
+4. **法线朝向手算一遍**：端面 CCW→法线 +Z；逆时针轮廓的侧壁绕序是 `(a_bot, b_bot, b_top)`。
+   搞反了整只文字变成"内翻"（有向体积为负），远看还行、一打光就全黑。
+5. **`fontTools` 进不了 `requires`**：它的 wheel 带 `share/man/man1/ttx.1`，wuwo 的 pip→rez 包装会报
+   `Unknown source file in RECORD` 并放弃 → 这个包**装不上**。所以它是**可选依赖**：装进插件
+   「依赖目录」（`wuwor l_mesh_nodes -- python -m pip install --target
+   <LUGWIT_DATA_ROOT>\l_mesh_nodes\mesh_deps fonttools`）→ 面板填该目录 → 「重载」；
+   离线工具会自动找 `L_MESH_NODES_DEPS` / `<LUGWIT_DATA_ROOT>/l_mesh_nodes/mesh_deps`。
+   缺了只在用 `MeshText` 时给一条明确报错。
+6. **离线看待文字别用默认 `--decimate 0.03`**：网格降采样会把字面切出横条纹理（看着像"面做坏了"），
+   复核文字一律 `--decimate 0`。
+
+### 8.1k 形变目标（shape keys）与多段剪辑（2026-10-24，`demo_morph` 8 节点）
+
+three.js 那边这两块我们一直缺：`morphTargets`（表情/形变）与**多条动画剪辑**。这轮补上。
+
+**A. 形变目标**
+| 环节 | 做法 |
+|---|---|
+| 数据 | `attrs.point["morph:<名字>"] = [[dx,dy,dz], …]`（**相对增量** = `target - mesh`，基础顶点不动）+ `attrs.detail.morphs` 记顺序 —— 走**属性系统**，所以 `AttrSet` / `Transform` / `MeshGroup` 重建网格时**带着走** |
+| 节点 | `MeshMorph(mesh, target, name)`：`target` 必须**同拓扑**（顶点数相同，否则明确报错）；链着接可叠多个 |
+| 烘静态 | `MeshMorphBake(weights="0.5; 1")`：按权重把增量加到顶点，输出**没有** morph 的普通网格 |
+| 导出 | glb：每个 primitive 写 `targets: [{POSITION: 增量 accessor}]` + `meshes[0].weights:[0…]` + `extras.targetNames`（three 的 `GLTFLoader` 读成 `morphTargetDictionary`） |
+| 视图 | 宿主 payload 带 `morphs`；`MeshViewer` 挂 `geometry.morphAttributes.position` + `morphTargetsRelative = true` → `updateMorphTargets()`，面板出一排「形变」滑杆写 `morphTargetInfluences` |
+
+判据：`tests/test_mesh3d.py::MorphTest` **5/5**（增量正确 / 链式两个 / 拓扑不符报错 / 烘权重 0.5 与 1 /
+glb 里有 `targets`+`targetNames`）；`GltfTest::test_glb_multi_clip` 1 条；探针 `node tools/web_probe.cjs morph`
+（`dataset.morphs="blobA,blobB"` / 滑杆 2 条 / 拉满后 `dataset.morphw="1.000,1.000"` / `dataset.morphmesh ≥ 1`）。
+
+**B. 多段剪辑（glb）**
+- `gltf.build_glb(animation=…)` 现在**收 dict 或 dict 列表**，每段各自一条 `animations`（各自 fps/duration/名字）。
+- `MeshSave`：`rotations` 里**单独一行 `---`** 分段，`clip_names`（逗号分隔）按顺序起名；空 = `clip1/clip2…`。
+- 视图那边不用改：`GLTFLoader` 给的 `gltf.animations` 本来就是数组，剪辑下拉已经能切（`clipIdx`）。
+
+**踩到的**
+1. **同拓扑是硬条件**：形状键不能改顶点数（`MeshSubdivide` / 焊接之后存量目标就废了）。做形变要
+   **先定拓扑再记目标**，否则 `add_morph` 直接报错（这是故意的）。
+2. **别存在 `mesh["morphs"]` 上**（第一版就是）：`AttrSet` / 大部分算子走 `_pack` 重建网格，
+   非标准键会被丢掉 —— 表现是"图里明明接了 MeshMorph，视图里一个目标都没有"。存 **point 属性**
+   （`morph:<名字>`）才跟着属性系统走（`set_attr` 后仍在，已有用例钉住）。
+3. **增量方向**别存绝对值：视图按 `morphTargetsRelative = true` 挂，存绝对值会把基础顶点算两遍。
+4. 视图里改的是 `morphTargetInfluences`，**不是**重建几何 —— 重建会把相机拽回默认位。
+5. 探针拉滑杆要走**原生 setter + input 事件**（React 受控 input 直接赋 `value` 不触发 onChange）。
+6. `MeshBox` 只有**一个** `segments`（每面切格），别写 `segments_y/_z`（这轮就写错过，节点报 `unexpected keyword`）。
+7. **改了插件包的 `.py` 要等宿主热更**（`wuwo svc status l_mindmap_mmd_server --json` 看 `hot`）；
+   服务没重载完就跑去量 `/mesh` 会拿到旧 payload（这轮白跑了两遍探针）。
+   另外 `/mesh` 有 memo（同一节点不重复转），**重跑一次图**才会换新的。
+
+### 8.1l 几何引擎可切换：python / three.js（2026-10-24）
+
+用户口径：「我们的节点其实很多功能 threejs 也可以做对不，所以我希望这些节点可以切换为 threejs 驱动」。
+
+**怎么做的**：three 的几何类（`BoxGeometry` / `LatheGeometry` / `SimplifyModifier` …）**不需要 WebGL**，
+所以能在 Node 里跑。`tools/three_bridge.mjs` 是个常驻进程，一行 JSON 进、一行 JSON 出；
+`src/l_mesh_nodes/three_backend.py` 管这个进程（加锁、超时、进程挂了重启）。节点里只多一个分支：
+
+```python
+if self.use_three():            # 插件开关 = three 且这个节点有 THREE_OP
+    got = self.three(**params)  # 失败 → None
+    if got is not None: return (got,)
+return (g.box(...),)            # 回落 python
+```
+
+**开关**：插件面板「几何引擎（python / three）」；也可 `PUT /api/pygraphs/plugins/mesh3d
+{"config":{"backend":"three"}}`（detail 里会回「引擎 three」）。**three 不可用/报错 → 自动回落 python**
+（图不会因为一条 three 失败整轮挂掉）。
+
+| 已接线的节点（16） | 桥里的算子 |
+|---|---|
+| `MeshBox` / `MeshSphere` / `MeshCylinder` / `MeshCone` / `MeshTorus` / `MeshTorusKnot` / `MeshPlane` / `MeshCircle` / `MeshRing` / `MeshCapsule` / `MeshLathe` / `MeshExtrudeShape` | `box` / `sphere` / `cylinder` / `cone` / `torus` / `torus_knot` / `plane` / `circle` / `ring` / `capsule` / `lathe` / `extrude` |
+| `MeshSimplify` / `MeshTessellate` / `MeshEdgeSplit` / `MeshConvexHull` | `simplify`（SimplifyModifier）/ `tessellate` / `edge_split` / `convex_hull`（ConvexGeometry） |
+
+**判据**：`tests/test_mesh3d.py::ThreeBackendTest` **4/4**（7 个图元顶点/UV、lathe/extrude、四个网格算子、
+节点级开关 `BACKEND="three"` 真走桥且 `detail.three` 有值）；宿主实跑：apply detail 出现「引擎 three」，
+`demo_teapot` 在 three 驱动下 **`node_errors {}` / 14 个 mesh**。
+找不到 node/three 时整组测试 **skip**（不强求机器上装 node）。
+
+**踩到的**
+1. **改了插件包 `.py` 要 `wuwo svc restart l_mindmap_mmd_server`**：热更正不会重新 import 已加载的插件模块
+   —— 表现是"PUT 了 backend=three，detail 里没有引擎那行、节点还是 python 算的"。
+2. **`EdgeSplitModifier` 之前必须 `mergeVertices`**：它的 `pointToIndexMap` 对"没被任何面引用的顶点"留空洞
+   → `indexes.length` 读 `undefined` 直接炸（three 0.186 实测）。桥里先 merge 就稳。
+3. **平面件朝向**：three 的 `Plane/Circle/Ring` 在 **XY**，我们约定 `xz` → 桥里统一 `rotateX(-90°)`；
+   不转的话 `MeshPlane` 换引擎就"立起来"了。
+4. **别用 PowerShell 正则改 JS**：`Set-Content` 按 ANSI 写回会把中文/引号弄坏（整份文件 SyntaxError）。
+   本轮就这么毁过一次桥文件，用编辑工具重写才恢复。
+5. **法线口径**：我们统一按平滑重算；three 图元自带硬边（顶点已按面复制，效果一致），
+   但经过 `MeshTransform` 之后仍是平滑重算 —— 要硬边就再接 `MeshEdgeSplit`。
+6. `three` 的位置：默认吃宿主 web 的 `node_modules/three`（r186）；要换版本用 `L_MESH_THREE` 指到别的
+   `node_modules/three`（桥和 Python 两边都认这个环境变量）。
+
+### 8.1m Houdini 的 **Display flag**（2026-10-24）
+
+用户口径：「建模节点在 3d 视图可以学习 houdini 么，好像是不同的 flag」。
+
+**现在有 👁 Display 旗**：建模节点卡上那排旗标里多一颗，点它 = **底栏「🧊 3D 视图」看这个节点的几何**
+（不用为了看一眼中间结果去重新接线）。
+
+| Houdini | 我们 | 说明 |
+|---|---|---|
+| **Display flag**（蓝色） | `nodes[id].flags.display` | **一张图一个**（点新的自动摘旧的；再点一次摘掉） |
+| **Render flag**（紫色） | `3d_view.mesh` / `MeshSave` 指的节点 | 不单开旗标：输出那一跳本来就有明确接线 |
+| **Template flag**（绿色，线框参照） | `nodes[id].flags.template` | **可以做多个**；3D 视图里画成**绿色线框**（`WireframeGeometry` + `LineSegments`，`depthWrite:false`），只参照、不参与渲染与拾取。超过 8 万顶点不画（几十万条线会卡） |
+
+**优先级**（编辑器算）：`display` 旗标 > `3d_view.mesh` 连线 > 面板选的模型文件。
+
+判据：探针 `node tools/web_probe.cjs display` **9/9** —— ① 卡上有 👁；② 挂旗后 3D 面板
+`顶点/面` 真的变了（teapot 2122 → torus 697）；③ 宿主收到 `node=14` 的取几何请求；④ 一张图只有一个；
+⑤ 换旗几何又变；⑥ 摘掉回到 `3d_view` 那份（2122）。
+**Template**：探针 `node tools/web_probe.cjs template` **7/7** —— ① 卡上有 🔲（teapot 里 15 个建模节点都有）；
+② 挂上后 `dataset.templates=3` / `templatecount=1`（线框真进场景）；③ 再挂一个 → `3s+5` / 2 条；
+④ **Display 的几何没变**（纯参照）；⑤ 摘掉清干净（`templates` 空、`count=0`）。
+实现落点：引擎 `node_base` 里**不**放 display/template（只对出几何的插件有意义）—— `_MeshNode` 把它们并进
+自己的 `NODE_FLAGS`；编辑器 `pySchema.setDisplayFlag`（互斥）/ `setTemplateFlag`（可多个）/
+`displayNodeOf` / `templateNodesOf` + `PyGraphEditor` 把它们传给 `Viewer3DPanel` → `MeshViewer`。
+
+**"运行到本节点"（🔄 autorun）与 Display 是不是一回事？**（用户 2026-10-24 问）
+**不完全一致，现在联动成 Houdini 那样**：
+- `autorun`（🔄）= **执行**语义：开图时自动"跑到这个节点（它 + 上游）"；**任何**节点都能挂
+  （含不出几何的），每张图只跑一次、多个只取 id 最前；
+- `display`（👁）= **查看**语义：一张图只有一个；
+- Houdini 里 display flag 同时意味着"cook 这个节点" ⇒ 我们现在也这样：**开图 / 换 display 之后，
+  那个节点若还没有几何缓存，就自动 `runToNode`**（有缓存则不重跑 —— 点个旗就整轮重算太烦）。
+  所以建模节点一般**只挂 display 就够**了；`autorun` 留给非几何节点。
 
 ### 8.2 导出（2026-10-22 / 23）
 

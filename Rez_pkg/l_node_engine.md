@@ -125,7 +125,9 @@ pygraph_tools.register_pygraph_reload_tool()# 注册 pygraph_reload（模型自�
 `pin`（📌 固定） | **整理布局时保持原位**（pin 的真实语义） | 编辑器 |
 `lock_params`（🔒 锁定） | 面板里的**参数控件只读**（标志位那一行不锁，否则解不开） | 编辑器 |
 `bookmark`（⭐ 收藏） | 纯标记 | — |
-`autorun`（🔄 开图即跑） | **打开/切到这张图时自动「运行到本节点」**（它 + 上游，内联 prompt、不落盘）；每张图只跑一次、多个只取 id 最前那个 | 编辑器 |
+`autorun`（🔄 开图即跑） | **打开/切到这张图时自动「运行到本节点」**（它 + 上游，内联 prompt、不落盘）；每张图只跑一次、多个只取 id 最前那个。**与 `display` 的关系**：`display` 是"看"（并且没有任何缓存时也会自动跑到它，同 Houdini 挂 display 就 cook）；`autorun` 是"跑"，能挂任意节点 —— 建模节点一般只挂 display 就够 | 编辑器 |
+`display`（👁 显示旗） | **底栏「🧊 3D 视图」看这个节点的几何**（Houdini **Display flag** 同名同义）；**一张图只有一个**（点新的自动摘旧的、再点摘掉）；优先级 Display > `3d_view.mesh` > 面板选的模型文件。**只由出几何的插件声明**（`l_mesh_nodes` 的 `_MeshNode` 把它并进 `NODE_FLAGS`），引擎不解释 | 编辑器 |
+`template`（🔲 模板旗） | **3D 视图里用绿色线框参照这个节点**（Houdini **Template flag** 同名同义）；**可多个**、只参照（不参与渲染/拾取）；同样只由出几何的插件声明 | 编辑器 |
 
 标志位是**图的属性**（`node.flags`），随图存盘；`graph_prompt`/`toPrompt`/`toStorage` 都必须带它，
 否则"编辑器点了跳过、跑起来没跳过"。`bypass`/`mute` 的节点**不参与必填校验**（它们不跑）。
@@ -603,7 +605,7 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 3D 视图按 `Cd` 上色、`🧬 属性 2` 那张表就是截图左下角（`Cd vec3 38` / `wear float 38`）。
 
 
-**P0/P1 + 属性 + 绑定 + 雕刻/晶格 + UV 展开 + P3 建模工具 + 抄 three.js `examples/jsm` 那批 + 图元补遗/数据进出共 72 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
+**P0/P1 + 属性 + 绑定 + 雕刻/晶格 + UV 展开 + P3 建模工具 + 抄 three.js `examples/jsm` 那批 + 图元补遗/数据进出 + 文字/形变共 75 个节点**（命名一律 ASCII；中文只进说明 / 悬停 / 搜索别名）：
 
 | 组 | 节点 |
 |---|---|
@@ -812,7 +814,37 @@ CC 条数 = 新顶点数、`weld` 接缝取平均、`delete` 跟着剩点走、�
 真跑图 / 停用摘净）+ 真服务（2026-10-20 实测）：
 
 ```
-PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 72 个节点（顶点上限 200000）"
+PUT /api/pygraphs/plugins/mesh3d {"enabled":true} → "分类 `mesh3d` → 75 个节点（顶点上限 200000）"
+
+**重启一个插件**（2026-10-24，用户口径「插件面板给每个插件配一个重启按钮」）：
+
+```cmd
+:: 面板：右栏「🔌 插件」→ 每格底部「⭮ 重启」（或 HTTP）
+curl -X POST http://127.0.0.1:8110/api/pygraphs/plugins/mesh3d/restart
+```
+`→ {"ok":true,"detail":"已重启 `l_mesh_nodes`（清 9 个模块、摘 75 个节点）→ 分类 `mesh3d` → 75 个节点 …","purged":9}`
+- 与 PUT/`reload` 的区别：**重启会清掉这个插件自己那个顶层包的 `sys.modules` 条目再 import**
+  （改插件包里的 `.py` 只有它能生效；`reload` 拿到的还是旧模块 —— 之前只能 `wuwo svc restart`）。
+- 只清 `external_plugins.json` 里那条 `module` 的**第一段**（如 `l_mesh_nodes`）；`l_node_engine` /
+  `l_mindmap_mmd` 自己拒绝重启（会撕掉正在跑的东西）。非外部插件回一句"重启请重启宿主服务"。
+- 门槛同执行面（`L_MINDMAP_ALLOW_RUN`）；重启后会清节点表缓存 + 重新同步导入白名单。
+- 判据：`l_node_engine_selftest` 的外部插件那条（拒收路径）+ 实测改 `mesh3d_plugin.py` 的 `description`
+  里加标记 → 点重启 → `GET /api/pygraphs/plugins` 立刻看到标记（不用重启服务）。
+
+**动作说明弹窗**（同日，用户口径「重载/重启的时候弹一个面板说明这个按钮做了什么 + 不再显示 +
+跑完在这屏出报告、跑的过程中阻塞整页」）：
+- 点「⟳ 重载」/「⭮ 重启」→ `PluginActionDialog`（`web/src/PluginActionDialog.jsx`）三屏：
+  `intro`（它做什么 / 什么时候用 / 注意 + 「不再显示」+ 开始）→ `running`（转圈，按钮禁用、遮罩挡整页）
+  → `done|error`（同一屏出报告：`detail` 原文 + 清掉模块数 + 已加载节点 + 模块报错；成功 2.6s 自动关，
+  失败不自动关）。
+- 「不再显示」存 `localStorage["pygraph.pluginNotice"]`（`{reload:bool,restart:bool}`，只影响这个浏览器）；
+  面板底部出现「💬 恢复提示」能重新开（别让人进死胡同）。
+- 判据：探针 `node tools/web_probe.cjs plugdlg`（① 说明屏文案 ② 遮罩 `fixed`/`z≥3000` ③ 复选框+开始
+  ④ 报告含「N 个节点」 ⑤ 能关闭 ⑥ 记住 ⑦ 记住后不再弹 ⑧ 重启同一条弹窗 ⑨ 报告含「已重启 / 清 N 个模块」）。
+- ⚠ 两个真 bug 是这条探针逼出来的：① `PUT`/`reload`/`restart` 返回的是**单个 `plugin`**（不是 `plugins`
+  数组），前端却当成数组覆盖列表 → 点完按钮面板变空、说明弹窗"点开始就消失"；② 重载与 `/object_info`
+  并发时注册表在遍历中被改 → `500 dictionary changed size during iteration`（`registry.get_all_node_info`
+  等三处改成先 `list(...)` 快照）。
 GET /api/pygraphs/object_info                    → MeshBox / MeshLathe / MeshSave… 都在
 ```
 
